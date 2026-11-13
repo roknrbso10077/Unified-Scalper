@@ -1,0 +1,18 @@
+# Never send credentials, runtime state or local market databases to the builder.
+.env
+.env.*
+!.env.example
+LIVE_RELEASE_ENV
+LIVE_RELEASE_ENV.*
+*.pem
+*.key
+*.db
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+venv/

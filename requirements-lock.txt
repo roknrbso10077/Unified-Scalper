@@ -1,0 +1,9 @@
+# Canonical direct dependency constraints for Unified Scalper V702 A55 (Python 3.12).
+# Python target: 3.12. This is a direct-dependency constraints file, NOT a complete
+# transitive/hash lock; see LOCKFILE_NOTES.md before relying on bit-for-bit rebuilds.
+ccxt==4.5.81
+python-dotenv==1.2.4
+numpy==2.3.5
+pandas==2.2.3
+aiohttp==3.14.3
+aiosqlite==0.22.1

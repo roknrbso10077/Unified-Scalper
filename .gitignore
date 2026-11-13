@@ -1,0 +1,23 @@
+# Secrets and live deployment credentials
+.env
+.env.*
+!.env.example
+LIVE_RELEASE_ENV
+LIVE_RELEASE_ENV.*
+*.pem
+*.key
+
+# Runtime state, exchange caches, and databases
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db-wal
+*.db-shm
+
+# Python/build/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
