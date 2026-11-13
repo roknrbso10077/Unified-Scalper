@@ -4,6 +4,7 @@
 !.env.example
 LIVE_RELEASE_ENV
 LIVE_RELEASE_ENV.*
+!LIVE_RELEASE_ENV.example
 *.pem
 *.key
 

@@ -2255,3 +2255,21 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 
 # =============================================================================
 ```
+
+# V702 A58.2 — Railway boot-artifact closure (2026-11-13)
+#   * Confirmed the supplied Railway crash from the exact Deploy Logs: the
+#     A58 validator raised FileNotFoundError for /app/LIVE_RELEASE_ENV.example.
+#   * Fixed the full Docker path: .dockerignore allowlists only the non-secret
+#     example file, .gitignore preserves it, and Dockerfile copies it into /app.
+#   * A58 validation now reports a missing example as an explicit failed
+#     contract instead of an uncaught exception; active key values must equal 0.
+#   * Added regression tests for ignore precedence, Docker copy inclusion,
+#     fail-closed missing-file behavior and active KEY=value parsing.
+#   * No strategy, score, market, sizing, risk, Telegram or execution gate was
+#     relaxed; canonical V702-A58 runtime identity and NO_GO disposition remain.
+#   * Final local verification: Python compile and compileall PASS; A58/V705
+#     focused regression batch 20 passed; complete pytest suite 437 passed,
+#     1 historical A51 fixture skipped, 0 failed (27.29 sec). `--validate-only` PASS
+#     (11.47 sec, 532,020 KiB peak RSS; bot_started=false by design).
+#   * Docker engine and live MEXC/Telegram integrations were unavailable in
+#     this audit environment and remain unverified; no live orders were sent.

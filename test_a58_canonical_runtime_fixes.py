@@ -105,3 +105,45 @@ def test_live_builder_ast_keeps_hard_floor_before_final_score_admission():
     assert min(calls["_v704_hard_global_score_floor"]) < min(final_score_gates)
     assert bot._v612_combined_score_floor_invariant(64.0, 70.0) is True
     assert bot._v612_combined_score_floor_invariant(64.0, 69.99) is False
+
+
+
+def test_release_env_example_is_whitelisted_and_copied_into_docker_runtime():
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    # The broad pattern protects operator secrets; the exact exception keeps
+    # only the safe example template in the build context and runtime image.
+    assert "LIVE_RELEASE_ENV.*" in dockerignore
+    assert "!LIVE_RELEASE_ENV.example" in dockerignore
+    assert dockerignore.index("!LIVE_RELEASE_ENV.example") > dockerignore.index("LIVE_RELEASE_ENV.*")
+    assert "LIVE_RELEASE_ENV.*" in gitignore
+    assert "!LIVE_RELEASE_ENV.example" in gitignore
+    assert gitignore.index("!LIVE_RELEASE_ENV.example") > gitignore.index("LIVE_RELEASE_ENV.*")
+    assert "COPY LIVE_RELEASE_ENV.example /app/LIVE_RELEASE_ENV.example" in dockerfile
+
+
+def test_missing_release_env_example_fails_closed_without_uncaught_file_error():
+    import main as bot
+
+    missing = ROOT / "__missing_release_env_example_for_test__"
+    old_present = bot.STATS.get("v702_a58_release_env_example_present")
+    old_error = bot.STATS.get("v702_a58_release_env_example_error")
+    try:
+        assert bot._v702_a58_read_release_env_example(missing) == ""
+        assert bot.STATS.get("v702_a58_release_env_example_present") is False
+        assert "FileNotFoundError:" in bot.STATS.get("v702_a58_release_env_example_error", "")
+        assert bot._v702_a58_parse_env_defaults("# UNIFIED_LIVE_PILOT_ENABLE=0\nUNIFIED_LIVE_PILOT_ENABLE=1\nUNIFIED_A55_LIVE_ARM=0") == {
+            "UNIFIED_LIVE_PILOT_ENABLE": "1",
+            "UNIFIED_A55_LIVE_ARM": "0",
+        }
+    finally:
+        if old_present is None:
+            bot.STATS.pop("v702_a58_release_env_example_present", None)
+        else:
+            bot.STATS["v702_a58_release_env_example_present"] = old_present
+        if old_error is None:
+            bot.STATS.pop("v702_a58_release_env_example_error", None)
+        else:
+            bot.STATS["v702_a58_release_env_example_error"] = old_error

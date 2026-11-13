@@ -98654,6 +98654,34 @@ FINAL_CANONICAL_RUNTIME.update({
     "live_gates_relaxed": False,
 })
 
+def _v702_a58_read_release_env_example(path: Optional[Path] = None) -> str:
+    """Read the non-secret release defaults template without masking a missing artifact."""
+    _env_path = Path(path) if path is not None else Path(__file__).with_name("LIVE_RELEASE_ENV.example")
+    try:
+        _value = _env_path.read_text(encoding="utf-8")
+        STATS["v702_a58_release_env_example_present"] = True
+        STATS.pop("v702_a58_release_env_example_error", None)
+        return _value
+    except OSError as _exc:
+        STATS["v702_a58_release_env_example_present"] = False
+        STATS["v702_a58_release_env_example_error"] = f"{type(_exc).__name__}:{str(_exc)[:180]}"
+        return ""
+
+
+def _v702_a58_parse_env_defaults(source: str) -> Dict[str, str]:
+    """Parse active KEY=value lines only; comments never satisfy release safety checks."""
+    _values: Dict[str, str] = {}
+    for _raw_line in str(source or "").splitlines():
+        _line = _raw_line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _key, _sep, _value = _line.partition("=")
+        _key, _value = _key.strip(), _value.strip()
+        if _key:
+            _values[_key] = _value
+    return _values
+
+
 _V702_A58_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
 def _v702_a58_validate_config():
     # Historical compatibility: the A57 validator is invoked here through
@@ -98692,9 +98720,12 @@ def _v702_a58_validate_config():
         _health_source = Path(__file__).with_name("healthcheck.py").read_text(encoding="utf-8")
     except Exception:
         _guard_source, _health_source = "", ""
-    _keys = ["UNIFIED_LIVE_PILOT_ENABLE=0", "UNIFIED_A55_LIVE_ARM=0"]
-    _env_source = Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")
+    _env_path = Path(__file__).with_name("LIVE_RELEASE_ENV.example")
+    _env_source = _v702_a58_read_release_env_example(_env_path)
+    _env_defaults = _v702_a58_parse_env_defaults(_env_source)
     _checks = {
+        "previous_validation_pass": bool(_previous_ok),
+        "release_env_example_present": bool(_env_source.strip()) and bool(STATS.get("v702_a58_release_env_example_present")),
         "legacy_authorizer_fails_closed": "entry_policy_authority_missing" in _guard_source and "legacy_token_ignored" in _guard_source,
         "unified_round_trip_cost_model": "def _v702_unified_round_trip_cost_pct" in _source and "r40_fallback = spread_used + 2.0 * slip_side + fee_cost" in _source,
         "paper_fill_requires_buffered_breakout": "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1" in _source and "h >= _trigger" in _source and "WAIT_FOR_BUFFERED_BREAKOUT" in _source,
@@ -98709,7 +98740,7 @@ def _v702_a58_validate_config():
         "bounded_exchange_token_bucket": "class V702PlatformRateLimiter" in _source and "await _V702_PLATFORM_RATE_LIMITER.acquire(op_label)" in _source,
         "all_submit_entry_calls_have_context": bool(V702_WRAPPER_CHAIN_VALIDATION.get("pass")),
         "spot_long_only_and_score_floor_preserved": bool(CONFIG.get("LONG_ONLY")) and str(CONFIG.get("MARKET_TYPE", "")).upper() == "SPOT" and not bool(CONFIG.get("ENABLE_FUTURES")) and float(CONFIG.get("MIN_LIVE_SCORE", 0)) >= 70.0,
-        "operator_keys_off_by_default": all(key in _env_source for key in _keys),
+        "operator_keys_off_by_default": _env_defaults.get("UNIFIED_LIVE_PILOT_ENABLE") == "0" and _env_defaults.get("UNIFIED_A55_LIVE_ARM") == "0",
         "forbidden_bases_preserved": {"PUMP", "BNB", "CAKE", "AERO", "ETHFI"}.issubset(set(V702_HARD_FORBIDDEN_BASES)),
         "runtime_and_pm_heartbeats_fail_closed": "V702_RUNTIME_HEARTBEAT_STALE_SEC" in _health_source and "V702_PM_HEARTBEAT_STALE_SEC" in _health_source,
     }
