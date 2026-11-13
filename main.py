@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Unified Scalper V702 A58 canonical runtime.
+"""Unified Scalper V702 A59 canonical runtime.
 
 Historical patch/version notes are preserved in CHANGELOG.md. The active
 strategy, risk, pre-send, queue, Telegram and execution authorities remain in
@@ -7240,8 +7240,17 @@ class FamilyPolicyLayer:
                 return False, "severity", ctx
             if regimes and r not in regimes:
                 return False, "macro", ctx
+            # Dedicated recovery routes must carry their positive local and
+            # severity evidence all the way into canonical Prequal.  Empty
+            # context is not an implicit pass for these explicitly marked modes.
+            if bool(strategy_meta.get("require_local_regime", False)) and not lr:
+                ctx["required_local_regime_missing"] = True
+                return False, "local", ctx
             if locals_ok and lr and lr not in locals_ok:
                 return False, "local", ctx
+            if bool(strategy_meta.get("require_severity", False)) and not sev:
+                ctx["required_severity_missing"] = True
+                return False, "severity", ctx
             if sevs and sev and sev not in sevs:
                 return False, "severity", ctx
             if phases and ph and ph not in phases:
@@ -31117,6 +31126,19 @@ _V590_CANONICAL_CONTEXT_DEFAULTS = {
         "allowed_severity": ("NORMAL", "STRESSED", ""),
         "allowed_phases": ("TREND", "EXPANSION", "UNKNOWN"),
         "allowed_styles": ("SCALP",),
+    },
+    # V425 recovery is a dedicated, bounded Bearish route, NOT ordinary
+    # PULLBACK.  Its local proof and non-crash severity are mandatory at the
+    # canonical policy boundary as well as in the detector.
+    "BEARISH_RECOVERY": {
+        "allowed_regimes": ("BEARISH",),
+        "allowed_macro_regimes": ("BEARISH",),
+        "allowed_local_regimes": ("RECOVERY", "LOCAL_BULLISH"),
+        "allowed_severity": ("BEARISH_NORMAL", "BEARISH_STRESSED"),
+        "allowed_phases": ("PULLBACK", "REVERSAL", "TREND", "EXPANSION", "UNKNOWN"),
+        "allowed_styles": ("SCALP",),
+        "require_local_regime": True,
+        "require_severity": True,
     },
 }
 
@@ -82599,12 +82621,29 @@ class _V702R28TelegramDigest:
             _a51_saved_checks = max(0, int(STATS.get("v702_a51_regime_policy_prefilter_saved_checks", 0) or 0))
             _a51_errors = max(0, int(STATS.get("v702_a51_regime_policy_prefilter_errors", 0) or 0))
             _a51_last_error = re.sub(r"[^A-Za-z0-9_.:-]", "", str(STATS.get("v702_a51_regime_policy_prefilter_last_error", "none") or "none"))[:40] or "none"
+            _cf_policy_attempts = max(0, int(STATS.get("v702_cf_shadow_policy_reject_capture_attempts", 0) or 0))
+            _cf_policy_stored = max(0, int(STATS.get("v702_cf_shadow_policy_reject_capture_stored", 0) or 0))
+            _cf_policy_not_stored = max(0, int(STATS.get("v702_cf_shadow_policy_reject_capture_not_stored", 0) or 0))
+            _cf_policy_pending = max(0, int(STATS.get("v702_cf_shadow_io_pending", 0) or 0))
+            _cf_policy_drops = max(0, int(STATS.get("v702_cf_shadow_policy_reject_backpressure_drops", 0) or 0))
+            _cf_policy_errors = max(0, int(STATS.get("v702_cf_shadow_policy_reject_capture_errors", 0) or 0))
+            _cf_policy_enabled = bool(CONFIG.get("V702_CF_SHADOW_ENABLE", True) and CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", True))
+            _cf_htf_attempts = max(0, int(STATS.get("v702_cf_shadow_htf_reject_capture_attempts", 0) or 0))
+            _cf_htf_stored = max(0, int(STATS.get("v702_cf_shadow_htf_reject_capture_stored", 0) or 0))
+            _cf_htf_not_stored = max(0, int(STATS.get("v702_cf_shadow_htf_reject_capture_not_stored", 0) or 0))
+            _cf_htf_drops = max(0, int(STATS.get("v702_cf_shadow_htf_reject_backpressure_drops", 0) or 0))
+            _cf_htf_errors = max(0, int(STATS.get("v702_cf_shadow_htf_reject_capture_errors", 0) or 0))
+            _cf_htf_enabled = bool(CONFIG.get("V702_CF_SHADOW_ENABLE", True) and CONFIG.get("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", True))
         except Exception:
             _a51_blocks, _a51_saved_checks, _a51_errors, _a51_last_error = 0, 0, 0, "unavailable"
+            _cf_policy_attempts, _cf_policy_stored, _cf_policy_not_stored = 0, 0, 0
+            _cf_policy_pending, _cf_policy_drops, _cf_policy_errors, _cf_policy_enabled = 0, 0, 0, False
+            _cf_htf_attempts, _cf_htf_stored, _cf_htf_not_stored, _cf_htf_drops, _cf_htf_errors, _cf_htf_enabled = 0, 0, 0, 0, 0, False
         lines = [
             "<b>📊 V702 OPERATOR DIGEST — CANONICAL</b>",
             f"Window≈{int(age)}s | compacted_events={events} | categories={sum(cats.values())}",
             f"A51_POLICY_PREFILTER process_total blocks={_a51_blocks} saved_checks={_a51_saved_checks} errors={_a51_errors} last_error={_a51_last_error}",
+            f"CF_SHADOW_POLICY_REJECT enabled={str(_cf_policy_enabled).lower()} attempted={_cf_policy_attempts} stored={_cf_policy_stored} not_stored={_cf_policy_not_stored} io_pending_all={_cf_policy_pending} backpressure_drops={_cf_policy_drops} errors={_cf_policy_errors} | CF_SHADOW_HTF_REJECT enabled={str(_cf_htf_enabled).lower()} attempted={_cf_htf_attempts} stored={_cf_htf_stored} not_stored={_cf_htf_not_stored} backpressure_drops={_cf_htf_drops} errors={_cf_htf_errors}",
             cls._compact_counts(),
             "LEGEND: ENTRY_BLOCK_ROOT=current entry classifier; starvation root/top3=window classifier; exec_try=route attempts; live_ready=epoch total; stage totals are aggregates, not proof of same-candidate attribution.",
             cls._heartbeat_line(hb),
@@ -82629,19 +82668,44 @@ class _V702R28TelegramDigest:
         max_chars = max(1800, int(CONFIG.get("V702_R28_TELEGRAM_DIGEST_MAX_CHARS", V702_R28_TELEGRAM_DIGEST_MAX_CHARS) or V702_R28_TELEGRAM_DIGEST_MAX_CHARS))
         if len(raw) <= max_chars:
             return raw
-        # Deterministic truncation keeps the header, funnel/rejection diagnosis,
-        # and the first discovery/block rows visible rather than cutting an
-        # arbitrary tail that could hide the actual bottleneck.
-        head = lines[:7]
-        tail = lines[-4:]
-        middle_budget = max_chars - len("\n".join(head + ["…"] + tail))
-        mids = []
-        for line in lines[7:-4]:
-            candidate = ("\n".join(mids + [line])).strip()
-            if len(candidate) > middle_budget:
-                break
-            mids.append(line)
-        return "\n".join(head + mids + ["…"] + tail)[:max_chars]
+        # Deterministic truncation preserves the complete policy/funnel header,
+        # the tail status, AND every structural section heading. Earlier A59
+        # truncation stopped at the first oversized discovery row, silently
+        # dropping later scorer/route/builder headings. Skip oversized detail
+        # rows instead of breaking, and reserve room for all middle headings.
+        def _clip_digest_line(value, limit):
+            value = str(value or "")
+            return value if len(value) <= limit else value[:max(1, limit - 1)] + "…"
+
+        # Bound volatile telemetry rows before calculating the remaining
+        # allowance. Without this, a very long heartbeat/window line could
+        # consume the entire message and physically cut off mandatory headings.
+        head_limits = (42, 70, 100, 300, 125, 90, 170, 70, 130)
+        head = [_clip_digest_line(line, head_limits[i]) for i, line in enumerate(lines[:9])]
+        tail_source = lines[-4:]
+        tail_limits = (100, 220, 80, 45)
+        tail = [_clip_digest_line(line, tail_limits[i]) for i, line in enumerate(tail_source)]
+        middle = lines[len(lines[:9]):-4]
+        mandatory = {i for i, line in enumerate(middle) if line.startswith("<b>") and line.endswith("</b>")}
+        separator_cost = len("\n".join(head + ["…"] + tail))
+        heading_cost = sum(len(middle[i]) + 1 for i in mandatory)
+        middle_budget = max(0, max_chars - separator_cost - heading_cost)
+        keep = set(mandatory)
+        for i, line in enumerate(middle):
+            if i in mandatory:
+                continue
+            cost = len(line) + 1
+            if cost <= middle_budget:
+                keep.add(i)
+                middle_budget -= cost
+        mids = [line for i, line in enumerate(middle) if i in keep]
+        rendered = "\n".join(head + mids + ["…"] + tail)
+        if len(rendered) <= max_chars:
+            return rendered
+        # The configured minimum is 1800 chars; if an operator lowers it
+        # further in a custom build, retain all headings and the hard limit.
+        mandatory_text = "\n".join(head + [middle[i] for i in sorted(mandatory)] + ["…"] + tail)
+        return mandatory_text[:max_chars]
 
     @classmethod
     def reset_after_flush(cls) -> None:
@@ -87458,14 +87522,63 @@ try:
             prefix = raw.split(marker, 1)[0] if marker_present else raw
             footer = "\n" + marker if marker_present else ""
             budget = max(100, limit - len(addition) - len(footer) - 2)
-            if len(prefix) > budget:
-                shortened = prefix[:budget].rsplit("\n", 1)[0]
-                prefix = shortened if shortened else prefix[:budget]
+
+            def _compact_digest_prefix(source, char_budget):
+                source_lines = str(source or "").splitlines()
+                if len(source) <= char_budget:
+                    return source
+                def _clip(value, cap):
+                    value = str(value or "")
+                    return value if len(value) <= cap else value[:max(1, cap - 1)] + "…"
+                head_limits = [42, 70, 110, 270, 140, 110, 420, 90, 170]
+                head = [_clip(value, head_limits[i]) for i, value in enumerate(source_lines[:9])]
+                tail_source = source_lines[-2:] if len(source_lines) > 11 else []
+                tail = [_clip(value, cap) for value, cap in zip(tail_source, (150, 220))]
+                middle = source_lines[len(source_lines[:9]):-len(tail_source)] if tail_source else source_lines[9:]
+                mandatory = {i for i, value in enumerate(middle)
+                             if value.startswith("<b>") and value.endswith("</b>")}
+                headings = [middle[i] for i in sorted(mandatory)]
+
+                def _compose_head():
+                    base = head + headings + tail
+                    return "\n".join(base), len("\n".join(base))
+
+                base_text, base_len = _compose_head()
+                # Preserve all section headings and the final operational
+                # footer. If dynamic telemetry is large, progressively shorten
+                # volatile header rows rather than slicing off whole sections.
+                shrink_order = [(6, 70, 50), (3, 130, 40), (4, 60, 30),
+                                (8, 70, 25), (5, 55, 25), (2, 55, 20), (1, 40, 15)]
+                for index, minimum, step in shrink_order:
+                    while base_len > char_budget and index < len(head_limits) and head_limits[index] > minimum:
+                        head_limits[index] = max(minimum, head_limits[index] - step)
+                        head = [_clip(value, head_limits[i]) for i, value in enumerate(source_lines[:9])]
+                        base_text, base_len = _compose_head()
+                if base_len > char_budget:
+                    # Ultra-small custom payload: retain the main release
+                    # header and section labels, not unbounded diagnostic text.
+                    head = [_clip(value, cap) for value, cap in zip(source_lines[:9],
+                            (32, 48, 60, 90, 70, 50, 55, 45, 70))]
+                    base_text, base_len = _compose_head()
+                keep = set(mandatory)
+                remaining = max(0, char_budget - base_len - (len(keep) + 1))
+                for i, value in enumerate(middle):
+                    if i in mandatory:
+                        continue
+                    cost = len(value) + 1
+                    if cost <= remaining:
+                        keep.add(i)
+                        remaining -= cost
+                mid_values = [value for i, value in enumerate(middle) if i in keep]
+                compacted = "\n".join(head + mid_values + tail)
+                return compacted[:char_budget]
+
+            prefix = _compact_digest_prefix(prefix, budget)
             out = prefix.rstrip() + "\n" + addition + footer
             if len(out) > limit:
-                # Defensive fallback only for pathological long source fields.
-                max_prefix = max(0, limit - len(addition) - len(footer) - 2)
-                prefix = prefix[:max_prefix].rsplit("\n", 1)[0] or prefix[:max_prefix]
+                # Final guard keeps the pipeline and execution footer intact.
+                prefix_budget = max(0, limit - len(addition) - len(footer) - 1)
+                prefix = prefix[:prefix_budget]
                 out = prefix.rstrip() + "\n" + addition + footer
         _repair = globals().get("_v702_a37_repair_telegram_html")
         return _repair(out) if callable(_repair) else out
@@ -88054,6 +88167,10 @@ CONFIG.setdefault("V702_CF_SHADOW_REPORT_INTERVAL_SEC", 900.0)
 CONFIG.setdefault("V702_CF_SHADOW_FEE_BPS_PER_SIDE", max(0.0, float(CONFIG.get("TAKER_FEE_PCT", 0.10) or 0.10) * 100.0))
 CONFIG.setdefault("V702_CF_SHADOW_SLIPPAGE_BPS_PER_SIDE", 5.0)
 CONFIG.setdefault("V702_CF_SHADOW_MAX_ROWS", 30000)
+# Broad, read-only sampling of Bearish macro-family policy rejects. This lane
+# observes raw long candidates only; it never runs an alternate admission path.
+CONFIG.setdefault("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", True)
+CONFIG.setdefault("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", True)
 
 # V702 A9 — independent, persistent 1m/5m strategy research. These settings
 # are observational only; the new strategies are not registered in the live MSE.
@@ -88124,9 +88241,43 @@ except Exception as _v702_intraday_exc:
 _V702_CF_SHADOW = None
 _V702_CF_SHADOW_INSTALL_ERROR = ""
 _V702_CF_SHADOW_PREQUAL_HOOK_INSTALLED = False
+_V702_CF_SHADOW_PREQUAL_WRAPPER = None
 _V702_CF_SHADOW_RANK_HOOK_INSTALLED = False
 _V702_CF_SHADOW_IO_TASKS = set()
 _V702_CF_SHADOW_IO_TASKS_LOCK = threading.Lock()
+_V702_CF_SHADOW_CAPTURE_STATS_LOCK = threading.Lock()
+
+
+def _v702_cf_shadow_capture_lane(fn, args):
+    try:
+        if getattr(fn, "__name__", "") == "record_candidate" and len(args) > 1:
+            return str(args[1] or "").strip().upper()
+    except Exception:
+        return ""
+    return ""
+
+
+def _v702_cf_shadow_note_policy_reject_capture(fn, args, value=None, error=False, dropped=False):
+    """Thread-safe outcome counters for raw policy/HTF reject observation lanes."""
+    lane = _v702_cf_shadow_capture_lane(fn, args)
+    prefixes = {
+        "BEARISH_POLICY_REJECT_OBSERVATION": "v702_cf_shadow_policy_reject",
+        "HTF_POLICY_REJECT_OBSERVATION": "v702_cf_shadow_htf_reject",
+    }
+    prefix = prefixes.get(lane)
+    if not prefix:
+        return
+    with _V702_CF_SHADOW_CAPTURE_STATS_LOCK:
+        if dropped:
+            key = prefix + "_backpressure_drops"
+        elif error:
+            key = prefix + "_capture_errors"
+        elif bool(value):
+            key = prefix + "_capture_stored"
+        else:
+            key = prefix + "_capture_not_stored"
+        STATS[key] = int(STATS.get(key, 0) or 0) + 1
+
 
 def _v702_cf_shadow_submit(fn, *args, **kwargs):
     """Bounded async offload for non-authoritative SQLite shadow operations."""
@@ -88138,8 +88289,11 @@ def _v702_cf_shadow_submit(fn, *args, **kwargs):
         # Startup/validation callers outside an event loop are rare and already
         # serial; production scan callers always use the worker-thread path below.
         try:
-            return fn(*args, **kwargs)
+            _value = fn(*args, **kwargs)
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, value=_value)
+            return _value
         except Exception as exc:
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, error=True)
             STATS["v702_cf_shadow_process_errors"] = int(STATS.get("v702_cf_shadow_process_errors", 0) or 0) + 1
             logger.debug("[V702-CF-SHADOW] synchronous fallback suppressed: %s", exc)
             return None
@@ -88150,6 +88304,7 @@ def _v702_cf_shadow_submit(fn, *args, **kwargs):
     with _V702_CF_SHADOW_IO_TASKS_LOCK:
         if len(_V702_CF_SHADOW_IO_TASKS) >= _cap:
             STATS["v702_cf_shadow_io_backpressure_drops"] = int(STATS.get("v702_cf_shadow_io_backpressure_drops", 0) or 0) + 1
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, dropped=True)
             return None
         async def _run_shadow_io():
             return await asyncio.to_thread(fn, *args, **kwargs)
@@ -88162,11 +88317,13 @@ def _v702_cf_shadow_submit(fn, *args, **kwargs):
         STATS["v702_cf_shadow_io_pending"] = _pending_count
         try:
             value = done.result()
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, value=value)
             if isinstance(value, dict) and getattr(fn, "__name__", "") == "process_market_data":
                 STATS["v702_cf_shadow_last_cycle"] = dict(value)
         except asyncio.CancelledError:
-            pass
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, error=True)
         except Exception as exc:
+            _v702_cf_shadow_note_policy_reject_capture(fn, args, error=True)
             STATS["v702_cf_shadow_process_errors"] = int(STATS.get("v702_cf_shadow_process_errors", 0) or 0) + 1
             logger.debug("[V702-CF-SHADOW] worker I/O suppressed: %s", exc)
     task.add_done_callback(_finish_shadow_io)
@@ -88261,6 +88418,28 @@ try:
                         if floor_val is None:
                             floor_val = base_floor
                         floor_val = float(floor_val)
+                        # Broad raw HTF-reject outcome capture complements the
+                        # existing narrow HTF_RELIEF near-miss lane. It never
+                        # reruns the floor with a lower threshold or changes Prequal.
+                        side_htf = str(getattr(candidate, "side", "") or "").strip().lower()
+                        if (bool(CONFIG.get("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", True))
+                                and strength is not None and side_htf in {"long", "buy"}
+                                and regime in {"BULLISH", "NEUTRAL", "BEARISH"}):
+                            with _V702_CF_SHADOW_CAPTURE_STATS_LOCK:
+                                STATS["v702_cf_shadow_htf_reject_capture_attempts"] = int(
+                                    STATS.get("v702_cf_shadow_htf_reject_capture_attempts", 0) or 0) + 1
+                            htf_shadow_snapshot = dict(snap)
+                            htf_shadow_snapshot.update({
+                                "macro_regime": regime, "local_regime": local_regime,
+                                "htf_strength": strength, "family_htf_floor": floor_val,
+                                "family": family, "side": side_htf,
+                                "policy_allowed": False, "policy_reason": str(reason),
+                            })
+                            _v702_cf_shadow_submit(
+                                _V702_CF_SHADOW.record_candidate, candidate,
+                                "HTF_POLICY_REJECT_OBSERVATION", str(reason), htf_shadow_snapshot,
+                                htf_strength=strength, htf_floor=floor_val,
+                            )
                         relief = max(0.0, min(5.0, float(CONFIG.get("V702_CF_SHADOW_HTF_RELIEF_POINTS", 3.0) or 3.0)))
                         if strength is not None and floor_val - relief <= strength < floor_val:
                             _v702_cf_shadow_submit(_V702_CF_SHADOW.record_candidate, candidate, "HTF_RELIEF", str(reason), snap,
@@ -88282,9 +88461,10 @@ try:
                     except Exception as _cf_liq_exc:
                         STATS["v702_cf_shadow_liquidity_capture_errors"] = int(STATS.get("v702_cf_shadow_liquidity_capture_errors", 0) or 0) + 1
                         logger.debug("[V702-CF-SHADOW] liquidity attribution skipped: %s", _cf_liq_exc)
-                elif str(reason).startswith("family_regime_disallowed.macro") and bool(CONFIG.get("V702_A48_BEARISH_NORMAL_SHADOW_ONLY", True)):
-                    # This is a strictly observational cohort. It never changes the canonical
-                    # verdict, never relaxes V518/live gates, and only records complete evidence.
+                elif str(reason).startswith("family_regime_disallowed.macro"):
+                    # Raw Bearish policy-reject observation is intentionally independent of
+                    # the stricter A48 LSR cohort. It captures long candidates for outcome
+                    # measurement only; it does not rerun Prequal under a synthetic policy.
                     try:
                         ctx_shadow = _v455_prequal_context(candidate, snap) if callable(globals().get("_v455_prequal_context")) else {}
                         ctx_shadow = ctx_shadow if isinstance(ctx_shadow, dict) else {}
@@ -88301,14 +88481,30 @@ try:
                         volume_shadow = float(raw_volume_shadow) if raw_volume_shadow is not None else None
                         raw_quote_shadow = snap.get("quote_vol_24h", snap.get("quoteVolume", fs_shadow.get("quote_vol_24h")))
                         quote_shadow = float(raw_quote_shadow) if raw_quote_shadow is not None else None
+                        side_shadow = str(getattr(candidate, "side", "") or "").strip().lower()
                         enriched_shadow = dict(snap)
                         enriched_shadow.update({
                             "macro_regime": regime_shadow, "bearish_severity": severity_shadow,
                             "volume_ratio": volume_shadow, "quote_vol_24h": quote_shadow,
                             "htf_strength": htf_shadow, "family": family_shadow,
+                            "side": side_shadow, "policy_allowed": False,
+                            "policy_reason": str(reason),
+                            "allowed_regimes": ctx_shadow.get("allowed_regimes", snap.get("allowed_regimes", ())),
                         })
-                        if (family_shadow == str(CONFIG.get("V702_A48_BEARISH_SHADOW_FAMILY", "LIQUIDITY_SWEEP_REVERSAL")).upper()
+                        if (bool(CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", True))
+                                and regime_shadow == "BEARISH" and side_shadow in {"long", "buy"}):
+                            with _V702_CF_SHADOW_CAPTURE_STATS_LOCK:
+                                STATS["v702_cf_shadow_policy_reject_capture_attempts"] = int(
+                                    STATS.get("v702_cf_shadow_policy_reject_capture_attempts", 0) or 0) + 1
+                            _v702_cf_shadow_submit(
+                                _V702_CF_SHADOW.record_candidate, candidate,
+                                "BEARISH_POLICY_REJECT_OBSERVATION", str(reason), enriched_shadow,
+                                htf_strength=htf_shadow,
+                            )
+                        if (bool(CONFIG.get("V702_A48_BEARISH_NORMAL_SHADOW_ONLY", True))
+                                and family_shadow == str(CONFIG.get("V702_A48_BEARISH_SHADOW_FAMILY", "LIQUIDITY_SWEEP_REVERSAL")).upper()
                                 and regime_shadow == "BEARISH"
+                                and side_shadow in {"long", "buy"}
                                 and severity_shadow in {"NORMAL", "BEARISH_NORMAL"}
                                 and htf_shadow is not None and htf_shadow >= float(CONFIG.get("V702_A48_BEARISH_SHADOW_MIN_HTF_STRENGTH", 47.0))
                                 and volume_shadow is not None and volume_shadow >= float(CONFIG.get("V702_A48_BEARISH_SHADOW_VOLUME_FLOOR_RATIO", 1.4))
@@ -88327,6 +88523,7 @@ try:
             return verdict
         _v702_cf_shadow_prequal_wrapper._v702_cf_shadow_wrapped = True
         _v702_cf_shadow_prequal_wrapper._v702_cf_shadow_original = _V702_CF_ORIGINAL_PREQUAL
+        _V702_CF_SHADOW_PREQUAL_WRAPPER = _v702_cf_shadow_prequal_wrapper
         globals()["_v453_prequalify"] = _v702_cf_shadow_prequal_wrapper
         _V702_CF_SHADOW_PREQUAL_HOOK_INSTALLED = True
 
@@ -98769,6 +98966,99 @@ def _v702_a58_validate_config():
 
 globals()["validate_config"] = _v702_a58_validate_config
 
+# =============================================================================
+# V702 A59 — broad Bearish/HTF reject outcome observability (SHADOW ONLY)
+# This append-only release adds evidence collection and telemetry only. It does
+# not change regime allowlists, Prequal verdicts, Score, execution or live gates.
+# =============================================================================
+V702_A59_CANONICAL_REVISION = V702_PACKAGE_AUDIT_REVISION + "-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13"
+V702_A59_RELEASE_REVISION = "A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13"
+V702_A59_RELEASE_TAG = "UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A59_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A59_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A59_RELEASE_TAG
+CONFIG["V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"] = True
+CONFIG["V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE"] = True
+STATS["v702_a59_release_revision"] = V702_A59_RELEASE_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A59_RELEASE_REVISION,
+    "active_release_tag": V702_A59_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A59_RELEASE_REVISION,
+    "a59_release_revision": V702_A59_RELEASE_REVISION,
+    "bearish_policy_reject_observation": {
+        "enabled": True,
+        "lane": "BEARISH_POLICY_REJECT_OBSERVATION",
+        "scope": "RAW_PREQUAL_POLICY_REJECT_OUTCOME_ONLY_NOT_FULL_PIPELINE_ADMISSION",
+        "live_authority": False,
+        "live_gates_relaxed": False,
+    },
+    "htf_policy_reject_observation": {
+        "enabled": True,
+        "lane": "HTF_POLICY_REJECT_OBSERVATION",
+        "scope": "RAW_PREQUAL_HTF_FLOOR_REJECT_OUTCOME_ONLY_NOT_FULL_PIPELINE_ADMISSION",
+        "live_authority": False,
+        "live_gates_relaxed": False,
+    },
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a59_self_test():
+    try:
+        _cf_module = __import__("v702_counterfactual_shadow")
+        _lanes = tuple(getattr(_cf_module, "LANES", ()))
+        _shadow_source = _v702_read_source_text()
+        _checks = {
+            "policy_reject_lane_registered": "BEARISH_POLICY_REJECT_OBSERVATION" in _lanes,
+            "htf_reject_lane_registered": "HTF_POLICY_REJECT_OBSERVATION" in _lanes,
+            "raw_candidate_scope_explicit": "RAW_PREQUAL_POLICY_REJECT_OUTCOME_ONLY_NOT_FULL_PIPELINE_ADMISSION" in _shadow_source,
+            "prequal_hook_observes_macro_policy_rejects": callable(globals().get("_V702_CF_SHADOW_PREQUAL_WRAPPER")) and "BEARISH_POLICY_REJECT_OBSERVATION" in _shadow_source and "family_regime_disallowed.macro" in _shadow_source,
+            "prequal_hook_observes_htf_floor_rejects": callable(globals().get("_V702_CF_SHADOW_PREQUAL_WRAPPER")) and "HTF_POLICY_REJECT_OBSERVATION" in _shadow_source and "htf.family_htf_strength_below_floor" in _shadow_source,
+            "policy_reject_digest_visible": "CF_SHADOW_POLICY_REJECT enabled=" in _shadow_source.replace("\\", ""),
+            "htf_reject_digest_visible": "CF_SHADOW_HTF_REJECT enabled=" in _shadow_source.replace("\\", ""),
+            "htf_shadow_observer_enabled": bool(CONFIG.get("V702_CF_SHADOW_ENABLE", True)) and bool(CONFIG.get("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", False)),
+            "shadow_observer_enabled": bool(CONFIG.get("V702_CF_SHADOW_ENABLE", True)) and bool(CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", False)),
+            "bearish_live_bridge_disabled": CONFIG.get("V702_A48_BEARISH_V518_LIVE_ENABLE") is False,
+            "bearish_recovery_policy_is_explicit_and_bounded": (
+                set(CanonicalStrategyPolicyRegistry.get("BEARISH_RECOVERY", {}).get("allowed_regimes", ())) == {"BEARISH"}
+                and set(CanonicalStrategyPolicyRegistry.get("BEARISH_RECOVERY", {}).get("allowed_local_regimes", ())) == {"RECOVERY", "LOCAL_BULLISH"}
+                and bool(CanonicalStrategyPolicyRegistry.get("BEARISH_RECOVERY", {}).get("require_local_regime", False))
+                and bool(CanonicalStrategyPolicyRegistry.get("BEARISH_RECOVERY", {}).get("require_severity", False))
+            ),
+            "ordinary_pullback_still_excludes_bearish": "BEARISH" not in set(CanonicalStrategyPolicyRegistry.get("PULLBACK", {}).get("allowed_regimes", ())),
+            "hard_gate_bypass_false": FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False,
+            "live_gates_relaxed_false": FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False,
+        }
+        _failed = [key for key, value in _checks.items() if not bool(value)]
+        return {"pass": not _failed, "revision": V702_A59_RELEASE_REVISION, "checks": _checks, "failed": _failed,
+                "live_authority": False, "live_gates_relaxed": False, "production_decision": "NO_GO_UNATTENDED_LIVE"}
+    except Exception as _exc:
+        return {"pass": False, "revision": V702_A59_RELEASE_REVISION,
+                "error": f"{type(_exc).__name__}:{str(_exc)[:160]}", "live_authority": False,
+                "live_gates_relaxed": False, "production_decision": "NO_GO_UNATTENDED_LIVE"}
+
+
+_V702_A59_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a59_validate_config():
+    # Preserve the complete inherited validator chain (A57 -> A56 -> A55/A54 ->
+    # A49/A48 and earlier); the A57 call remains in that chained implementation
+    # as _V702_A57_PREVIOUS_VALIDATE_CONFIG().
+    _base_ok = bool(_V702_A59_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A59_PREVIOUS_VALIDATE_CONFIG) else False
+    _report = _v702_a59_self_test()
+    STATS["v702_a59_validation"] = _report
+    FINAL_CANONICAL_RUNTIME.update({"a59_validation": _report, "production_decision": "NO_GO_UNATTENDED_LIVE",
+                                    "hard_gate_bypass": False, "live_gates_relaxed": False})
+    return bool(_base_ok and _report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a59_validate_config
+
 
 if _V699_VALIDATE_ONLY_REQUEST:
 
@@ -98956,6 +99246,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "bearish_v518_live_disabled": CONFIG.get("V702_A48_BEARISH_V518_LIVE_ENABLE") is False,
         "bearish_family_shadow_only": CONFIG.get("V702_A48_BEARISH_NORMAL_SHADOW_ONLY") is True and CONFIG.get("V702_A48_BEARISH_SHADOW_FAMILY") == "LIQUIDITY_SWEEP_REVERSAL",
         "bearish_normal_lsr_shadow_lane_installed": "BEARISH_NORMAL_LSR" in str(_v702_a48_shadow_source := _v702_read_source_text()) and "BEARISH_NORMAL_LSR" in __import__("v702_counterfactual_shadow").LANES,
+        "bearish_policy_reject_observation_lane_installed": "BEARISH_POLICY_REJECT_OBSERVATION" in _v702_a48_shadow_source and "BEARISH_POLICY_REJECT_OBSERVATION" in __import__("v702_counterfactual_shadow").LANES and bool(CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", False)),
         "canonical_reject_facade": callable(globals().get("record_reject")) and "record_rejects={len(rejection_keys)}[unified_candidate_stage_reason]" in _v702_a48_source,
         "event_time_bucket_helper": callable(globals().get("bump_event_time_bucket")) and "from v702_core__pipeline__event_time_buckets import bump_event_time_bucket" in _v702_a48_source,
         "presend_queue_gap_helper": callable(globals().get("_v702_presend_queue_gap_reason")) and "V702_A48_QUEUE_RECONCILIATION" in _v702_a48_source,
@@ -98999,6 +99290,8 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "v702_a57_validation": STATS.get("v702_a57_validation", {}),
         "v702_a56_release_revision": V702_A56_RELEASE_REVISION,
         "v702_a57_release_revision": V702_A57_RELEASE_REVISION,
+        "v702_a59_validation": STATS.get("v702_a59_validation", {}),
+        "v702_a59_release_revision": V702_A59_RELEASE_REVISION,
         "active_release_tag": V702_FINAL_CANONICAL_RELEASE,
         "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
         "active_package_revision": V702_PACKAGE_AUDIT_REVISION,

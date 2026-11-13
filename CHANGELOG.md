@@ -1,6 +1,21 @@
+# A59 — Bearish policy-reject shadow observability and canonical recovery-policy closure (2026-11-13)
+
+**Active distribution:** `UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL`. A59 is additive and keeps `MONITOR_ONLY_NO_NEW_BUYS`; it does not relax any live regime, score, structure, liquidity, fee, exposure, execution, or protection gate.
+
+- Added the `BEARISH_POLICY_REJECT_OBSERVATION` counterfactual lane for explicit LONG/BUY candidates rejected by `family_regime_disallowed.macro` in BEARISH. The lane records raw candidate TP1/SL outcomes on closed 5m bars after modeled costs; it is not full-pipeline admission evidence and has no live authority. It overlaps the stricter `BEARISH_NORMAL_LSR` research subset by design and is reported separately.
+- Added `HTF_POLICY_REJECT_OBSERVATION` for explicit LONG/BUY candidates rejected by the canonical `htf.family_htf_strength_below_floor` gate with known macro regime. It records the raw rejected cohort without re-running the gate or relaxing its floor; it overlaps the narrower `HTF_RELIEF` cohort by design and is not downstream admission evidence.
+- Added bounded asynchronous shadow persistence counters (attempted, stored, not stored, backpressure, errors) to the operator digest. Research I/O cannot alter the canonical Prequal verdict and is bounded by the existing pending-I/O cap.
+- Made `BEARISH_RECOVERY` policy metadata explicit: only BEARISH macro, `RECOVERY` or `LOCAL_BULLISH`, non-crash Bearish severity, and SCALP style. Missing required local/severity evidence fails closed. Ordinary `PULLBACK` remains disallowed in BEARISH.
+- Fixed digest compaction at both layers (base builder and later pipeline wrapper): variable details are compacted while Scorer/Route/Builder headings, pipeline diagnostics and execution summary remain visible under payload pressure.
+- Preserved A51 early Bearish policy prefilter, existing strict gates, LONG_ONLY Spot execution model and two-key live authorization.
+
+**Verification boundary:** offline tests and `--validate-only` do not verify Railway deployment, MEXC execution, Telegram delivery, native stops or profitability. Production disposition remains `NO_GO_UNATTENDED_LIVE`. See `A59_FINAL_PRODUCTION_AUDIT_AR.md`, `A59_RELEASE_MANIFEST.json` and `A59_SHA256SUMS.txt`.
+
+---
+
 # A58 — Production audit canonical closure (2026-11-11)
 
-**Active distribution:** `UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL`. The A58 layer preserves the strategy and risk model while closing release-integrity, non-blocking storage, paper-evidence, health and exchange-load inconsistencies.
+**Historical distribution:** `UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL`. The A58 layer preserves the strategy and risk model while closing release-integrity, non-blocking storage, paper-evidence, health and exchange-load inconsistencies.
 
 - Unified release identity and production disposition: `NO_GO_UNATTENDED_LIVE`; A57 checksum artifacts are historical only, and A58 has its own manifest and SHA-256 index.
 - Disabled the legacy-token-only authorization fallback; a missing canonical entry-policy resolver is a hard block.
@@ -39,7 +54,7 @@
 
 # UNIFIED SCALPER V702 — release history (A58 current)
 
-**Current distribution:** `UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL` (2026-11-11). A58 is the active monitor/paper package. A57 and earlier references below are historical lineage; see `A58_FINAL_AUDIT_REPORT_AR.md`, `A58_RELEASE_MANIFEST.json`, and `A58_SHA256SUMS.txt` for the current audit, release evidence, and limitations. Historical validation logs do not describe the A58 package. Offline validation does not prove live exchange execution, Telegram delivery, deployment correctness, or profitability.
+**Historical distribution:** `UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL` (2026-11-11). A58 was the monitor/paper package before A59. Its report, manifest and SHA index remain historical release evidence; see A59 files for the current distribution. Offline validation does not prove live exchange execution, Telegram delivery, deployment correctness, or profitability.
 - Fixed blocked-opportunity correlation to use the last closed 5-minute candle key, so a forming candle cannot silently prevent matching the pending opportunity and its rejection notification.
 - Made canonical strategy-contract timeframe authoritative during candidate normalization, preventing stale scalp metadata from overriding the MTF/SWING contract.
 - Added a tracked Telegram event immediately after an actual fill, followed by a separate protection-pending/protected/protection-failed event. These messages include LIVE/PAPER mode, strategy, timeframe, actual fill quantity/price, order ID(s), stop/targets, score and trace ID; dispatcher ACK/failure callbacks now make delivery outcomes observable.

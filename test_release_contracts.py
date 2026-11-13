@@ -56,8 +56,144 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("canonical_package_revision"), bot.V702_A10_CANONICAL_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_package_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("package_audit_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
-        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL")
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL")
 
+
+    def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL")
+        self.assertIn("BEARISH_POLICY_REJECT_OBSERVATION", source)
+        self.assertIn("CF_SHADOW_POLICY_REJECT enabled=", source)
+        self.assertTrue(bot.CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"))
+        self.assertFalse(bot.CONFIG.get("V702_A48_BEARISH_V518_LIVE_ENABLE", True))
+        self.assertFalse(bot.FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass", True))
+        self.assertFalse(bot.FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed", True))
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("production_decision"), "NO_GO_UNATTENDED_LIVE")
+        self.assertTrue(bot._v702_a59_self_test().get("pass"))
+
+    def test_a59_bearish_recovery_has_explicit_fail_closed_canonical_policy(self):
+        # The dedicated V425 route may pass only with its own Bearish local
+        # confirmation and non-crash severity; ordinary PULLBACK stays blocked.
+        ok, reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+            "PULLBACK", "BEARISH", strategy_mode="BEARISH_RECOVERY",
+            local_regime="RECOVERY", market_phase="PULLBACK",
+            severity="BEARISH_NORMAL", strategy_style="SCALP")
+        self.assertTrue(ok, reason)
+
+        no_local, local_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+            "PULLBACK", "BEARISH", strategy_mode="BEARISH_RECOVERY",
+            local_regime="", market_phase="PULLBACK",
+            severity="BEARISH_NORMAL", strategy_style="SCALP")
+        self.assertFalse(no_local)
+        self.assertEqual(local_reason, "local")
+
+        wrong_local, wrong_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+            "PULLBACK", "BEARISH", strategy_mode="BEARISH_RECOVERY",
+            local_regime="BEARISH", market_phase="PULLBACK",
+            severity="BEARISH_NORMAL", strategy_style="SCALP")
+        self.assertFalse(wrong_local)
+        self.assertEqual(wrong_reason, "local")
+
+        crash, crash_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+            "PULLBACK", "BEARISH", strategy_mode="BEARISH_RECOVERY",
+            local_regime="RECOVERY", market_phase="PULLBACK",
+            severity="BEARISH_CRASH", strategy_style="SCALP")
+        self.assertFalse(crash)
+        self.assertEqual(crash_reason, "severity")
+
+        ordinary, ordinary_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+            "PULLBACK", "BEARISH", strategy_mode="PULLBACK",
+            local_regime="RECOVERY", market_phase="PULLBACK",
+            severity="BEARISH_NORMAL", strategy_style="SCALP")
+        self.assertFalse(ordinary)
+        self.assertEqual(ordinary_reason, "macro")
+
+    def test_a59_prequal_hook_observes_bearish_pullback_reject_without_changing_verdict(self):
+        from types import SimpleNamespace
+        original_prequal = bot._V702_CF_ORIGINAL_PREQUAL
+        original_submit = bot._v702_cf_shadow_submit
+        original_forbidden = bot._v587_is_forbidden_coin
+        original_context = bot._v455_prequal_context
+        original_enable = bot.CONFIG.get("V702_CF_SHADOW_ENABLE", True)
+        original_observe = bot.CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE", True)
+        captured = []
+        candidate = SimpleNamespace(
+            symbol="PULLBACK-A59/USDT", family="PULLBACK", strategy_mode="PULLBACK",
+            strategy_style="SCALP", side="long", macro_regime="BEARISH",
+            bearish_severity="NORMAL", generated_at_ms=1_700_000_100_000,
+            entry_ref=100.0, sl_price=99.0, tp1_rr=1.0,
+            engine_score=0.80,
+            features_snapshot={"htf_strength": 39.0, "quote_vol_24h": 2_400_000.0, "volume_ratio": 0.9},
+        )
+        try:
+            bot._V702_CF_ORIGINAL_PREQUAL = lambda _r, _s: (False, "family_regime_disallowed.macro")
+            bot._v587_is_forbidden_coin = lambda _symbol: (False, "allowed")
+            bot._v455_prequal_context = lambda _candidate, _snap: {
+                "regime": "BEARISH", "severity": "NORMAL", "htf_strength": 39.0,
+                "allowed_regimes": ["BULLISH", "NEUTRAL"],
+            }
+            bot.CONFIG["V702_CF_SHADOW_ENABLE"] = True
+            bot.CONFIG["V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"] = True
+            bot._v702_cf_shadow_submit = lambda fn, *args, **kwargs: captured.append((fn, args, kwargs))
+            verdict = bot._V702_CF_SHADOW_PREQUAL_WRAPPER(SimpleNamespace(candidate=candidate), {
+                candidate.symbol: {"macro_regime": "BEARISH", "bearish_severity": "NORMAL",
+                                   "htf_strength": 39.0, "quote_vol_24h": 2_400_000.0,
+                                   "volume_ratio": 0.9}
+            })
+            self.assertEqual(verdict, (False, "family_regime_disallowed.macro"))
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0][1][1], "BEARISH_POLICY_REJECT_OBSERVATION")
+            self.assertEqual(captured[0][1][2], "family_regime_disallowed.macro")
+        finally:
+            bot._V702_CF_ORIGINAL_PREQUAL = original_prequal
+            bot._v702_cf_shadow_submit = original_submit
+            bot._v587_is_forbidden_coin = original_forbidden
+            bot._v455_prequal_context = original_context
+            bot.CONFIG["V702_CF_SHADOW_ENABLE"] = original_enable
+            bot.CONFIG["V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"] = original_observe
+
+
+    def test_a59_prequal_hook_observes_htf_reject_without_changing_verdict(self):
+        original_prequal = bot._V702_CF_ORIGINAL_PREQUAL
+        original_submit = bot._v702_cf_shadow_submit
+        original_forbidden = bot._v587_is_forbidden_coin
+        original_context = bot._v455_prequal_context
+        original_enable = bot.CONFIG.get("V702_CF_SHADOW_ENABLE", True)
+        original_observe = bot.CONFIG.get("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", True)
+        captured = []
+        candidate = SimpleNamespace(
+            symbol="HTF-A59/USDT", family="PULLBACK", strategy_mode="PULLBACK",
+            strategy_style="SCALP", side="long", macro_regime="NEUTRAL",
+            generated_at_ms=1_700_000_100_000, entry_ref=100.0, sl_price=99.0, tp1_rr=1.0,
+            engine_score=0.80, features_snapshot={"htf_strength": 40.0, "quote_vol_24h": 3_500_000.0},
+        )
+        try:
+            bot._V702_CF_ORIGINAL_PREQUAL = lambda _r, _s: (False, "htf.family_htf_strength_below_floor")
+            bot._v587_is_forbidden_coin = lambda _symbol: (False, "allowed")
+            bot._v455_prequal_context = lambda _candidate, _snap: {
+                "regime": "NEUTRAL", "htf_strength": 40.0, "effective_htf_floor": 55.0,
+            }
+            bot.CONFIG["V702_CF_SHADOW_ENABLE"] = True
+            bot.CONFIG["V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE"] = True
+            bot._v702_cf_shadow_submit = lambda fn, *args, **kwargs: captured.append((fn, args, kwargs))
+            verdict = bot._V702_CF_SHADOW_PREQUAL_WRAPPER(SimpleNamespace(candidate=candidate), {
+                candidate.symbol: {"macro_regime": "NEUTRAL", "htf_strength": 40.0,
+                                   "family_htf_floor": 55.0, "quote_vol_24h": 3_500_000.0}
+            })
+            self.assertEqual(verdict, (False, "htf.family_htf_strength_below_floor"))
+            htf_rows = [item for item in captured if item[1][1] == "HTF_POLICY_REJECT_OBSERVATION"]
+            self.assertEqual(len(htf_rows), 1)
+            self.assertEqual(htf_rows[0][1][2], "htf.family_htf_strength_below_floor")
+            # The 15-point shortfall is deliberately outside the narrow 3-point
+            # HTF_RELIEF lane, proving broad observer coverage is independent.
+            self.assertFalse(any(item[1][1] == "HTF_RELIEF" for item in captured))
+        finally:
+            bot._V702_CF_ORIGINAL_PREQUAL = original_prequal
+            bot._v702_cf_shadow_submit = original_submit
+            bot._v587_is_forbidden_coin = original_forbidden
+            bot._v455_prequal_context = original_context
+            bot.CONFIG["V702_CF_SHADOW_ENABLE"] = original_enable
+            bot.CONFIG["V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE"] = original_observe
 
     def test_btc4h_history_fetch_diagnostics_are_visible_in_heartbeat(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -666,6 +802,34 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn("PIPELINE[WINDOW_15M] TEST", rendered)
         self.assertIn(marker, rendered)
         self.assertFalse(bool(bot.CONFIG.get("V702_R36_HARD_GATE_BYPASS", True)))
+
+    def test_a59_truncated_digest_preserves_rejection_and_does_not_duplicate_header(self):
+        digest_cls = bot._V702R28TelegramDigest
+        max_key = "V702_R28_TELEGRAM_DIGEST_MAX_CHARS"
+        old_max = bot.CONFIG.get(max_key)
+        bot.CONFIG[max_key] = 1800
+        try:
+            with patch.object(digest_cls, "_compact_counts", return_value="COMPACT_SENTINEL"), \
+                 patch.object(digest_cls, "_heartbeat_line", return_value="HEARTBEAT_SENTINEL"), \
+                 patch.object(digest_cls, "_starvation_line", return_value="STARVATION_SENTINEL"), \
+                 patch.object(digest_cls, "_rejection_line", return_value="REJECTION_SENTINEL"), \
+                 patch.object(digest_cls, "_discovery_lines", return_value=[f"DISCOVERY_{i}_" + ("x" * 180) for i in range(30)]), \
+                 patch.object(digest_cls, "_scorer_block_lines", return_value=["SCORER_SENTINEL"]), \
+                 patch.object(digest_cls, "_route_block_lines", return_value=["ROUTE_SENTINEL"]), \
+                 patch.object(digest_cls, "_block_lines", return_value=["BUILDER_SENTINEL"]), \
+                 patch.object(digest_cls, "_shadow_lines", return_value=["SHADOW_SENTINEL"]), \
+                 patch.object(digest_cls, "_edge_line", return_value="EDGE_SENTINEL"), \
+                 patch.object(digest_cls, "_selected_route_summary", return_value="ROUTE_SUMMARY_SENTINEL"):
+                rendered = digest_cls.build()
+            self.assertLessEqual(len(rendered), 1800)
+            self.assertIn("REJECTION_SENTINEL", rendered)
+            self.assertEqual(rendered.count("STARVATION_SENTINEL"), 1)
+            self.assertEqual(rendered.count("REJECTION_SENTINEL"), 1)
+        finally:
+            if old_max is None:
+                bot.CONFIG.pop(max_key, None)
+            else:
+                bot.CONFIG[max_key] = old_max
 
     def test_prequal_exception_is_counted_as_reject_and_reraised(self):
         candidate = SimpleNamespace(

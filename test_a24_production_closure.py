@@ -133,7 +133,7 @@ def test_digest_buffers_and_headings_keep_block_stages_separate():
         rendered = digest.build()
         assert "SELECTED → SCORER BLOCK" in rendered
         assert "SELECTED → ROUTE BLOCK" in rendered
-        assert "SELECTED → BUILDER BLOCK" in rendered
+        assert "SELECTED → BUILDER BLOCK" in rendered, f"len={len(rendered)} max={bot.CONFIG.get('V702_R28_TELEGRAM_DIGEST_MAX_CHARS')} content={rendered!r}"
     finally:
         digest._events, digest._category_counts, digest._scorer_blocks, digest._route_blocks, digest._selected_blocks = saved
 

@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A58 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A59 CANONICAL FINAL
 
-**Release ID:** `UNIFIED-SCALPER-V702-A58-CANONICAL-FINAL`  
+**Release ID:** `UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL`  
 **Release date:** 2026-11-13  
 **Canonical executable:** `main.py`  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
@@ -24,7 +24,7 @@ UNIFIED_A55_LIVE_ARM=0
 - Minimum live score remains **70**. No score, HTF, liquidity, fake-break, structure, spread, fee or risk gate has been relaxed.
 - Maximum concurrent positions: **2**. Maximum planned ticket: **75 USDT**. These are upper bounds, not a recommendation to trade.
 - Forbidden bases: `PUMP`, `BNB`, `CAKE`, `AERO`, `ETHFI`.
-- The A58 paper-ledger default active capacity is **20**, with a hard ceiling of **120**. Selected-route paper entries require a buffered upside breakout; a simple reference touch is not a fill.
+- The paper-ledger default active capacity is **20**, with a hard ceiling of **120**. Selected-route paper entries require a buffered upside breakout; a simple reference touch is not a fill.
 - Same-candle stop/target ambiguity is conservatively resolved as **stop first**.
 
 ## Run and validate
@@ -60,15 +60,15 @@ MEXC Spot native stop support must not be assumed. Where protection is software-
 After obtaining the A58 archive, verify its contents from the package root:
 
 ```bash
-sha256sum -c A58_SHA256SUMS.txt
+sha256sum -c A59_SHA256SUMS.txt
 ```
 
-`A57` and older release metadata are historical only; A58 distribution integrity is defined exclusively by `A58_RELEASE_MANIFEST.json` and `A58_SHA256SUMS.txt`. The compact ZIP contains 97 files; older standalone release manifests/checksum indexes were pruned without removing runtime Python modules or tests. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, and secret files remain excluded. `HISTORICAL_A53_main.py.baseline` is an A53 source snapshot, not a drop-in rollback. A rollback requires the complete matching historical distribution, configuration and environment.
+`A58` and older release metadata are historical only; A59 distribution integrity is defined exclusively by `A59_RELEASE_MANIFEST.json` and `A59_SHA256SUMS.txt`. The A59 ZIP preserves the full canonical code/test set and adds this release report, manifest and checksum index. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, and secret files remain excluded. `HISTORICAL_A53_main.py.baseline` is an A53 source snapshot, not a drop-in rollback. A rollback requires the complete matching historical distribution, configuration and environment.
 
 The GitHub Actions workflow `.github/workflows/a58-production-audit.yml` targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, publishes the generated lock artifact, runs compilation and pytest, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
 
 ## Final release evidence
 
-See `A58_FINAL_AUDIT_REPORT_AR.md`, `A58_RELEASE_MANIFEST.json`, and `A58_SHA256SUMS.txt` for the A58.2 Railway boot-artifact closure. The A58.2 post-fix `--validate-only` run completed in 11.47 seconds with 532,020 KiB peak RSS (about 519.6 MiB) in the audit container. This is a local measurement, not a Railway OOM diagnosis; the increase over the earlier 530,732 KiB A58.1 measurement is small and reflects the additional release-artifact validation path. The active decision remains **NO-GO for unattended live trading** until controlled live tests verify small-notional order submission, fills, partial fills, cancellation, network-outage reconciliation, real Telegram delivery and protection recovery, followed by a sufficiently long supervised paper evaluation.
+See `A59_FINAL_PRODUCTION_AUDIT_AR.md`, `A59_RELEASE_MANIFEST.json`, and `A59_SHA256SUMS.txt` for the A59 production audit. The A58.2 Railway boot-artifact fix is retained. A59 adds isolated Shadow outcome-observation lanes for raw Bearish macro-policy rejects and HTF strength-floor rejects, closes the canonical `BEARISH_RECOVERY` context-policy contract, and fixes compacted digest truncation so rejection diagnostics remain visible. The HTF lane complements (and intentionally overlaps) the narrower `HTF_RELIEF` near-miss cohort; neither lane claims downstream admission or grants live authority. The local validate-only result is recorded in the A59 manifest; it is not a Railway OOM diagnosis. The active decision remains **NO-GO for unattended live trading** until controlled live tests verify small-notional order submission, fills, partial fills, cancellation, network-outage reconciliation, real Telegram delivery and protection recovery, followed by a sufficiently long supervised paper evaluation.
 
 Historical changes and lineage are retained in `CHANGELOG.md` and `DOCS__audits__V702_A*_*.md`.

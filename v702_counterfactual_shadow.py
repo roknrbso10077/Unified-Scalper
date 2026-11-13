@@ -20,9 +20,51 @@ from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
 from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-SCHEMA_VERSION = 1
-LANES = ("BASELINE_PASS", "CURRENT_HTF_RELIEF_PASS", "HTF_RELIEF", "MID_TIER_COUNTERFACTUAL", "BEARISH_NORMAL_LSR")
+SCHEMA_VERSION = 2
+LANES = (
+    "BASELINE_PASS",
+    "CURRENT_HTF_RELIEF_PASS",
+    "HTF_RELIEF",
+    "MID_TIER_COUNTERFACTUAL",
+    "BEARISH_NORMAL_LSR",
+    "BEARISH_POLICY_REJECT_OBSERVATION",
+    "HTF_POLICY_REJECT_OBSERVATION",
+)
 TERMINAL = {"TP1", "SL", "AMBIGUOUS_SL_FIRST", "TIME_EXIT", "INVALID_DATA"}
+
+
+def bearish_policy_reject_observation_eligible(*, reason: Any, side: Any, macro_regime: Any) -> bool:
+    """Identify raw long candidates rejected by the canonical Bearish family policy.
+
+    This predicate is intentionally much narrower than a general shadow bypass:
+    it accepts only the exact macro-family rejection, an explicit LONG/BUY side,
+    and an explicit BEARISH macro regime. It does not inspect or relax any live
+    gate and does not claim the candidate would pass downstream stages.
+    """
+    why = _text(reason, 120).lower()
+    sd = _text(side, 16).lower()
+    regime = _text(macro_regime, 40).upper()
+    return bool(
+        why.startswith("family_regime_disallowed.macro")
+        and sd in {"long", "buy"}
+        and regime == "BEARISH"
+    )
+
+
+def htf_policy_reject_observation_eligible(*, reason: Any, side: Any, macro_regime: Any) -> bool:
+    """Identify raw long candidates rejected by the canonical HTF floor.
+
+    This records a rejected outcome cohort only. It never changes the HTF
+    verdict or implies that a candidate would pass subsequent gates.
+    """
+    why = _text(reason, 120).lower()
+    sd = _text(side, 16).lower()
+    regime = _text(macro_regime, 40).upper()
+    return bool(
+        why.startswith("htf.family_htf_strength_below_floor")
+        and sd in {"long", "buy"}
+        and regime in {"BULLISH", "NEUTRAL", "BEARISH"}
+    )
 
 
 def bearish_normal_lsr_eligible(
@@ -250,6 +292,20 @@ class V702CounterfactualShadow:
             score = score_raw * 100.0 if score_raw is not None and 0 <= score_raw <= 1 else score_raw
             strength = _num(htf_strength, _num(snap.get("htf_strength"), _num(snap.get("v4513_htf_strength"), _num(fs.get("htf_strength"), None))))
             floor = _num(htf_floor, None)
+            if lane == "BEARISH_POLICY_REJECT_OBSERVATION":
+                if not bearish_policy_reject_observation_eligible(
+                    reason=reason,
+                    side=getattr(c, "side", ""),
+                    macro_regime=snap.get("macro_regime") or snap.get("regime") or getattr(c, "macro_regime", ""),
+                ):
+                    return False
+            if lane == "HTF_POLICY_REJECT_OBSERVATION":
+                if not htf_policy_reject_observation_eligible(
+                    reason=reason,
+                    side=getattr(c, "side", ""),
+                    macro_regime=snap.get("macro_regime") or snap.get("regime") or getattr(c, "macro_regime", ""),
+                ):
+                    return False
             if lane == "BEARISH_NORMAL_LSR":
                 cfg_floor = max(0.0, _num(cfg.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME"), 3_000_000.0) or 3_000_000.0)
                 if not bearish_normal_lsr_eligible(
@@ -283,8 +339,23 @@ class V702CounterfactualShadow:
                 "live_execution": False,
                 "bearish_severity": _text(snap.get("bearish_severity") or snap.get("macro_severity") or getattr(c, "bearish_severity", "") or fs.get("bearish_severity") or fs.get("macro_severity"), 40),
                 "volume_ratio": _num(snap.get("volume_ratio"), _num(fs.get("volume_ratio"), None)),
-                "policy_override": "SHADOW_ONLY_NOT_LIVE" if lane == "BEARISH_NORMAL_LSR" else None,
-                "policy_evaluation_scope": "PREQUAL_POLICY_COUNTERFACTUAL_NOT_FULL_BUILDER_ACCEPTANCE" if lane == "BEARISH_NORMAL_LSR" else None,
+                "policy_override": (
+                    "SHADOW_ONLY_NOT_LIVE" if lane == "BEARISH_NORMAL_LSR"
+                    else "SHADOW_ONLY_NO_LIVE_AUTHORITY" if lane in {"BEARISH_POLICY_REJECT_OBSERVATION", "HTF_POLICY_REJECT_OBSERVATION"}
+                    else None
+                ),
+                "policy_evaluation_scope": (
+                    "PREQUAL_POLICY_COUNTERFACTUAL_NOT_FULL_BUILDER_ACCEPTANCE" if lane == "BEARISH_NORMAL_LSR"
+                    else "RAW_PREQUAL_POLICY_REJECT_OUTCOME_ONLY_NOT_FULL_PIPELINE_ADMISSION" if lane == "BEARISH_POLICY_REJECT_OBSERVATION"
+                    else "RAW_PREQUAL_HTF_FLOOR_REJECT_OUTCOME_ONLY_NOT_FULL_PIPELINE_ADMISSION" if lane == "HTF_POLICY_REJECT_OBSERVATION"
+                    else None
+                ),
+                "counterfactual_policy_check_skipped": lane in {"BEARISH_POLICY_REJECT_OBSERVATION", "HTF_POLICY_REJECT_OBSERVATION"},
+                "candidate_side": _text(getattr(c, "side", ""), 16).lower(),
+                "policy_reject_cohort": (
+                    "BEARISH_MACRO_FAMILY_POLICY" if lane == "BEARISH_POLICY_REJECT_OBSERVATION"
+                    else "HTF_STRENGTH_FLOOR" if lane == "HTF_POLICY_REJECT_OBSERVATION" else None
+                ),
                 "hypothetical_size_multiplier": max(0.0, min(1.0, _num(cfg.get("V702_A48_BEARISH_SHADOW_SIZE_MULTIPLIER"), 0.5) or 0.5)) if lane == "BEARISH_NORMAL_LSR" else None,
             }
             with self._db() as conn:
@@ -416,6 +487,31 @@ class V702CounterfactualShadow:
             "interpretation_warning": "Counterfactual near-misses are not proof they would pass later gates or become real trades. All outcomes are hypothetical.",
             "lanes": {},
             "comparison": {},
+            "non_comparable_lanes": {
+                "BEARISH_NORMAL_LSR": "Bearish-only, strategy-specific cohort; not directly comparable to the all-regime BASELINE_PASS cohort.",
+                "BEARISH_POLICY_REJECT_OBSERVATION": "Raw long candidates rejected by family macro policy in BEARISH regime. Outcomes do not imply Prequal/Score/Builder/PreSend acceptance. This lane overlaps the stricter BEARISH_NORMAL_LSR subset by design.",
+                "HTF_POLICY_REJECT_OBSERVATION": "Raw LONG/BUY candidates rejected by the canonical HTF strength floor. Outcomes do not imply Prequal/Score/Builder/PreSend acceptance. This lane overlaps the narrower HTF_RELIEF near-miss subset by design.",
+            },
+            "lane_semantics": {
+                "BEARISH_POLICY_REJECT_OBSERVATION": {
+                    "capture_scope": "family_regime_disallowed.macro + side LONG/BUY + macro_regime BEARISH",
+                    "severity_filter": "none; severity is retained for stratified analysis, including UNKNOWN",
+                    "downstream_admission_claim": False,
+                    "live_authority": False,
+                    "overlaps_with": ["BEARISH_NORMAL_LSR"],
+                },
+                "HTF_POLICY_REJECT_OBSERVATION": {
+                    "capture_scope": "htf.family_htf_strength_below_floor + side LONG/BUY + known macro regime",
+                    "downstream_admission_claim": False,
+                    "live_authority": False,
+                    "overlaps_with": ["HTF_RELIEF"],
+                },
+                "BEARISH_NORMAL_LSR": {
+                    "capture_scope": "strict LSR-only Bearish normal subset with score/HTF/volume/quote-volume floors",
+                    "downstream_admission_claim": False,
+                    "live_authority": False,
+                },
+            },
         }
         try:
             with self._db() as conn:
@@ -438,6 +534,7 @@ class V702CounterfactualShadow:
                 family_counts: Dict[str, int] = {}
                 reason_counts: Dict[str, int] = {}
                 regime_counts: Dict[str, int] = {}
+                severity_counts: Dict[str, int] = {}
                 scores = []
                 for sample in lane_rows:
                     family_counts[str(sample[6] or "UNKNOWN")] = family_counts.get(str(sample[6] or "UNKNOWN"), 0) + 1
@@ -448,6 +545,8 @@ class V702CounterfactualShadow:
                         ctx = json.loads(sample[8] or "{}")
                         regime = str(ctx.get("macro_regime") or "UNKNOWN")
                         regime_counts[regime] = regime_counts.get(regime, 0) + 1
+                        severity = str(ctx.get("bearish_severity") or "UNKNOWN")
+                        severity_counts[severity] = severity_counts.get(severity, 0) + 1
                     except Exception:
                         regime_counts["UNKNOWN"] = regime_counts.get("UNKNOWN", 0) + 1
                 lane_stats[lane] = {
@@ -456,6 +555,7 @@ class V702CounterfactualShadow:
                     "families": dict(sorted(family_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]),
                     "reject_reasons": dict(sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]),
                     "macro_regimes": dict(sorted(regime_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+                    "bearish_severities": dict(sorted(severity_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
                     "resolved": len(resolved),
                     "pending": sum(r[1] == "PENDING" for r in lane_rows),
                     "skipped_no_geometry": skip_map.get(lane, 0),
@@ -470,7 +570,7 @@ class V702CounterfactualShadow:
                 }
             report["lanes"] = lane_stats
             baseline = lane_stats["BASELINE_PASS"]
-            for lane in ("CURRENT_HTF_RELIEF_PASS", "HTF_RELIEF", "MID_TIER_COUNTERFACTUAL", "BEARISH_NORMAL_LSR"):
+            for lane in ("CURRENT_HTF_RELIEF_PASS", "HTF_RELIEF", "MID_TIER_COUNTERFACTUAL"):
                 other = lane_stats[lane]
                 report["comparison"][lane] = {
                     "resolved_delta_vs_baseline": other["resolved"] - baseline["resolved"],
@@ -515,7 +615,10 @@ class V702CounterfactualShadow:
             lines.extend(["", "## Comparison vs BASELINE_PASS", ""])
             for lane, row in report.get("comparison", {}).items():
                 lines.append(f"- **{lane}:** Δ average net R = `{row.get('avg_net_r_delta_vs_baseline')}`, Δ win rate = `{row.get('win_rate_delta_vs_baseline')}`; resolved samples = `{report.get('lanes', {}).get(lane, {}).get('resolved', 0)}`.")
-            lines.extend(["", "## Interpretation rules", "", "- Fewer than 30 resolved samples per lane: too early for a decision.", "- 30–99: preliminary only; inspect regimes, family mix, fees and cohort composition.", "- 100+: more informative, but still not a guarantee or a substitute for out-of-sample validation.", "- Same candle touches SL and TP: conservatively recorded as SL-first.", "- Entries use candidate reference price; fees and configurable slippage are deducted from hypothetical R.", ""])
+            lines.extend(["", "## Non-comparable cohorts", ""])
+            for lane, note in report.get("non_comparable_lanes", {}).items():
+                lines.append(f"- **{lane}:** {note}")
+            lines.extend(["", "## Interpretation rules", "", "- Fewer than 30 resolved samples per lane: too early for a decision.", "- 30–99: preliminary only; inspect regimes, family mix, severity, fees and cohort composition.", "- 100+: more informative, but still not a guarantee or a substitute for out-of-sample validation.", "- Bearish policy-reject observations are raw candidate outcome studies only; they do not show that other gates would pass.", "- Same candle touches SL and TP: conservatively recorded as SL-first.", "- Entries use candidate reference price; fees and configurable slippage are deducted from hypothetical R.", ""])
             md_path.write_text("\n".join(lines), encoding="utf-8")
             report["report_files"] = {"json": str(json_path), "markdown": str(md_path)}
         except Exception as exc:
@@ -553,6 +656,28 @@ class V702CounterfactualShadow:
             "schema_present": required.issubset(columns),
             "lanes_present": all(lane in report.get("lanes", {}) for lane in LANES),
             "shadow_only_mode": report.get("study_mode") == "SHADOW_ONLY_NO_ORDERS",
+            "policy_reject_lane_is_non_comparable": "BEARISH_POLICY_REJECT_OBSERVATION" not in report.get("comparison", {}),
+            "htf_reject_lane_is_non_comparable": "HTF_POLICY_REJECT_OBSERVATION" not in report.get("comparison", {}),
+            "policy_reject_lane_has_raw_outcome_scope": (
+                report.get("lane_semantics", {}).get("BEARISH_POLICY_REJECT_OBSERVATION", {}).get("downstream_admission_claim") is False
+                and report.get("lane_semantics", {}).get("BEARISH_POLICY_REJECT_OBSERVATION", {}).get("live_authority") is False
+            ),
+            "policy_reject_predicate_fails_closed": (
+                bearish_policy_reject_observation_eligible(reason="family_regime_disallowed.macro", side="long", macro_regime="BEARISH")
+                and not bearish_policy_reject_observation_eligible(reason="htf.family_htf_strength_below_floor", side="long", macro_regime="BEARISH")
+                and not bearish_policy_reject_observation_eligible(reason="family_regime_disallowed.macro", side="short", macro_regime="BEARISH")
+                and not bearish_policy_reject_observation_eligible(reason="family_regime_disallowed.macro", side="long", macro_regime="BULLISH")
+            ),
+            "htf_reject_predicate_fails_closed": (
+                htf_policy_reject_observation_eligible(reason="htf.family_htf_strength_below_floor", side="long", macro_regime="NEUTRAL")
+                and not htf_policy_reject_observation_eligible(reason="family_regime_disallowed.macro", side="long", macro_regime="BEARISH")
+                and not htf_policy_reject_observation_eligible(reason="htf.family_htf_strength_below_floor", side="short", macro_regime="BULLISH")
+                and not htf_policy_reject_observation_eligible(reason="htf.family_htf_strength_below_floor", side="long", macro_regime="UNKNOWN")
+            ),
+            "htf_reject_lane_has_raw_outcome_scope": (
+                report.get("lane_semantics", {}).get("HTF_POLICY_REJECT_OBSERVATION", {}).get("downstream_admission_claim") is False
+                and report.get("lane_semantics", {}).get("HTF_POLICY_REJECT_OBSERVATION", {}).get("live_authority") is False
+            ),
             "not_execution_integrated": True,
         }
         return {"pass": all(checks.values()), "checks": checks, "schema_version": SCHEMA_VERSION}
