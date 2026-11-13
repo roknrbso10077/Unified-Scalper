@@ -63,12 +63,12 @@ After obtaining the A58 archive, verify its contents from the package root:
 sha256sum -c A58_SHA256SUMS.txt
 ```
 
-`A57_SHA256SUMS.txt` and older manifests are historical records only; they do not verify the A58 distribution. `HISTORICAL_A53_main.py.baseline` is an A53 source snapshot, not a drop-in rollback. A rollback requires the complete matching historical distribution, configuration and environment.
+`A57` and older release metadata are historical only; A58 distribution integrity is defined exclusively by `A58_RELEASE_MANIFEST.json` and `A58_SHA256SUMS.txt`. The compact ZIP contains 97 files; older standalone release manifests/checksum indexes were pruned without removing runtime Python modules or tests. `HISTORICAL_A53_main.py.baseline` is an A53 source snapshot, not a drop-in rollback. A rollback requires the complete matching historical distribution, configuration and environment.
 
 The GitHub Actions workflow `.github/workflows/a58-production-audit.yml` targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, publishes the generated lock artifact, runs compilation and pytest, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
 
 ## Final release evidence
 
-See `A58_FINAL_AUDIT_REPORT_AR.md`, `A58_RELEASE_MANIFEST.json`, and `A58_SHA256SUMS.txt`. The active decision remains **NO-GO for unattended live trading** until controlled live tests verify small-notional order submission, fills, partial fills, cancellation, network-outage reconciliation, real Telegram delivery and protection recovery, followed by a sufficiently long supervised paper evaluation.
+See `A58_FINAL_AUDIT_REPORT_AR.md`, `A58_RELEASE_MANIFEST.json`, and `A58_SHA256SUMS.txt`. The final audit reduces validate-only peak RSS to about 519 MiB (530,732 KiB measured in the audit container) by replacing whole-module AST materialization with bounded token/snippet checks; this is a measured local result, not a Railway OOM diagnosis. The active decision remains **NO-GO for unattended live trading** until controlled live tests verify small-notional order submission, fills, partial fills, cancellation, network-outage reconciliation, real Telegram delivery and protection recovery, followed by a sufficiently long supervised paper evaluation.
 
 Historical changes and lineage are retained in `CHANGELOG.md` and `DOCS__audits__V702_A*_*.md`.

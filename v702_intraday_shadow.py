@@ -23,6 +23,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
+from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
+
 try:
     import pandas as pd
 except Exception:  # pragma: no cover - guarded by runtime install/validator
@@ -35,7 +38,7 @@ STRATEGIES = (
     "MICRO_PULLBACK_RECLAIM_1M",
     "VWAP_RECLAIM_RS_5M",
 )
-_HARD_EXCLUDED_BASES = {"BNB", "CAKE", "PUMP", "AERO", "ETHFI"}
+_HARD_EXCLUDED_BASES = HARD_FORBIDDEN_BASES
 
 
 def _num(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -181,15 +184,18 @@ class V702IntradayShadow:
     @contextmanager
     def _db(self):
         """Close every SQLite connection deterministically, including error paths."""
-        conn = self._connect()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        # Serialize before opening the connection so a concurrent ledger/guard
+        # writer cannot leave this scanner worker waiting on SQLite busy_timeout.
+        with SQLITE_WRITER_LOCK:
+            conn = self._connect()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def _initialize(self):
         parent = Path(self.db_path).expanduser().resolve().parent

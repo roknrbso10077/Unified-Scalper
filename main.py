@@ -10,6 +10,9 @@ this canonical runtime; helper modules only centralize shared policy/storage.
 # =============================================================================
 import os
 import ast
+import gc
+import io
+import tokenize
 import textwrap
 import re
 import sys
@@ -3189,7 +3192,6 @@ class ProductionCapabilityGate:
 
 
 _V702_SOURCE_TEXT_CACHE = None
-_V702_SOURCE_AST_CACHE = None
 
 def _v702_read_source_text() -> str:
     """Return the immutable source text for this running release.
@@ -3208,12 +3210,110 @@ def _v702_read_source_text() -> str:
         _V702_SOURCE_TEXT_CACHE = ""
     return _V702_SOURCE_TEXT_CACHE
 
-def _v702_read_source_ast():
-    """Parse the immutable running source once for read-only static checks."""
-    global _V702_SOURCE_AST_CACHE
-    if _V702_SOURCE_AST_CACHE is None:
-        _V702_SOURCE_AST_CACHE = ast.parse(_v702_read_source_text())
-    return _V702_SOURCE_AST_CACHE
+def _v702_iter_named_call_segments(source: str, call_name: str):
+    """Yield only individual calls named *call_name* without building a file AST.
+
+    Tokenization streams through the source and ignores comments/string content.
+    This keeps static safety audits proportional to the relevant call snippets,
+    rather than materializing a multi-hundred-megabyte AST for a 5+ MB module.
+    """
+    _lines = source.splitlines(keepends=True)
+    _active = []
+    _pending = None
+    _previous_sig = None
+    _ignore = {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT,
+               tokenize.DEDENT, tokenize.ENCODING}
+
+    def _segment(_start, _end):
+        _sl, _sc = _start
+        _el, _ec = _end
+        if _sl < 1 or _el < _sl or _el > len(_lines):
+            return ""
+        if _sl == _el:
+            return _lines[_sl - 1][_sc:_ec]
+        return "".join([_lines[_sl - 1][_sc:], *_lines[_sl:_el - 1], _lines[_el - 1][:_ec]])
+
+    for _tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if _pending is not None and _tok.type in _ignore:
+            continue
+        if _pending is not None:
+            if _tok.type == tokenize.OP and _tok.string == "(":
+                for _ctx in _active:
+                    _ctx["depth"] += 1
+                _active.append({"depth": 1, "start": _pending})
+            _pending = None
+        elif _tok.type == tokenize.OP and _tok.string in ("(", "[", "{"):
+            for _ctx in _active:
+                _ctx["depth"] += 1
+        elif _tok.type == tokenize.OP and _tok.string in (")", "]", "}"
+        ):
+            _completed = []
+            for _ctx in _active:
+                _ctx["depth"] -= 1
+                if _ctx["depth"] == 0:
+                    _completed.append(_ctx)
+            if _completed:
+                _active = [_ctx for _ctx in _active if _ctx["depth"] > 0]
+                for _ctx in _completed:
+                    _piece = _segment(_ctx["start"], _tok.end)
+                    if _piece:
+                        yield _piece
+        if (_tok.type == tokenize.NAME and _tok.string == call_name
+                and _previous_sig != (tokenize.NAME, "def")):
+            _pending = _tok.start
+        if _tok.type not in _ignore:
+            _previous_sig = (_tok.type, _tok.string)
+
+
+def _v702_count_assignment_targets(source: str) -> Dict[str, int]:
+    """Count the three canonical assignment targets using streaming tokens."""
+    _counts = {"validate_config": 0, "SignalBuilder.build_and_route": 0,
+               "OrderExecutor.submit_entry": 0}
+    _sig = []
+    _ignored = {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT,
+                tokenize.DEDENT, tokenize.ENCODING}
+    for _tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if _tok.type in _ignored:
+            continue
+        _sig.append((_tok.type, _tok.string))
+        if len(_sig) > 4:
+            _sig.pop(0)
+        if len(_sig) >= 2 and _sig[-2:] == [(tokenize.NAME, "validate_config"), (tokenize.OP, "=")]:
+            _counts["validate_config"] += 1
+        if len(_sig) >= 4:
+            _tail = _sig[-4:]
+            if _tail == [(tokenize.NAME, "SignalBuilder"), (tokenize.OP, "."),
+                         (tokenize.NAME, "build_and_route"), (tokenize.OP, "=")]:
+                _counts["SignalBuilder.build_and_route"] += 1
+            elif _tail == [(tokenize.NAME, "OrderExecutor"), (tokenize.OP, "."),
+                           (tokenize.NAME, "submit_entry"), (tokenize.OP, "=")]:
+                _counts["OrderExecutor.submit_entry"] += 1
+    return _counts
+
+
+def _v702_release_startup_memory() -> None:
+    """Collect temporary validator allocations after fail-closed startup checks.
+
+    Source text remains cached for lightweight runtime diagnostics.  This
+    best-effort cleanup is not part of trading logic; failure to collect or
+    trim memory must never affect startup or execution safety.
+    """
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes as _ctypes
+            _libc = _ctypes.CDLL(None)
+            _trim = getattr(_libc, "malloc_trim", None)
+            if _trim is not None:
+                _trim.argtypes = [_ctypes.c_size_t]
+                _trim.restype = _ctypes.c_int
+                _trim(0)
+        except Exception:
+            # malloc_trim is glibc-specific and is not required for correctness.
+            pass
 
 class ConfigValidators:
     """Fail-closed startup invariant checks."""
@@ -27305,6 +27405,9 @@ def main():
             exc_info=True,
         )
         raise SystemExit("config_invalid")
+    finally:
+        # The static AST has no runtime role after the canonical validator.
+        _v702_release_startup_memory()
     if not _cfg_ok:
         # Report the *active* terminal validators. Older deployments printed only
         # R23/V704 fields here, which can be empty when the A7-A24 terminal layer
@@ -74528,49 +74631,26 @@ def _v702_final_audit_self_test() -> Dict[str, Any]:
                 details["exit_profile_checks"] = _profile_checks
                 checks["scout_timeframe_metadata_canonical"] = "timeframe_profile=\"15M_5M\"" in src
                 checks["swing_structural_wide_risk_reject"] = "1h_structural_sl_too_wide" in src and "SWING_REJECT_IF_1H_SL_TOO_WIDE" in src
-                _tree = _v702_read_source_ast()
-                # ast.get_source_segment() splits the complete source string on
-                # every call. Calling it for each of the strategy engines made
-                # this startup self-test effectively quadratic in source size.
-                # Split into UTF-8 byte lines once and preserve AST's byte-based
-                # column offsets when extracting each generate() method.
-                _audit_source_line_bytes = [
-                    _line.encode("utf-8")
-                    for _line in src.splitlines(keepends=True)
-                ]
-                def _audit_source_segment(_node):
-                    _start_line = getattr(_node, "lineno", None)
-                    _end_line = getattr(_node, "end_lineno", None)
-                    _start_col = getattr(_node, "col_offset", None)
-                    _end_col = getattr(_node, "end_col_offset", None)
-                    if (not isinstance(_start_line, int) or not isinstance(_end_line, int)
-                            or not isinstance(_start_col, int) or not isinstance(_end_col, int)
-                            or _start_line < 1 or _end_line < _start_line
-                            or _end_line > len(_audit_source_line_bytes)):
-                        return None
-                    _first = _audit_source_line_bytes[_start_line - 1]
-                    _last = _audit_source_line_bytes[_end_line - 1]
-                    if _start_line == _end_line:
-                        _piece = _first[_start_col:_end_col]
-                    else:
-                        _parts = [_first[_start_col:]]
-                        _parts.extend(_audit_source_line_bytes[_start_line:_end_line - 1])
-                        _parts.append(_last[:_end_col])
-                        _piece = b"".join(_parts)
-                    try:
-                        return _piece.decode("utf-8")
-                    except UnicodeDecodeError:
-                        return None
                 _forming_refs = []
                 _audit_engine_names = (
                     "MTFPullbackEngine","PullbackEngine","BreakoutEngine","LiquiditySweepEngine","MeanReversionEngine","TrendContinuationEngine","LocalStrengthBreakoutEngine","CompressionExpansionEngine","SwingPullbackEngine","ExtremeFlushReversalEngine","ContinuationReclaimEngine","FailedBreakoutReclaimEngine","VolatilityBurstEngine","RelativeStrengthLeaderEngine","MicroTrendContinuationEngine","OpportunityScoutEngine","UniversalDualConfirmationEngine"
                 )
-                for _ec in [n for n in _tree.body if isinstance(n, ast.ClassDef) and n.name in _audit_engine_names]:
-                    _eg = next((m for m in _ec.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == "generate"), None)
-                    if _eg is not None:
-                        _body_txt = _audit_source_segment(_eg) or ""
-                        if "iloc[-1]" in _body_txt:
-                            _forming_refs.append(_ec.name)
+                # Inspect only the 17 generate() methods under review. Parsing
+                # the entire main.py AST here needlessly retains hundreds of MB.
+                _inspect_engine = __import__("inspect")
+                for _engine_name in _audit_engine_names:
+                    _engine_cls = globals().get(_engine_name)
+                    _generate = getattr(_engine_cls, "generate", None) if _engine_cls is not None else None
+                    if not callable(_generate):
+                        _forming_refs.append(_engine_name + ":missing_generate")
+                        continue
+                    try:
+                        _body_txt = textwrap.dedent(_inspect_engine.getsource(_generate))
+                    except Exception:
+                        _forming_refs.append(_engine_name + ":source_unavailable")
+                        continue
+                    if "iloc[-1]" in _body_txt:
+                        _forming_refs.append(_engine_name)
                 details["forming_bar_generate_refs"] = _forming_refs
                 checks["all_generate_paths_use_closed_bar"] = not _forming_refs
             except Exception:
@@ -81877,10 +81957,9 @@ def _v702_r26_validate_config() -> bool:
         components["historical_r25_compatibility"] = bool(r25_ok or base_ok)
         components["r26_terminal_self_test"] = bool(r26.get("pass", False))
         components["source_parseable"] = True
-        try:
-            _v702_read_source_ast()
-        except Exception:
-            components["source_parseable"] = False
+        # The interpreter has already parsed this module to execute it; retain
+        # the source-presence check without constructing a second full AST.
+        components["source_parseable"] = bool(_v702_read_source_text())
         components["source_fingerprint_available"] = (
             _v702_r26_source_sha256() != "UNAVAILABLE"
         )
@@ -82061,10 +82140,8 @@ def _v702_r27_final_self_test() -> Dict[str, Any]:
             and {str(getattr(e, "__name__", "")) for e in _V702_LIVE_MSE_ENGINES} == _V702_LIVE_ENGINE_CLASS_SET
         )
         checks["source_parseable"] = True
-        try:
-            _v702_read_source_ast()
-        except Exception:
-            checks["source_parseable"] = False
+        # The interpreter has already parsed this module to execute it.
+        checks["source_parseable"] = bool(_v702_read_source_text())
         failed = [k for k,v in checks.items() if not bool(v)]
         out = {
             "pass": not failed,
@@ -85066,31 +85143,28 @@ def _v702_r36_retry_factory_integrity() -> bool:
     excluded from retry-safe paths elsewhere in the runtime.
     """
     try:
-        tree = _v702_read_source_ast()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            fn = node.func
-            is_safe_api = (
-                isinstance(fn, ast.Name) and fn.id == "safe_api_call"
-            ) or (
-                isinstance(fn, ast.Attribute) and fn.attr == "safe_api_call"
+        _source = _v702_read_source_text()
+        for _call_source in _v702_iter_named_call_segments(_source, "safe_api_call"):
+            try:
+                _node = ast.parse(_call_source, mode="eval").body
+            except Exception:
+                return False
+            if not isinstance(_node, ast.Call):
+                return False
+            _retry_safe = any(
+                _kw.arg == "retry_safe"
+                and isinstance(_kw.value, ast.Constant)
+                and _kw.value.value is True
+                for _kw in _node.keywords
             )
-            if not is_safe_api:
+            if not _retry_safe:
                 continue
-            retry_safe = False
-            for kw in node.keywords:
-                if kw.arg == "retry_safe":
-                    retry_safe = isinstance(kw.value, ast.Constant) and kw.value.value is True
-                    break
-            if not retry_safe:
-                continue
-            if len(node.args) < 2:
+            if len(_node.args) < 2:
                 return False
-            supplied = node.args[1]
-            if isinstance(supplied, (ast.Call, ast.Await)):
+            _supplied = _node.args[1]
+            if isinstance(_supplied, (ast.Call, ast.Await)):
                 return False
-            if not isinstance(supplied, (ast.Lambda, ast.Name, ast.Attribute, ast.Subscript)):
+            if not isinstance(_supplied, (ast.Lambda, ast.Name, ast.Attribute, ast.Subscript)):
                 return False
         return True
     except Exception:
@@ -98531,22 +98605,18 @@ V702_WRAPPER_CHAIN_REGISTRY = {
 
 def _v702_validate_wrapper_registry():
     try:
-        _tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
-        _counts = {"validate_config": 0, "SignalBuilder.build_and_route": 0, "OrderExecutor.submit_entry": 0}
+        _source = _v702_read_source_text()
+        _counts = _v702_count_assignment_targets(_source)
         _missing_context = []
-        for _node in ast.walk(_tree):
-            if isinstance(_node, ast.Assign):
-                for _target in _node.targets:
-                    if isinstance(_target, ast.Name) and _target.id == "validate_config":
-                        _counts["validate_config"] += 1
-                    elif isinstance(_target, ast.Attribute):
-                        _base = ast.unparse(_target.value)
-                        _key = f"{_base}.{_target.attr}"
-                        if _key in _counts:
-                            _counts[_key] += 1
-            elif isinstance(_node, ast.Call) and isinstance(_node.func, ast.Attribute) and _node.func.attr == "submit_entry":
-                if not any(_kw.arg == "intent_context" for _kw in _node.keywords):
-                    _missing_context.append(int(getattr(_node, "lineno", 0)))
+        for _call_source in _v702_iter_named_call_segments(_source, "submit_entry"):
+            try:
+                _call_node = ast.parse(_call_source, mode="eval").body
+            except Exception:
+                return {"pass": False, "error": "submit_entry_call_parse_failed"}
+            if not isinstance(_call_node, ast.Call):
+                continue
+            if not any(_kw.arg == "intent_context" for _kw in _call_node.keywords):
+                _missing_context.append(int(getattr(_call_node, "lineno", 0)))
         _expected = {k: int(V702_WRAPPER_CHAIN_REGISTRY[k]["binding_assignments"]) for k in _counts}
         _ok = _counts == _expected and not _missing_context
         return {"pass": bool(_ok), "observed": _counts, "expected": _expected,
@@ -98673,7 +98743,10 @@ if _V699_VALIDATE_ONLY_REQUEST:
 
     _v702_r39_guardrails_installed = bool(globals().get("_V702_R39_GUARDRAILS_INSTALLED", False))
     _v702_r39_symbol_attribution_fix_installed = bool(STATS.get("v702_r39_symbol_attribution_fix_installed", False))
-    _v702_base_validate_ok = bool(validate_config())
+    try:
+        _v702_base_validate_ok = bool(validate_config())
+    finally:
+        _v702_release_startup_memory()
     _v702_cf_shadow_selftest = STATS.get("v702_counterfactual_shadow_self_test", {})
     _v702_cf_shadow_installed = bool(STATS.get("v702_counterfactual_shadow_installed", False))
     _v702_intraday_shadow_selftest = STATS.get("v702_intraday_shadow_self_test", {})

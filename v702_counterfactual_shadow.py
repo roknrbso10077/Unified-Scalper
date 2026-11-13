@@ -13,7 +13,11 @@ import os
 import sqlite3
 import statistics
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
+from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 1
@@ -110,8 +114,22 @@ class V702CounterfactualShadow:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
+    @contextmanager
+    def _db(self):
+        """Serialize and close all shadow DB operations on the shared writer lock."""
+        with SQLITE_WRITER_LOCK:
+            conn = self._connect()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        with self._db() as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS v702_cf_shadow_samples (
                 sample_id TEXT PRIMARY KEY,
                 sample_key TEXT NOT NULL UNIQUE,
@@ -158,7 +176,7 @@ class V702CounterfactualShadow:
         if not sym.endswith("/USDT") or sym.count("/") != 1:
             return False
         base = sym.split("/", 1)[0]
-        if not base or base in {"BNB", "CAKE", "PUMP", "AERO", "ETHFI"}:
+        if not base or base in HARD_FORBIDDEN_BASES:
             return False
         return True
 
@@ -269,7 +287,7 @@ class V702CounterfactualShadow:
                 "policy_evaluation_scope": "PREQUAL_POLICY_COUNTERFACTUAL_NOT_FULL_BUILDER_ACCEPTANCE" if lane == "BEARISH_NORMAL_LSR" else None,
                 "hypothetical_size_multiplier": max(0.0, min(1.0, _num(cfg.get("V702_A48_BEARISH_SHADOW_SIZE_MULTIPLIER"), 0.5) or 0.5)) if lane == "BEARISH_NORMAL_LSR" else None,
             }
-            with self._connect() as conn:
+            with self._db() as conn:
                 cur = conn.execute("""INSERT OR IGNORE INTO v702_cf_shadow_samples
                     (sample_id,sample_key,created_ts,anchor_bar_ts_ms,symbol,family,strategy_mode,lane,reject_reason,
                      score,htf_strength,htf_floor,quote_volume_24h,tier,entry,stop,target,risk_unit,tp1_rr,
@@ -324,7 +342,7 @@ class V702CounterfactualShadow:
         if not isinstance(market_data_map, dict):
             return counts
         try:
-            with self._connect() as conn:
+            with self._db() as conn:
                 pending = conn.execute("""SELECT sample_id,symbol,anchor_bar_ts_ms,entry,stop,target,risk_unit,
                         last_candle_ts_ms,bars_seen,context_json FROM v702_cf_shadow_samples WHERE status='PENDING'""").fetchall()
             by_symbol: Dict[str, List[Tuple[Any, ...]]] = {}
@@ -374,7 +392,7 @@ class V702CounterfactualShadow:
                             spread_costs = ((float(entry) + float(exit_px)) * (spread_pct / 100.0) / 2.0) / float(risk)
                             net_r = gross_r - base_costs - spread_costs
                             break
-                    with self._connect() as conn:
+                    with self._db() as conn:
                         if status == "PENDING":
                             conn.execute("UPDATE v702_cf_shadow_samples SET last_candle_ts_ms=?,bars_seen=? WHERE sample_id=? AND status='PENDING'",
                                          (int(last_ts or 0), int(seen), sid))
@@ -400,7 +418,7 @@ class V702CounterfactualShadow:
             "comparison": {},
         }
         try:
-            with self._connect() as conn:
+            with self._db() as conn:
                 rows = conn.execute("""SELECT lane,status,net_r,gross_r,score,created_ts,family,reject_reason,context_json,
                         quote_volume_24h,htf_strength,htf_floor FROM v702_cf_shadow_samples""").fetchall()
                 skips = conn.execute("SELECT lane,COUNT(*) FROM v702_cf_shadow_samples WHERE status='SKIPPED_NO_GEOMETRY' GROUP BY lane").fetchall()
@@ -511,7 +529,7 @@ class V702CounterfactualShadow:
         interval = max(60.0, min(86400.0, _num(cfg.get("V702_CF_SHADOW_REPORT_INTERVAL_SEC"), 900.0) or 900.0))
         now = time.time()
         try:
-            with self._connect() as conn:
+            with self._db() as conn:
                 row = conn.execute("SELECT v FROM v702_cf_shadow_meta WHERE k='last_report_epoch' LIMIT 1").fetchone()
                 last = _num(row[0], 0.0) if row else 0.0
                 if not force and now - float(last or 0.0) < interval:
@@ -528,7 +546,7 @@ class V702CounterfactualShadow:
 
     def self_test(self) -> Dict[str, Any]:
         report = self.report()
-        with self._connect() as conn:
+        with self._db() as conn:
             columns = {r[1] for r in conn.execute("PRAGMA table_info(v702_cf_shadow_samples)").fetchall()}
         required = {"sample_id", "lane", "status", "entry", "stop", "target", "net_r", "last_candle_ts_ms"}
         checks = {

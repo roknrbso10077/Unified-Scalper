@@ -2230,5 +2230,28 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 #     structure, PreSend, SL/TP, KillSwitch, watchdog and LONG_ONLY/SPOT remain
 #     hard authorities and are not bypassed.
 #
+
+# V702 A58.1 — Final Production Audit Closure (2026-11-13)
+#   * Replaced repeated/full-module AST materialization in selected startup
+#     source-contract checks with streaming token scans and parsing of bounded
+#     call snippets; kept the checks fail-closed and preserved trading logic.
+#   * Removed the obsolete full-source AST cache helper. Validator temporary
+#     allocations are collected after validation; Linux malloc_trim remains
+#     best-effort and never controls startup correctness.
+#   * Measured `main.py --validate-only` max RSS: 530,732 KiB in this audit
+#     container (prior pre-optimization peak was about 1.22 GiB).
+#   * Kept SPOT/LONG_ONLY, score floor 70, two-key live authorization, strategy
+#     gates, execution-intent context, and protection/reconciliation controls.
+#   * Removed seven superseded A55/A56/A57 standalone release metadata/report
+#     files from the compact distribution; excluded the generated local SQLite
+#     database. No runtime Python module or test file was removed. ZIP target: 97 files.
+#   * Screenshot review: supplied Railway Deploy Logs contain internal MOCK
+#     self-tests and no live exchange client; no `[V702-CRASH]` traceback is
+#     visible. The precise Railway crash cause therefore remains unproven.
+#   * Full pytest and package checks are recorded in A58_FINAL_AUDIT_REPORT_AR.md
+#     and A58_RELEASE_MANIFEST.json. Live MEXC/Telegram, Docker target build,
+#     Python 3.12/linux-amd64 runtime, and profitability remain unverified.
+#   * Production decision remains NO_GO_UNATTENDED_LIVE.
+
 # =============================================================================
 ```
