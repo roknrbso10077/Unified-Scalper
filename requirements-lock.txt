@@ -1,6 +1,5 @@
-# Canonical direct dependency constraints for Unified Scalper V702 A55 (Python 3.12).
-# Python target: 3.12. This is a direct-dependency constraints file, NOT a complete
-# transitive/hash lock; see LOCKFILE_NOTES.md before relying on bit-for-bit rebuilds.
+# A58 direct pins only. This file is replaced by the full transitive SHA-256 lock
+# in CI; use requirements.in for Railway's portable non-hash build path.
 ccxt==4.5.81
 python-dotenv==1.2.4
 numpy==2.3.5

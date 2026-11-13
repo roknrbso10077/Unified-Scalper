@@ -1,1322 +1,11 @@
-# FINAL PATCH — V702 R37 S/R-AWARE TARGETS (2026-10-09)
-# Re-anchor RR targets after final SL bounds; cap TP1/TP2 before confirmed closed-15m
-# resistance; preserve canonical fee/RR, FamilyPolicy, RiskCoherence and PreSend gates.
-# Fee-target rescue is not permitted to erase an S/R target ceiling.
-# v4.5.99-V606 FINAL CURRENT-CYCLE RESCUE ESCALATION / STARVATION TRUTH:
-#   * Closes the L1->L2 same-cycle rescue escalation gap when the current
-#     zero-winner cycle has a prequalified candidate at the existing L2 floor.
-#   * Heartbeat now prefers truthful current-cycle GLOBAL diagnostics over a
-#     stale historical NO_OPP label: SCORE/SELECTION/POLICY/MSE-RANK starvation.
-#   * No score floor is lowered, no hard gate is bypassed, and no order path is
-#     introduced. Canonical SignalBuilder remains the final authority.
-#
-# v4.5.99-V605 FINAL CURRENT-CYCLE GLOBAL RESCUE / STARVATION CLOSURE:
-#   * Global rescue now evaluates the CURRENT prepared/prequalified cycle
-#     before V45GlobalFunnelState.note_cycle() records it.
-#   * A fresh zero-winner cycle can therefore activate the existing bounded
-#     L1/L2 rescue ladder from its own top candidate instead of waiting for
-#     historical window evidence.
-#   * Hard global floor, canonical gates, risk, liquidity, SL/TP, execution,
-#     LONG_ONLY/SPOT and fail-closed behavior are unchanged.
-#
-# v4.5.99-V604 FINAL FEE-RESCUE COHERENCE / STARVATION FORENSICS:
-#   * Audits the exact fee-rescue path with the FINAL candidate geometry and
-#     records whether rescue succeeded, failed, was applied, or was hard-rejected.
-#   * Adds an offline XMR-like regression proving the observed 489/484.013857/
-#     493.733352/498.466704 geometry can be rescued without lowering any fee gate.
-#   * Keeps MIN_NET_RR_TP1, MIN_TP1_TO_FEE_RATIO and MIN_NET_RR_OVERALL hard.
-#   * No entry, risk, SL/TP, Balance/TruthSeal, Exposure, Liquidity, Execution,
-#     LONG_ONLY/SPOT, or fail-closed authority is relaxed.
-#
-# v4.5.99 FINAL ALL-IN-ONE RECALL / UNIVERSE-TOTAL-TIMEOUT / FORBIDDEN-ALERT-DEDUPE:
-#   * Adds a bounded total read-only market-data budget per symbol so sequential
-#     4TF+ticker reads cannot stretch one symbol into a multi-minute scanner stall.
-#   * Adds a bounded timeout around dynamic-universe fetch_tickers so boot/refresh
-#     cannot hang independently of the per-symbol scanner timeout.
-#   * Deduplicates forbidden-coin operator alerts by symbol/reason/stage with TTL;
-#     the scan still skips the forbidden asset and V587 remains final authority.
-#   * No entry gate, risk rule, SL/TP rule, execution authority, or LONG_ONLY SPOT
-#     invariant is relaxed.
-#
-# v4.5.98 FINAL ALL-IN-ONE RECALL / SCAN-TIMEOUT / FORBIDDEN-PRESCAN CLOSURE:
-#   * Adds bounded read-only market-data timeouts so one stalled exchange read
-#     cannot freeze the scanner and age otherwise-valid candidates.
-#   * Prunes forbidden assets before expensive scanner reads; V587 execution
-#     enforcement remains the final authority and no trading gate is bypassed.
-# v4.5.97 FINAL ALL-IN-ONE RECALL / STARVATION / CYCLE-ACCOUNTING CLOSURE:
-#   * Extends V596 with a bounded EMPTY-MSE legacy recall lane so a real
-#     NO_OPP cycle can still test a small number of legacy-router opportunities.
-#   * Resets per-cycle global counters before every GlobalOpportunityBrain run,
-#     preventing stale prior-cycle telemetry from triggering recovery after a
-#     brain failure or early return.
-#   * Bridge attempt timestamps are armed before builder execution, preventing
-#     repeated deterministic re-attempts inside the cooldown interval.
-#   * Forbidden symbols are pruned before legacy recovery work; final V587
-#     executor enforcement remains authoritative.
-#   * Heartbeat exposes distinct MSE-RANK and LEGACY-BRIDGE outcomes.
-#   * Final boot telemetry exception is observable instead of silently dropped.
-#   * LONG_ONLY SPOT, fail-closed behavior, all hard gates, execution authority,
-#     Balance/TruthSeal/Exposure/Liquidity/PreSend/SL/exit invariants unchanged.
-# v4.5.96 FINAL MSE RANK-STARVATION / LEGACY-RECALL / OBSERVABILITY CLOSURE:
-#   * Closes the observed live funnel where MSE generated/hard-valid candidates
-#     but ranked zero (G/V > 0, R/W = 0), with exact rank-reject diagnostics.
-#   * Adds a bounded legacy-router recovery bridge ONLY for a technically empty
-#     MSE/global cycle; every recovered symbol still goes through SignalBuilder.
-#   * Adds heartbeat visibility for MSE rank starvation and the recovery bridge.
-#   * Makes boot-finalization exceptions observable instead of silently disappearing.
-#   * No HTF, liquidity, structure, fee, score, Balance/TruthSeal, Exposure,
-#     PreSend, SL, execution ambiguity, LONG_ONLY SPOT, or exit authority is bypassed.
-#
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Unified Scalper V702 A58 canonical runtime.
 
-# v4.5.99-V673 FINAL — CANONICAL DATA/STRUCTURE/ACCOUNTING COHERENCE CLOSURE.
-#   * Repairs missing PB/MTF quality facts at the exact V654/V671 recovery
-#     boundary from the same prepared snapshot; no new market-data fetch.
-#   * Reuses existing canonical HTF recovery, structure formula, retest calculator,
-#     closed-bar RS calculator, volume derivation and final entry-vs-zone chase.
-#   * Re-runs the same V587 hard quality contract; missing facts remain reject.
-#   * Fully wires canonical snapshot/structure/economic/watchdog/lifecycle/scheduler facts into existing authorities.
-#   * Adds truthful heartbeat correlation of execution attempts vs builder/pre-send/
-#     queue/send and exact current-cycle watchdog-rejection count.
-#   * No fee/RR/SL/risk/HTF/liquidity/structure/score hard floor is relaxed.
-
-# v4.5.99-V669-R4 FINAL — integrated hardening/recalibration build.
-# Changes: 75-USDT ticket cap/request, 2 slots, 3-USDT reserve, 12% peak-equity
-# entry halt, 0.40% minimum SL, 1500s score-starvation evidence, paper score 64,
-# news blackout enabled, combined >=62 score-floor invariant, invalid-symbol
-# blacklist fail-closed, and final V612 boot-policy validation.
-
-# v4.5.99-V609 FINAL — FEE-RESCUE EXECUTION CLOSURE / CAKE ROOT-CAUSE PATCH:
-#   * Closes the observed live gap where a PULLBACK candidate reached PreSend with
-#     valid geometry and score but was still rejected as fee_unviable even though
-#     the existing bounded V420/V551 target rescue could prove the same trade
-#     economically viable without lowering any fee threshold.
-#   * Adds one final, fail-closed retry of the EXISTING fee-target rescue only when
-#     SizingEngine returns fee_unviable. No new execution path and no fee-floor
-#     relaxation are introduced.
-#   * Reuses the exact final entry/SL/TP/notional/strategy score supplied to the
-#     sizing call, re-runs the ORIGINAL hard fee gate, and hands rescued TP1/TP2/TP3
-#     back through the already-existing PreSendGate ordering/Exposure/Liquidity
-#     authorities.
-#   * Adds exact fee-rescue outcome telemetry, including why rescue was rejected,
-#     preventing future silent CAKE-like failures.
-#   * Adds a deterministic CAKE regression using the exact logged geometry:
-#     1.864 / 1.857314 / 1.870597 / 1.877193 / 1.896983 at score 68.1.
-#   * Keeps MIN_NET_RR_TP1=0.8, MIN_TP1_TO_FEE_RATIO=2.5 and
-#     MIN_NET_RR_OVERALL=1.2 hard; LONG_ONLY/SPOT, Balance/TruthSeal, Exposure,
-#     Liquidity, Structure, PreSend, SL/TP, Execution and fail-closed authority
-#     are unchanged.
-
-# v4.5.95 FINAL HEARTBEAT-WRAPPER / WATCHDOG-STARVATION / BOOT-CLOSURE:
-#   * Fixes the exact production error shown in Railway:
-#       _v584_install_telemetry.<locals>._emit() missing 1 required positional argument: 'cls'
-#     The wrapper is installed as a staticmethod, so it MUST have zero positional
-#     receiver arguments. The previous `cls` signature made every heartbeat call
-#     fail before the function body executed, which then triggered the watchdog
-#     and masked otherwise healthy LIVE operation.
-#   * Adds a deterministic V595 regression self-test that actually invokes the
-#     installed heartbeat wrapper, not just source-checking its signature. This
-#     specifically prevents recurrence of staticmethod/classmethod mismatches.
-#   * Keeps heartbeat telemetry non-blocking: instrumentation failure is logged
-#     and never changes trading decisions or opens a fall-open path.
-#   * Removes the final silent `except: pass` around boot telemetry finalization
-#     and logs the exception instead, preserving non-blocking behavior while
-#     making future lifecycle regressions visible.
-#   * Removes the accidental historical comment tail after the executable main()
-#     call so the canonical file ends at the actual runtime entry point.
-#   * All entry strategy, opportunity routing, scoring, HTF, liquidity, structure,
-#     Balance/TruthSeal, Exposure, PreSend, SL/TP, execution authority and
-#     LONG_ONLY SPOT invariants remain unchanged.
-#
-# v4.5.93 FINAL RUNTIME-LIFECYCLE / EXCEPTION-OBSERVABILITY / SELF-TEST CLOSURE:
-#   * Fixes the actual production boot blocker shown in the supplied Railway log:
-#     the V525 protected-entry/TradingView self-test used stale grade examples
-#     that no longer matched the active v4.5.87 opportunity-grade implementation.
-#     The production grader is unchanged; the self-test is now aligned with the
-#     canonical grader boundaries so validate_config() can prove the real policy.
-#   * Replaces both runtime asyncio.get_event_loop() lookups with
-#     asyncio.get_running_loop() in active async contexts, removing the Python
-#     DeprecationWarning and preventing accidental creation/retrieval of a
-#     non-running loop. Signal-handler installation remains fail-closed.
-#   * Adds source-level regression checks for the deprecated loop API so the same
-#     warning cannot silently return in a later patch.
-#   * Fixes signal lifecycle correctly: SIGINT/SIGTERM handlers are installed
-#     inside run_bot() on the running loop, not synchronously before asyncio.run().
-#   * Adds bounded exception-observability telemetry in critical execution/SL/PM
-#     paths where nonfatal instrumentation exceptions were previously silent;
-#     trading decisions and fail-closed behavior are unchanged.
-#   * Adds V593 runtime-lifecycle regression validation to the mandatory boot chain.
-#   * Re-runs the existing V591 strategy/policy/profile/closed-bar parity audit
-#   * Canonical runtime version: v4.5.95; the runtime identity is validated by V594/V595.
-#     unchanged; LONG_ONLY SPOT, execution authority, safety gates, SL/TP,
-#     Balance/TruthSeal, Exposure, Liquidity, PreSend and all existing strategy
-#     gates remain unchanged.
-
-# v4.5.92 FINAL BOOT-VALIDATION / ASYNCIO / SELF-TEST CLOSURE BUILD:
-# v4.5.91 FINAL ALL-STRATEGY PARITY / INVARIANT CLOSURE BUILD:
-#   * Final release marker is synchronized with SCRIPT_VERSION below.
-#   * Includes v4.5.90 canonical-context policy closure and closed-bar DUAL entry parity.
-#   * Includes v4.5.89 non-finite quality protection and corrected raw-GEN funnel accounting.
-#   * Includes v4.5.91 cross-layer strategy/family/policy/profile/closed-bar invariant audit.
-#   * No strategy, safety gate, execution authority, risk rule, or LONG_ONLY/SPOT invariant is removed.
-#
-# v4.5.86 FINAL ROOT-CAUSE / SIGNAL-STATUS / CLOSED-BAR-COHERENCE BUILD:
-#   * Canonical BUY alerts are PENDING until final gates complete.
-#   * Negative RS no longer earns long-quality points.
-#   * Bearish severity uses the last CLOSED 15m candle.
-#   * Starvation alerts expose fresh exact builder blockers.
-# v4.5.80 FINAL PULLBACK-ALL-COHERENCE BUILD: retains the complete
-# complete v4.5.78/v4.5.79 codebase and applies the full bounded PULLBACK
-# coherence closure: (1) shallow_pullback is supporting evidence only, never
-# standalone confirmation; (2) PULLBACK/MTF_PULLBACK structural SL prefers a
-# confirmed closed-bar swing-low/pullback invalidation with bounded ATR buffers;
-# (3) adaptive repricing re-applies structural SL from the FINAL entry; (4) final
-# PULLBACK entry remains anchored to its validated zone with a bounded ATR
-# envelope and final chase check; (5) the existing single JIT transient-spread
-# recheck remains the only spread rescue and tier spread stays a hard gate.
-# Existing TP/SL, Exit Authority, Recovery, Global Funnel and 80-USDT sizing/cap
-# behavior remain intact. No execution safety gate is bypassed and no strategy
-# section is removed.
+Historical patch/version notes are preserved in CHANGELOG.md. The active
+strategy, risk, pre-send, queue, Telegram and execution authorities remain in
+this canonical runtime; helper modules only centralize shared policy/storage.
 """
-================================================================================
-    UNIFIED SCALPER v4.5.18-COMPREHENSIVE-FINAL-OPPORTUNITY-BRAIN-GLOBAL-CANONICAL-COHERENCE
-  Long-Only Spot | MEXC | Composite Score Engine | Fail-Closed
-================================================================================
-
-  v4.5.2 OPPORTUNITY-BRAIN GLOBAL ARBITRATION / GLOBAL FUNNEL REPAIR
-    * Global-score preservation, market-wide funnel telemetry, bounded rescue
-      retries, universe quote-volume fallback, and starvation-alert gating.
-    * LONG_ONLY SPOT / Fail-Closed / SL & execution invariants preserved.
-
-  v4.5.3 GLOBAL<->CANONICAL COHERENCE REPAIR (bounded, additive, fail-closed):
-    * Canonical prequalification BEFORE global winner declaration (no new
-      fetch; reuses the same MSE snapshot facts the canonical funnel knows).
-    * Correct funnel telemetry semantics: global_selected is no longer
-      reported as execution-queued; new GEN/PRE/RANK/SEL/CANON/SEND chain.
-    * Per-winner canonical rejection attribution ([GLOBAL->CANON] reason=*)
-      with aggregate counters (htf/liquidity/score/structure/pre_send/
-      balance/execution/other).
-    * Bounded adaptive canonical score floor (70->68->66->64->62, TTL-based,
-      auto-revert on successful send; armed ONLY when the real bottleneck is
-      score_below_threshold — never under crash/kill/balance/watchdog and
-      never when liquidity/HTF/structure is the dominant reject reason).
-    * Execution-aware TOP-500 source universe (tier!=BELOW + bounded spread filter
-      from already-fetched tickers) with a single bounded expansion 120->150
-      only when execution-eligible universe < 100; degraded universe allowed.
-    * Cycle telemetry disambiguation: window_cycles vs cumulative_cycles,
-      process_start_ts, last_successful_global_cycle_ts (minimal SQLite
-      persistence; a lost counter NEVER opens trading).
-    * Starvation classifier modes: NONE/NO_OPP/HTF/LIQUIDITY/STRUCTURE/
-      SCORE/EXECUTION/SYSTEM; Near-Miss accepts only score-gap candidates
-      that already passed hard eligibility.
-    * T1..T16 acceptance self-tests (env UNIFIED_V453_SELF_TEST=1).
-    * INVARIANTS UNCHANGED: LONG_ONLY, MEXC SPOT, no futures/leverage/shorts,
-      KillSwitch, TruthSeal, BalanceReconciler, ExposureProtection,
-      DailyCircuitBreaker, FailedSendCB, ExchangeWatchdog, LiquidityDepth,
-      Precision, SL verification chain, PreSendGate, TP1/TP2/Runner geometry,
-      risk model. Global winner still CANNOT bypass any hard gate; canonical
-      SignalBuilder remains the only execution authority.
-
-  v4.5.4 GLOBAL<->CANONICAL COHERENCE — FINAL REPAIR + TELEMETRY/UNIVERSE PATCH (bounded, fail-closed):
-    * Canonical prequalification now runs BEFORE global arbitration: the
-      arbiter ranks ONLY prequalified candidates (MSE candidates -> canonical
-      prequalification -> global arbitration -> final winners -> canonical
-      execution -> queue -> send). No post-arbitration correction remains.
-    * Real adaptive-floor TTL: every relief step (70->68->66->64->62) carries
-      an expiry (V453_SCORE_FLOOR_TTL_SEC) and walks back toward the base ONE
-      step at a time; send recovery preserved; floor bounded [62..base].
-    * Windowed starvation classification: the bottleneck is computed from
-      in-window funnel deltas (generated/ranked/selected/canonical/queued/
-      sent + reject-category deltas) with explicit priority
-      SYSTEM > HTF/LIQUIDITY/STRUCTURE > SCORE > EXECUTION.
-    * Stronger T1..T16 behavioral self-tests (real lifecycle, real hazards,
-      real funnel semantics) — no new test framework.
-    * Version telemetry fix: runtime heartbeat/startup logs report v4.5.4.
-    * Cached orderbook/depth reuse verification inside prequalification:
-      NO new fetch; absence is never an allow; the canonical pre-send
-      LiquidityDepth gate remains the final authority.
-    * INVARIANTS UNCHANGED: LONG_ONLY, MEXC SPOT, no futures/leverage/shorts,
-      KillSwitch / TruthSeal / BalanceReconciler / ExposureProtection /
-      DailyCircuitBreaker / FailedSendCB / ExchangeWatchdog / LiquidityDepth /
-      Precision / SL verification / PreSendGate all intact; a global winner
-      still CANNOT bypass any canonical hard gate.
-
-  v4.4.x-FINAL-HARDENED-ADAPTIVE-EXPECTANCY-COMPLETION:
-    1. Global bounded ranking across ALL valid strategy candidates.
-    2. Canonical MarketContext + MarketPhase detection in the live MSE snapshot.
-    3. Canonical RS-vs-BTC features (5m/15m/1h + persistence).
-    4. LOCAL_STRENGTH_BREAKOUT with real breakout/RS/volume/chase confluence.
-    5. COMPRESSION_EXPANSION with real range break + hard RR/chase validation.
-    6. SWING_PULLBACK with bounded strategy-specific ExitProfile.
-    7. EXTREME_FLUSH_REVERSAL with sweep/reclaim/HL/RS confluence.
-    8. Strategy-aware FamilyPolicy (macro x local x phase x severity x style).
-    9. Shadow A/B telemetry: legacy winner vs V4.3 winner + score delta.
-   10. Stronger self-tests and end-to-end acceptance cases.
-   11. NO changes to safety invariants (CrashGuard / TruthSeal / SL chain).
-   12. Long-only SPOT preserved; no shorts / futures / leverage.
-
-  v4.2.6-MTF-PULLBACK — integrates a bounded multi-timeframe long strategy:
-    1D bullish trend -> 4H bullish confirmation -> 15m pullback zone ->
-    5m bullish/recovery confirmation. It is additive only; all existing
-    safety, sizing, SL, exposure, circuit-breaker and execution gates remain.
-  v4.2.7-RECALL-COHERENCE — surgical opportunity-coverage fixes:
-    (A) LOCAL_BULLISH Bearish-Recovery branch enabled with stronger local gates.
-    (B) NFM/G starvation ratio now uses the SAME sliding window for numerator
-        and denominator; independent watchdog cadence retained.
-    (C) HTF grading and MSE entry/ATR geometry use CLOSED candles consistently.
-    (D) BEARISH countertrend routing allowed only after concrete closed-bar
-        LIQUIDITY_SWEEP or MEAN_REVERSION prefilter; crash remains absolute.
-    (E) Bearish sweep/mean-reversion HTF floor bypass is bounded to those
-        families only; structural confirmation/tier gates remain active.
-    (F) Pullback near-miss telemetry widened beyond the actual entry envelope.
-    (G) No futures/funding/OI dependency added; spot LONG_ONLY invariants are
-        preserved.
-
-  v4.1.1-LIVE-READINESS — final safety/recall corrections over v4.0.11/v4.1.0:
-    (R1) BalanceReconciler.fetch now uses coroutine-factory + retry_safe=True
-         so transient network errors get one real retry (previously it awaited
-         a raw coroutine that could not be retried).
-    (R2) SL_POST_CREATE_VERIFY_TOLERANCE_PCT raised 0.15→0.30 to accommodate
-         MEXC spot tick rounding/normalization; settle window bumped 0.4→0.6s.
-         Still comfortably below any legitimate SL deviation. Safety unchanged.
-    (R3) RUNNER_MAX_HOLD_HOURS lowered 24→12 to tighten the runner envelope
-         (RUNNER_EXEMPT_FROM_TIME_EXIT stays True — asymmetric upside kept,
-         but the hard cap is now realistic for scalping). Comment in the
-         changelog aligned with actual behaviour (envelope, not time-exit).
-    (R4) SIGNAL_DEDUP_TTL_SEC raised 180→330 so it is >= TF_ENTRY (5m) * 1.1
-         and dedup can NEVER underrun the entry candle; the max() clamp at
-         the call site becomes a no-op safety net rather than a corrector.
-    (R5) MAX_SL_PCT raised 1.5→1.8 (conservative). ATR-based SL on high-vol
-         majors was routinely tripping max_sl_pct_exceeded on legitimate
-         setups; RISK_COHERENCE_MAX_SL_PCT (4.5) still bounds the ceiling.
-    (R6) emergency_close: if market_sell RAISES after a verified SL cancel,
-         we now explicitly declare STOPLESS_EXPOSURE and escalate
-         LIVE_ENTRIES_BLOCKED so no new entry is issued while the residual
-         is unprotected. No new layer, no new strategy; a two-branch guard
-         in the existing except block.
-
-  v4.0.10-LIVE-READINESS — surgical production hardening over v4.0.9:
-    heartbeat final exchange re-check; runner 24h hard cap; atomic candidate
-    SL mutations; cancellation status hardening; starvation suppression vs
-    blindness split with UTC daily reset; entry-only equity drawdown halt;
-    TruthSeal retry wiring. Long-only / fail-closed / exit invariants preserved.
-
-  v4.0.9-DEEPSEEK-HARDEN — SURGICAL LIVE-READINESS PATCHES (additive over
-  v4.0.8-STARV-FIX; minimal-diff, fail-closed; no new layers, no new
-  strategies, no threshold changes to sizing/risk/SL invariants).
-
-    DS-1  (BLOCKER) — POST-CREATE SL VERIFICATION on MEXC spot.
-              place_sl now fetches the order back right after create_order
-              and treats the SL as live ONLY when status is open-ish AND the
-              returned stop/trigger price matches within
-              SL_POST_CREATE_VERIFY_TOLERANCE_PCT. Any failure → software SL
-              fallback + retry. Toggle: SL_POST_CREATE_VERIFY_ENABLE.
-
-    DS-2  (BLOCKER) — UNIFIED SYMBOL LOCK on SL mutations in PositionManager
-              (TP1 BE-move, TP2 partial replace, staircase, trailing) using
-              HandoffOwnership.lock_for — the same lock as build_and_route.
-
-    DS-3  (BLOCKER) — TIME-BASED EXIT covers `runner` state (was excluded
-              from open_states). Toggle: RUNNER_EXEMPT_FROM_TIME_EXIT
-              (default False → runner IS time-exited).
-
-    DS-4  (BLOCKER) — DYNAMIC REENTRY COOLDOWN by exit reason.
-              REENTRY_COOLDOWN_BY_REASON maps exit_reason → seconds;
-              _finalize_and_record_r writes (armed_ts, cd_sec) and the gate
-              reads the pair (backward-compatible with legacy floats).
-              Toggle: REENTRY_COOLDOWN_DYNAMIC_ENABLE.
-
-    DS-5  (TWEAK)   — EXECUTION_COOLDOWN check relocated BEFORE
-              PreSendGate.evaluate (was after the gate → wasted sizing work).
-
-    DS-6  (TWEAK)   — SHARED ORDERBOOK: PreSendGate.evaluate accepts
-              cached_ob and forwards it to LiquidityDepth.check, halving
-              fetch_order_book calls per signal.
-
-  v4.0.8-STARV-FIX — STARVATION-KILLER SURGICAL PATCHES (additive over v4.0.7-MSE,
-  minimal-diff, fail-closed; no new layers, no new strategies, no threshold
-  changes to sizing/risk/SL invariants). Goal: raise E/Q/S in the funnel
-  without loosening any risk or long-only invariant. Every change is bounded
-  and revertible via CONFIG toggles.
-
-    STARV-A — SYMBOL_SCAN COOLDOWN RELOCATED (pre-gate  → post-microstruct).
-              Previous placement armed cooldown at the TOP of build_and_route
-              *before* any analysis, which suppressed re-evaluation of a symbol
-              for the entire SYMBOL_COOLDOWN_SEC window even when the symbol
-              never reached a scoring/executable state. Now the cooldown is
-              armed ONLY after the symbol clears microstructure (i.e. it
-              actually consumed pipeline work). REENTRY_COOLDOWN is unchanged
-              (still applied at the top) because it protects against re-entering
-              a JUST-CLOSED position — a genuine risk gate, not a scan throttle.
-              New CONFIG toggle: SYMBOL_COOLDOWN_MODE = "post_microstruct"
-              (default) | "pre_gate" (legacy v4.0.7 behavior) | "candle_dedup"
-              (relies only on candle_ts dedup — most permissive). Default
-              lowered to 180s from 600s to reduce residual starvation.
-
-    STARV-B — SIGNALS_GENERATED counted AFTER cooldown pre-gates so telemetry
-              G/E/Q/S ratios reflect ONLY symbols that actually entered the
-              analysis pipeline. Cooldown-suppressed symbols are tracked in
-              a separate counter (signals_scanned_cooldown_skipped) instead
-              of inflating G. Prevents "blindness" false-positive in
-              StarvationGuard.
-
-    STARV-C — OPPORTUNITY ROUTER RECALL WIDENED — softer PULLBACK detector +
-              new TREND_CONTINUATION_SOFT tail-detector (bounded).
-              (a) detect_pullback now also matches a controlled retracement
-                  toward EMA20 (previously only EMA50), and a mild negative
-                  distance (up to -0.5 * ATR below EMA) is allowed when RSI
-                  is in the bullish recovery band. Prior close/current
-                  higher-low pattern gives an alternate anchor.
-              (b) detect_trend_continuation_soft (new, LOWEST priority)
-                  catches healthy uptrends where price>EMA20>EMA50 on 15m
-                  and last CLOSED 5m bar is a bullish body — this closes
-                  the no_family_matched gap during established trends.
-                  It maps to family="TREND_CONTINUATION" which is subject
-                  to the SAME BOS/reclaim hard-gate as BREAKOUT_RETEST/
-                  CONTINUATION downstream, so recall widens WITHOUT
-                  relaxing structural rigor. New CONFIG toggle:
-                  ROUTER_ENABLE_TREND_CONTINUATION_SOFT = True.
-
-    STARV-D — PULLBACK MICRO-UPTREND GATE SOFTENED. In addition to the
-              existing (bos_confirmed | reclaim | bullish_close) triad, a
-              higher-low pattern on the last 3 CLOSED 5m bars is now
-              accepted as micro-uptrend evidence. Structural strength is
-              still required — score gate downstream is untouched.
-              New CONFIG toggle: PULLBACK_ACCEPT_HIGHER_LOW = True.
-
-    STARV-E — SCORE-INPUT OBSERVABILITY. When CompositeScorer rejects on
-              insufficient data, the missing fields are now recorded in a
-              rolling window (STATS["score_input_missing_top"]) so top
-              feed instability is visible in heartbeat/telemetry without
-              changing the fail-closed contract. Optional soft mode via
-              CONFIG.SCORE_INPUT_SOFT_MODE (default False = fail-closed):
-              when True AND only ONE non-critical field is missing (RS or
-              spread), a small penalty is applied and scoring proceeds.
-              Critical fields (structure_confidence, orderbook_imbalance,
-              momentum_score_val, retest_quality_score, volume_ratio) still
-              force C_REJECT. Default keeps legacy hard-fail behavior.
-
-  v4.0.6 EXECUTION-COHERENCE FIXES (additive over v4.0.5, minimal-diff,
-  fail-closed; no new layers, no new strategies, no score-threshold changes):
-    FIX A — AdaptiveRepricing.maybe_reprice now uses CANONICAL TP1_RR when
-            recomputing new_tp1. `ADAPTIVE_REPRICE_MIN_TP1_RR` is preserved
-            as a soft alias only (falls back to TP1_RR if absent). Prevents
-            TP1 policy from drifting between repricing and fee-viability.
-    FIX B — Post-fill level recalibration. After a real `create_market_buy`
-            fill, TradeState levels (effective_entry, original_sl, current_sl,
-            tp1, tp2, tp3) are rebuilt from `fill_px` instead of
-            `planned_entry`. If drift > FILL_DRIFT_ABORT_PCT the trade is
-            emergency-closed at once (clean unwind).
-    FIX C — Exposure headroom now uses REMAINING notional
-            (remaining_position * effective_entry) rather than the frozen
-            original notional. Prevents runners / post-TP1 legs from
-            over-reserving headroom against new entries. Applied in
-            SizingEngine.decide AND ExposureProtection.check.
-    FIX D — emergency_close: unverified SL cancel is now an EXPLICIT declared
-            state (sl_health_state="CANCEL_UNVERIFIED"). No new SL re-place
-            before verification; no silent "assumed cancelled" flip. Central
-            finalization path unchanged.
-    FIX E — Staircase / trailing commit order. `candidate_sl` is computed
-            first; `trade.current_sl` and `trade.staircase_level_hit` are
-            promoted ONLY after cancel+replace succeeds. Prevents desync
-            when cancel is unverified or replace fails.
-    FIX F — BalanceReconciler entry-block vs system-block split. Balance
-            failures now set `LIVE_ENTRIES_BLOCKED` (soft) instead of
-            escalating to LIVE_BLOCKED. `is_live_runnable()` still allows
-            managing open positions; only NEW entries are gated. Hard BLOCK
-            (fetch failed AND cache expired) still hard-escalates.
-    FIX G — Dead config keys removed. Nine previously-unread keys
-            (MIN_ATR_PERCENT, MAX_IMPULSE_CANDLE_ATR, VOLUME_MIN_RATIO,
-            VOLUME_HARDCUT_RATIO, VOLUME_CONFIRM_MULT, HTF_STRENGTH_FLOOR,
-            MR_RSI_LOW, MR_RSI_HIGH, CONFIRM_RSI_MIN_RECOVERY) removed from
-            CONFIG so no filter is falsely implied.
-
-  v4.0.5 TUNING & DESYNC FIXES (additive over v4.0.4, minimal-diff):
-    FIX #1 — Lower MIN_LIVE_SCORE 78→70 and SIGNAL_CLASS_B_MIN 65→62.
-             Reason : live funnel starving on score_below_threshold.
-             Effect : more A/B setups reach PreSendGate; paper mode
-                      unchanged for LIVE; MIN_PAPER_SCORE=60 for paper-only sampling.
-    FIX #2 — AdaptiveRepricing now runs BEFORE PreSendGate.
-             Reason : gate sized against planned entry while repricing
-                      then mutated entry/sl/tp under it (desync).
-             Effect : gate sizing / risk-coherence / caps evaluated on
-                      the FINAL levels that will actually be submitted.
-    FIX #3 — StarvationGuard Q→S uses DELTA counters (per-minute), not
-             cumulative totals.
-             Reason : `queued>0 and sent==0` never re-fires after the
-                      first successful send in the process lifetime.
-             Effect : starvation detection remains functional after
-                      any number of successful sends.
-    FIX #4 — Recovery path re-checks KillSwitch before AND after truth-
-             seal retry; blocked kill switch cannot be un-blocked by a
-             successful truth-seal (fail-closed).
-    FIX #5 — fake_break_filter loosened: requires MAJORITY of recent
-             closes below tolerance floor instead of ANY single close.
-             Effect : catches genuine breakout/retest failure, no
-                      longer rejects healthy pullbacks near the high.
-             Also   : FAKE_BREAK_TOLERANCE_PCT 0.0005 → 0.0025.
-    FIX #6 — BTCContext uses ~2h window (8×15m) with softer thresholds
-             (WEAK ≤ -3%, CRASH ≤ -6% instead of -2% / -5%).
-             Effect : fewer spurious WEAK/CRASH flips on normal noise.
-    FIX #7 — Removed duplicate _finalize_and_record_r calls at every
-             call-site immediately following emergency_close.
-             Reason : emergency_close is the central finalization path
-                      since v4.0.4 PATCH S; idempotency kept it safe
-                      but the single-terminator contract is cleaner.
-    FIX #8 — CompositeScorer spread scoring uses CONFIG["SCORE_SPREAD_
-             CEIL_PCT"] (was hardcoded 0.15 literal).
-             Effect : single source of truth for the spread ceiling.
-
-  v4.0.4 HARDENING PATCHES (additive over v4.0.3, minimal-diff):
-    PATCH Q  (CRITICAL) — safe_api_call: REAL single retry for transient
-                          network errors via opt-in coroutine-factory API
-                          (retry_safe=True). Legacy raw-coroutine callers
-                          unchanged. Order-placement calls NEVER retry
-                          (no duplicate-execution hazard).
-    PATCH R  (CRITICAL) — PositionManager.tick: short-circuit after
-                          SLHealthAuditor.verify() and SoftwareSLFallback.check()
-                          when the trade has been finalized / popped /
-                          drained. Prevents stale TP/staircase/trailing/
-                          time-exit logic from acting on closed trades.
-    PATCH S  (CRITICAL) — emergency_close: unified accounting. After
-                          cancel-SL + market-sell (or short-circuit when
-                          qty<=0) the method now routes through
-                          _finalize_and_record_r() itself, so R is recorded
-                          in DailyCircuitBreaker and the trade is popped
-                          from ACTIVE_TRADES in the SAME path. Idempotency
-                          via _FINALIZED_TRADE_IDS keeps existing callers
-                          that also call the finalizer safe (no double R).
-
-  v4.0.2 HARDENING PATCHES (additive over v4.0.1):
-    PATCH A — TP2 runner math fix + SL quantity re-sync after every partial fill
-    PATCH B — SoftwareSL hardening: heartbeat, hard-timeout, activation counter,
-              rolling-window escalation to LIVE_BLOCKED
-    PATCH C — Granular send-fail taxonomy (balance / timeout / depth / drift /
-              exchange_reject / unknown) + record_rejection wiring
-    PATCH D — WithdrawalIsolation HARD_BLOCK default,
-              BalanceReconciler CACHE-state gate for new entries + TTL=45s live,
-              Precision/step/min-notional normalization pre-submit,
-              Consistency interval 180s + starvation escalation to LIVE_BLOCKED,
-              Indicators tagged-rejection (no silent None swallowing)
-    PATCH E — (additive, observability-only, no invariant touched)
-              E.1 Heartbeat top_rejects (log + Telegram)
-              E.2 StarvationGuard blind-spot detection (G→E blindness alert,
-                  Q→S starvation kept as existing LIVE_BLOCKED escalation,
-                  stage stagnation tracker)
-              E.3 Per-stage rejection counters (funnel diagnostics)
-              E.4 Regime hysteresis: separate enter/exit thresholds + dwell time
-              E.5 Score/regime interaction kept clean (no duplicate blocking)
-              E.6 Telemetry snapshot extended with funnel ratios + regime/starvation
-              E.7 All PATCH E code is additive; no removal, no refactor
-
-  v4.0.3 HARDENING PATCHES (additive over v4.0.2, minimal-diff, fail-closed):
-    PATCH F  (CRITICAL) — emergency_close now cancels SL BEFORE market-sell
-                          (kills orphan SL + double-sell hazard).
-    PATCH G  (CRITICAL) — Centralized _finalize_and_record_r: every exit path
-                          (TP2-full, SL_HIT via SLHealth, emergency_close,
-                          time_based_exit) contributes weighted R to
-                          DailyCircuitBreaker AND pops ACTIVE_TRADES.
-                          Fixes: (a) DailyCircuitBreaker never saw SL losses,
-                                 (b) ghost trades stuck in ACTIVE_TRADES.
-    PATCH H  (CRITICAL) — tp3 recomputed after Adaptive Repricing (was stale).
-    PATCH I  (CRITICAL) — fee_viability_ok uses REAL exit weights
-                          (TP1_EXIT_PCT / TP2_EXIT_PCT / RUNNER_KEEP) instead
-                          of the hardcoded 50/50 blend.
-    PATCH J  (HIGH)     — SLHealthAuditor recognises 'closed'/'filled' SL
-                          (SL_HIT path) → finalize the trade, do NOT try to
-                          replace SL on an already-closed position.
-    PATCH K  (MED)      — move_to_break_even offsets by roundtrip fees so BE
-                          truly breaks even (was placing SL exactly at entry).
-    PATCH L  (MED)      — maybe_activate_runner only runs after tp2_hit (was
-                          being invoked on every tick, could mis-flag runner).
-    PATCH M  (MED)      — safe_api_call: single retry for transient network
-                          errors only (timeout / reset / connection reset).
-    PATCH N  (MED)      — Diagnostic counters for missing score inputs
-                          (volume_ratio, structure, retest_q, ob_imbalance,
-                          momentum, rs, spread) — no silent swallowing.
-    PATCH O  (LOW)      — Oversell guard: if total_sold_qty exceeds original
-                          size by > 0.5%, emergency_close the residual & log.
-    PATCH P  (LOW)      — build_and_route reuses one orderbook fetch for both
-                          score-imbalance and pre-send depth check (halves
-                          fetch_order_book calls per signal).
-
-  v4.1.1 final corrections:
-    (F1) CACHE state explicitly raises LIVE_ENTRIES_BLOCKED in the canonical
-         reconciler; existing position management remains allowed.
-    (F2) Emergency close now FAILS CLOSED when SL cancellation is unverified:
-         it does not market-sell into ambiguous SL ownership, preventing a
-         potential double-sell. The residual remains owned and entries block.
-    (F3) SL health-state enum now includes every runtime safety state used by
-         the implementation.
-    (F4) Family tier-aware spread ceiling is enforced as a real hard gate;
-         global spread scoring cannot override tier policy.
-    (F5) Optional D1 bias is fetched only after a candidate exists and is
-         additive by default; optional hard block remains explicit.
-    (F6) HTF repeat backoff is now real bounded telemetry/state bookkeeping;
-         it never converts an HTF rejection into an entry.
-
-  Merged from:
-    1) htf_pullback_scalper_v3-5-1_FINAL.py    (Backbone: HTF families, funnel)
-    2) hybrid_crypto_scalper_FINAL_v3_5.py     (Composite score, safety layer)
-    3) scalp_strategy_pack_v1_9_24_P33.py      (Boot orchestrator, micro-struct)
-
-  ARCHITECTURE (8 LAYERS):
-    L1  Boot & Truth Model
-    L2  Safety & Reconciliation
-    L3  Regime & Context
-    L4  Opportunity Engine
-    L5  Composite Scoring
-    L6  Execution Funnel
-    L7  Exit Management
-    L8  Telemetry & Recovery
-
-  INVARIANTS (NON-NEGOTIABLE):
-    * LONG_ONLY spot execution (no shorts, no futures, no leverage)
-    * fail-closed everywhere (any uncertainty => reject/block)
-    * single truth source (balance/state/live-gating)
-    * single execution decision path (ExecutionFunnel only)
-    * no silent fall-open, no hardcoded secrets
-    * Exit-pct invariant: TP1+TP2 == 1.0 (runner OFF) or TP1+TP2+RUNNER_KEEP == 1.0 (runner ON)
-    *              (SystemExit @ boot if violated in LIVE)
-    * SL must always exist for live trades (emergency_close if MISSING)
-    * SL cancel MUST be verified before id-clear
-    * telemetry MUST be non-blocking (never blocks execution loop)
-
-  ========================================================================
-  v4.4-ADAPTIVE-EXPECTANCY-MULTI-OPPORTUNITY — G->E RECALL & OBSERVABILITY LAYER (2026-08-10)
-  ========================================================================
-  ADDED (all additive, flag-gated, bounded, revertible):
-    1. VWAP anchor as 3rd pullback anchor (Indicators.vwap) + relaxed-mode
-       pullback distance widening (bounded, auto-reverting with TTL).
-    2. PULLBACK micro-uptrend gate: 5th OR-alternative 'ema20_slope_up'
-       over the last N CLOSED 5m bars + fully detailed rejection ctx.
-    3. family_regime_disallowed / family_htf_strength_below_floor /
-       family_tier_below_floor / below_tier / score_below_threshold now
-       emit EXPLAINABLE ctx (family, regime, allowed_regimes, floors,
-       tier, zones).
-    4. no_family_matched ctx: closest_detector + dist_atr_ema20/ema50/vwap
-       + rsi_5m + regime/tier/htf_strength/volume_ratio/btc_context.
-    5. Per-family preferred_zones + volume_floor_ratio policy applied as
-       a bounded SOFT score penalty (never a standalone reject).
-    6. V420FunnelWatchdog: ratio-based nfm trigger + heartbeat now shows
-       nfm_ratio / nfm_delta / relaxed TTL / watchdog state.
-    7. V422NearMiss aggregated stats (closest detector, mean ATR distances,
-       per-detector reject rates, top rejected families, TOD buckets).
-    8. V422StarvationAlerter: independent task watching last_send_ts and
-       emitting a bottleneck snapshot (does not rely on HB cadence).
-    9. PreSendGate defense-in-depth: re-asserts FINAL-level ordering on
-       the repriced levels (ordering itself was already correct).
-    10. SizingEngine: canonical net-RR floor + risk-capture coherence +
-        structured exception counters (fail-closed in LIVE).
-    11. PositionManager.tick: structured per-exception counters (kept the
-        existing short-circuit guards after finalization/drain intact).
-    12. Composite-aware router winner selection WITHIN each priority class
-        (single winner per symbol tick preserved).
-  PRESERVED BYTE-EQUIVALENT BEHAVIOR:
-    * LONG_ONLY spot only - no shorts, no futures, no leverage paths.
-    * ALL hard safety gates: SL chain, BalanceReconciler REAL->CACHE->BLOCK,
-      TruthSeal mandatory direct fetch, ExposureProtection,
-      DailyCircuitBreaker, KillSwitch, ExchangeWatchdog,
-      EquityDrawdownHalt, FailedSendCB.
-    * BOS hard gate for BREAKOUT_RETEST / BREAKOUT_CONTINUATION untouched.
-    * No silent fall-open anywhere; every softening is bounded +
-      flag-gated + auto-reverting (RELAXED_MODE TTL) and NEVER touches
-      SL/TP/exposure math.
-  REMAINS FAIL-CLOSED:
-    * SL placement/verification/cancel (verified-cancel-before-id-clear).
-    * Balance truth (config balance is NEVER live truth).
-    * Data sufficiency (missing/NaN inputs => reject, never pass).
-    * emergency_close (cancel->sell order, unified finalizer, no ghosts).
-  ========================================================================
-
-================================================================================
-
-  v4.5.5-GLOBAL-CANONICAL-COHERENCE — SURGICAL RECALL + STARVATION REPAIR
-    * Candidate freshness clock-domain fix: Unix wall timestamps use WALL_NOW;
-      missing/invalid timestamps remain fail-closed as freshness.unverifiable.
-    * Bounded NEUTRAL-only HTF floor override (45.0) without bypassing family,
-      availability, structure, or other hard policy gates.
-    * MID-aware LOCAL_STRENGTH_BREAKOUT / COMPRESSION_EXPANSION tier floors;
-      BREAKOUT_RETEST / BREAKOUT_CONTINUATION remain LARGE.
-    * Liquidity universe minimum quote volume raised to 3M USDT; no below-MID
-      fill-in is permitted when fewer than Top-120 qualify.
-    * Starvation classifier gains telemetry-only SCAN_STALE mode; 12-minute
-      window and explicit windowed funnel deltas prevent rollover false alarms.
-    * Added detailed funnel/rejection telemetry and offline v4.5.5 self-tests.
-    * Final surgical closure: heartbeat PRE now equals true prequalification;
-      canonical reject is explicit; window deltas are separated from cumulative
-      counters; persisted cycle timestamps use explicit wall/monotonic domains;
-      duplicate funnel-window configuration removed; safety/telemetry self-tests
-      strengthened without changing execution authority.
-
-  v4.5.7-POLICY-RECALL-DEADLOCK-FIX — BOUNDED FAMILY RECOVERY + HTF RELIEF
-  v4.5.10-HIGH-RECALL-DIVERSITY-LOW-TARGET — SURGICAL OPPORTUNITY COVERAGE + DIVERSITY
-    * Promotes RELATIVE_STRENGTH_LEADER and VOLATILITY_BURST into the live
-      MSE path (their old per-strategy SHADOW flags were telemetry-only).
-    * Adds MICRO_TREND_CONTINUATION as a bounded closed-bar MSE candidate.
-    * Low-target exit profiles: TP1~0.9R / TP2~1.8R, still subject to fee,
-      SL, RR, sizing, PreSend and execution hard gates.
-    * Applies smaller risk factors (0.60/0.65) to high-recall candidates.
-    * Gives the global arbiter a tiny bounded bonus and a 0.51 floor only for
-      the high-recall lane; never below the existing global hard floor.
-    * Existing OrderBook confirmation, Balance/Exposure/SL/TruthSeal and
-      LONG_ONLY SPOT execution authority are unchanged.
-    * FamilyPolicyLayer now exposes exact mismatch attribution (macro/local/
-      phase/severity/style) without changing canonical authority.
-    * Bounded NEUTRAL + LOCAL_BULLISH recovery is allowed only for
-      PULLBACK / LOCAL_STRENGTH_BREAKOUT / COMPRESSION_EXPANSION /
-      CONTINUATION_RECLAIM / TREND_CONTINUATION, only after repeated
-      windowed policy starvation evidence and strong closed-bar confirmation.
-    * Family-specific HTF relief is capped at 5 points, NEUTRAL-only,
-      LOCAL_BULLISH-only, TTL<=1800s, auto-reverting, and never active under
-      hard/system hazards or liquidity/structure/score bottlenecks.
-    * Added hourly telemetry-only GLOBAL-TRACE and clearer STARV/ACCOUNTING
-      heartbeat semantics.
-    * Pullback forensic counters remain telemetry-only; no new strategy or
-      execution path was added.
-    * LONG_ONLY/SPOT, SL/TP, risk, balance, liquidity, structure, execution,
-      and all fail-closed hard gates remain unchanged.
-v4.5.13-RECALL-COVERAGE-HTF-RECOVERY-ADAPTIVE-FUNNEL
-    * Bounded same-symbol HTF recovery cache (TTL + candidate freshness).
-    * Adaptive local retention: 3 -> at most 5 distinct strategy candidates.
-    * Recovery evidence continuity across NEUTRAL -> BULLISH without new relief.
-    * Policy telemetry split into macro/local/phase/severity/style + HTF quality.
-    * Full window funnel heartbeat: GEN -> HARD_VALID -> RAW_RANK -> POOL ->
-      PRE -> SEL -> Q -> S.
-    * T41..T44 acceptance tests; no hard execution gate is relaxed.
-
-  v4.5.10-DIVERSITY-LOW-TARGET-CLOSURE
-    * Low-target ExitProfile is now the canonical source for the high-recall lane
-      after Adaptive Repricing; no reversion to global TP1/TP2/TP3 values.
-    * RELATIVE_STRENGTH_LEADER / VOLATILITY_BURST require their explicit LIVE
-      enable flags in addition to the base engine enable flags.
-    * Global arbitration adds bounded strategy/family diversity preference and
-      a configurable maximum of one winner per high-recall family by default.
-    * High-recall funnel telemetry is exposed as GEN/PRE/SEL/Q/S in heartbeat.
-    * No hard safety or execution gate is bypassed.
-
-v4.5.12-ROOT-CAUSE-SNAPSHOT-COHERENCE-STARVATION-FINAL
-    * ROOT FIX: canonical prequalification reuses the exact enriched
-      GlobalOpportunityBrain snapshot used by MSE candidate generation instead
-      of rebuilding raw market_data_map snapshots. This removes regime/local/
-      phase/HTF coherence drift and false policy/HTF starvation caused by
-      mismatched snapshot domains.
-    * STARVATION FIX: aggregate the two equivalent policy-rejection labels
-      `family_regime_disallowed.macro` + `htf.family_regime_disallowed` before
-      deciding policy starvation. `htf.unavailable` remains separate and
-      fail-closed.
-    * Bounded recovery evidence is now 2 complete windows / 30 minutes
-      no-send / 35% aggregated policy-mismatch share. Recovery remains
-      NEUTRAL + LOCAL_BULLISH + NORMAL + allow-listed family + closed-bar
-      confirmation only, with the same downstream hard gates.
-    * MTF_PULLBACK is included in the existing bounded recovery allow-list;
-      its own recovery validator remains mandatory.
-    * Candidate-vs-snapshot context-drift telemetry added for future audits.
-    * No relaxation of liquidity, spread, structure, score hard floors,
-      Balance/TruthSeal/Exposure/SL/PreSend/Execution gates.
-    * LONG_ONLY SPOT / fail-closed invariants preserved.
-
-v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
-    * Unexpected exceptions inside canonical prequalification are no longer
-      silently discarded by the global arbitration loop. They are recorded as
-      dedicated exception.* reasons with bounded history and compact context.
-    * Exception rejects are attributed to the OTHER telemetry bucket instead of
-      being mislabeled as normal HTF/STRUCTURE bottlenecks.
-    * Heartbeat/starvation diagnostics expose prequal exception deltas, OTHER
-      rejects, and top canonical-prequalification reasons.
-    * Final closure: canonical prequalification now calls the tier-aware spread
-      gate with its canonical argument order (spread_pct, tier), removing a
-      hidden ValueError path that previously looked like silent prequal starvation.
-    * NO hard gate, score floor, HTF threshold, liquidity threshold, SL/TP rule,
-      sizing rule, or execution authority is relaxed or bypassed by this patch.
-================================================================================
-"""
-
-# v4.5.83 FINAL ALL-STRATEGY-COVERAGE / CANONICAL-FEASIBILITY CLOSURE
-#   * Discovery fairness: bounded per-family quota + two-pass family-diverse
-#     scheduling so early PULLBACK candidates cannot consume the full cycle cap.
-#   * Canonical score feasibility: V570 no longer treats engine_score as if it
-#     were the final SignalBuilder score; it rejects only when the bounded
-#     maximum canonical adjustment still cannot reach the canonical floor.
-#   * Adds explicit bounded telemetry for family coverage and parity-feasibility
-#     rejections. The final SignalBuilder score gate remains authoritative.
-#   * No HTF, liquidity, structure, PreSend, Balance, TruthSeal, SL, exposure,
-#     execution, LONG_ONLY/SPOT or exit safety gate is weakened or bypassed.
-#
-# v4.5.82 FINAL ALL-STRATEGY-DISCOVERY / SCORE-PARITY CLOSURE
-#   * Discovery notifications are deduplicated by SYMBOL+FAMILY instead of
-#     SYMBOL only, so PULLBACK can no longer suppress other strategy families
-#     for the same symbol.
-#   * Discovery cycle cap is truly global across engine invocations, preventing
-#     each individual MSE engine from resetting the per-cycle notifier budget.
-#   * V570 global->canonical score parity now derives the same strategy-aware
-#     canonical base floor used by SignalBuilder (regime + family/mode policy
-#     + strategy offset/memory), then applies the existing bounded adaptive
-#     relief. This removes SELECTED->SCORE policy drift without lowering any
-#     safety floor or creating a new execution authority.
-#   * No strategy detector, HTF, liquidity, structure, PreSend, Balance,
-#     TruthSeal, SL, exposure, execution, LONG_ONLY or exit invariant is
-#     weakened or bypassed.
-#
-# v4.5.81 FINAL PULLBACK-FULL-COHERENCE CLOSURE
-#   * Finalizes bounded entry-zone coherence on both sides of the validated zone.
-#   * Restricts structural swing-low selection to a recent, zone-relative invalidation area.
-#   * Requires the final PULLBACK SL to remain below the validated pullback zone.
-#   * Keeps all existing HTF/liquidity/score/PreSend/execution/safety gates unchanged.
-#
-# v4.5.80 FINAL PULLBACK-ALL-COHERENCE CLOSURE
-#   * Makes shallow_pullback support-only across every active PULLBACK structural gate.
-#   * Uses confirmed closed-bar swing lows for structural SL with bounded ATR/% safety.
-#   * Re-applies structural SL after adaptive repricing using the final entry.
-#   * Adds a final zone/chase coherence assertion so repricing cannot turn a pullback
-#     into a late chase entry.
-#   * Keeps the existing single JIT transient-spread recheck; tier spread remains hard.
-#   * TP1/TP2/TP3 geometry, 80-USDT sizing/cap, balance, exposure, PreSend, execution,
-#     Software-SL, LONG_ONLY SPOT and all fail-closed authorities remain unchanged.
-#
-# v4.5.76 FINAL EXIT-POLICY / LEGACY-DRIFT / SAFETY-RECONCILIATION CLOSURE
-#   * Canonicalizes legacy SL-failure flags so no older CONFIG key can disable
-#     automatic Software-SL protection for a live trade.
-#   * TARGET_ONLY remains a target-order management policy only; Software-SL
-#     remains mandatory for live protection.
-#   * Safety-hazard MARKET SELL remains OFF by default and, even when explicitly
-#     enabled, is single-attempt per trade with a hard anti-repeat latch.
-#     Ambiguous/unknown safety outcomes block NEW entries instead of repeating
-#     a potentially duplicate MARKET SELL.
-#   * Exit classification is preserved across normal TP/SL and safety paths;
-#     protection failures never masquerade as SL_HIT.
-#   * No entry strategy, score, HTF, liquidity, sizing, or LONG_ONLY SPOT
-#     invariant is changed.
-#
-# v4.5.74 FINAL TP-SL STRICT / TARGET-ONLY-SL / SAFETY-CLOSURE
-#   * TARGET_ONLY no longer disables automatic Software-SL protection; target
-#     limit orders and automatic SL protection coexist.
-#   * Manual/target-only SL-failure policy always attempts to arm software SL;
-#     if arming fails, NEW entries remain blocked fail-closed.
-#   * Emergency/Safety-Hazard MARKET SELL is disabled by default; only an
-#     explicitly enabled operator safety override can authorize it.
-#   * Software-SL supports a bounded decisive-breach fast path in addition to
-#     the normal spaced multi-tick confirmation, without weakening the model SL.
-#   * Exit reason separation is enforced so protection failure is never labeled
-#     as SL_HIT and price-independent exits cannot masquerade as normal exits.
-#   * Restart/reconciliation remains exchange-first and target completion latches
-#     are preserved; no blind TP recreation after restart or ambiguous state.
-#   * Normal automated exits remain strictly TP1 / TP2 / confirmed Software-SL.
-#
-# v4.5.73 FINAL EXIT-AUTHORITY / SAFETY-SEPARATION / RESTART-EXIT-CLOSURE
-#   * Keeps normal automatic SELLs strictly within TP1/TP2/confirmed-SL paths.
-#   * Safety-hazard MARKET SELLs are separately tagged, counted, and never
-#     conflated with TP/SL exits in telemetry/accounting.
-#   * Time-exit, monitor-stale, and software-SL hard-timeout remain non-SELL
-#     controls; they block new entries / preserve protection instead of creating
-#     a price-independent MARKET SELL.
-#   * Recovered trades reconcile persisted TP/SL order IDs with exchange open /
-#     terminal state before rearming protection; no blind target recreation is
-#     allowed after restart.
-#   * Recovered spot balance is checked against persisted remaining_position;
-#     insufficient/ambiguous balance blocks NEW entries and target recreation.
-#   * Completed TP stages are latched explicitly so a later tick/restart cannot
-#     recreate or repeat an already-executed target.
-#   * No changes to entry strategy, risk, HTF, liquidity, Balance/TruthSeal,
-#     LONG_ONLY SPOT or the canonical TP/SL geometry.
-#
-# v4.5.72 FINAL EXIT-AUTHORITY / TP-SL-RECONCILIATION-CLOSURE
-#   * Every live MARKET SELL passes through one final authorized-submit gateway
-#     immediately before the exchange call; no direct SELL call-site bypass remains.
-#   * TP1/TP2 partial exits have an in-flight guard to prevent concurrent duplicate
-#     MARKET SELL submissions for the same stage.
-#   * TP exits require the current observed price to have reached the target;
-#     software-SL exits require a proven current-price breach of active model SL.
-#   * Partial/ambiguous fills remain exchange-reconciled and cannot be blindly retried.
-#   * Monitor-stale, hard-timeout, fill-drift, and time-exit remain non-market-SELL
-#     paths by default. Only narrowly allow-listed safety hazards may emergency-sell.
-#   * No changes to entry strategy, risk/HTF/liquidity/Balance/TruthSeal, or
-#     LONG_ONLY SPOT invariants.
-#
-# v4.5.71 FINAL EXIT-AUTHORITY / TP-SL-ONLY CLOSURE
-#   * Central exit authority: normal market SELLs are permitted only for TP1,
-#     TP2, or a confirmed SOFTWARE_SL breach; explicit safety-hazard exits
-#     remain separately allow-listed and auditable.
-#   * Post-entry protection/failover SELLs are blocked before any SL mutation
-#     during the bounded stabilization window, eliminating BUY->SELL races.
-#   * Monitor-stale, software-SL hard-timeout, and time-based exits no longer
-#     issue automatic market SELLs by default; they block NEW entries and keep
-#     the position under its existing protection model until TP/SL conditions.
-#   * Large fill drift no longer performs an immediate emergency SELL after a
-#     successful BUY; the actual fill is kept authoritative and SL/TP geometry
-#     is recalibrated from the real fill so the trade can exit normally at SL/TP.
-#   * Software-SL breach confirmation is canonicalized to 3 spaced ticks;
-#     duplicate legacy config cannot override the v4.5.70 safety setting.
-#   * TP execution paths are explicitly audited before the first exchange SELL;
-#     unknown/incorrect SELL reasons fail closed.
-#   * No change to entry strategy, risk sizing, HTF, liquidity, Balance/TruthSeal,
-#     LONG_ONLY SPOT, or the existing native-SL/software-SL safety model.
-#
-# v4.5.70 FINAL POST-BUY AUTO-SELL / PROTECTION LOOP CLOSURE
-#   * MEXC Spot native stop creation is no longer trusted from generic CCXT
-#     capability flags; software AUTO-SL is the default protection mode.
-#   * Protection-related market SELLs are blocked during a bounded post-fill
-#     stabilization window, preventing BUY->SELL-in-seconds races.
-#   * Software-SL breaches require multiple spaced PM confirmations after the
-#     stabilization window; one stale/duplicate tick cannot trigger a SELL.
-#   * A monotonic fill timestamp is captured for deterministic age gating.
-#   * A central emergency-close audit covers protection/failover reasons only;
-#     unrelated hard emergency paths remain unchanged.
-#
-# v4.5.66 FINAL ROOT-CAUSE CALLSITE / RECOVERY COHERENCE
-#   * Critical call-site closure: every _v520_fake_break_gate invocation now
-#     passes family/zone/ATR by keyword. The previous positional calls placed
-#     zone and ATR into strategy_mode/zone_ref, leaving atr_value unset and
-#     could systematically distort pullback/fake-break decisions.
-#   * V549 recovery fallback defaults now match the active V565 recovery policy,
-#     eliminating hidden legacy fallback drift if an environment key is absent.
-#   * Discovery noise control is now actually wired: blocked Discovery alerts
-#     are emitted only when a bounded V565 recovery lane is plausible.
-#   * Structural quarantine is also armed for microstructure/fake-break
-#     canonical rejects, not only the final live-builder fake-break path.
-#   * Pullback review receives optional structural evidence when supplied,
-#     without changing live hard gates.
-#
-# v4.5.68 FINAL RESTART / PROTECTION RECONCILIATION
-#   * Re-validates recovered ACTIVE_TRADES before NEW-entry scanning.
-#   * Idempotently re-arms persisted SOFTWARE_SL protection after process restart.
-#   * Never clears a persisted native SL id merely because the exchange response
-#     is ambiguous; ambiguous native protection blocks NEW entries fail-closed.
-#   * If no persisted native stop exists, software AUTO-SL is restored without
-#     submitting a SELL and without duplicate failover alerts.
-#
-# v4.5.67 FINAL PULLBACK-RECOVERY ROBUSTNESS / SCALE-CONSISTENCY
-#   * Fixes a critical threshold-scale edge case: StrategyCandidate.engine_score
-#     is stored as 0..1, while the V565 structural recovery thresholds are 0..100.
-#     Recovery now normalizes the object path through the canonical candidate
-#     context builder, preventing the rescue lane from being silently disabled.
-#   * Keeps the structural recovery lane narrow and PULLBACK-only; no breakout
-#     family gets this bypass.
-#   * Preserves all v4.5.65 gates and v4.5.64 automatic SL behavior.
-#
-# v4.5.65 FINAL PULLBACK-GATE COHERENCE / RECALL / STARVATION HARDENING
-#   * Pullback fake-break detection is pullback-aware: a shallow controlled
-#     retracement is not classified as a fake breakout solely because the last
-#     closed 5m candle is bearish.
-#   * PULLBACK microstructure parity shares the same confirmed evidence instead
-#     of double-gating on two equivalent tests.
-#   * EMA20 slope window is widened from the short 5-bar view to a bounded
-#     8-bar closed-candle view, reducing false negatives during pullbacks.
-#   * V549 pullback recovery volume floor is lowered to 0.60 only for elite
-#     candidates with stronger compensating HTF/engine evidence.
-#   * Starvation classifier uses structural-pressure attribution first so
-#     `mode=SCORE` cannot hide a dominant STRUCTURE bottleneck.
-#   * Adds a narrow structural recovery lane for exceptional PULLBACK setups
-#     only. Breakout hard gates remain hard and canonical SignalBuilder remains
-#     the sole execution authority.
-#   * Review score uses pullback-aware shallow-retracement evidence and
-#     progressive RS penalties instead of repeated full penalties.
-#   * ATR/chase calculations fail closed when ATR is invalid; they never turn an
-#     invalid ATR into a misleading 0.00-ATR chase.
-#   * Same-symbol structural quarantine reduces repetitive rejected rescans and
-#     Telegram discovery noise without changing live safety gates.
-#   * Discovery telemetry is suppressed unless a bounded live-recovery path is
-#     plausible.
-#   * All Balance/TruthSeal/Exposure/PreSend/SL/Execution/Watchdog/KillSwitch
-#     and LONG_ONLY SPOT hard authorities remain unchanged.
-#
-# v4.5.64 FINAL SL-FAILOVER IDEMPOTENT / SOFTWARE-COHERENCE
-#   * Same-trade SL failover is idempotent: repeated PM ticks cannot re-arm or
-#     re-notify the same software protection state indefinitely.
-#   * Once SOFTWARE_SL_AUTO is active, native SL cancel/replace loops are skipped.
-#     BE, staircase, runner-lock and trailing update the software model locally.
-#   * A software-protected position is never treated as stopless solely because
-#     native SL has no order id.
-#   * Failover notifications are state/cooldown limited and exposed in /sl.
-#   * Actual software-SL breach still performs automatic reconciled SELL.
-#   * Existing hard gates remain: KillSwitch, Balance, Exposure, Drawdown,
-#     Watchdog, ambiguity, Precision, Liquidity, Structure, PreSend and
-#     LONG_ONLY MEXC Spot authority.
-#
-# v4.5.63 FINAL LIVE-BLOCK / PROTECTION-COHERENCE / WATCHDOG REPAIR
-#   * SOFTWARE_SL_ACTIVE is now a first-class protected state for NEW-entry
-#     gating; a protected software stop must not be mislabeled stopless exposure.
-#   * Removes the old hard LIVE_BLOCKED escalation on ordinary software-SL
-#     activation bursts. Multiple software fallbacks are expected when native
-#     MEXC Spot trigger support is unavailable; they remain protected by the
-#     dedicated software watchdog.
-#   * Watchdog records operational API failures by category. Native SL probe/
-#     verification failures are excluded from the transport watchdog because
-#     they are handled by the software-SL failover path and should not deadlock
-#     the entire entry engine.
-#   * Adds runtime LIVE_BLOCKED recovery for watchdog/software-protection
-#     diagnostic blocks only after the underlying hazard is actually gone.
-#   * Fixes heartbeat telemetry to report windowed watchdog error counts and
-#     explicit reason/recovery state.
-#   * Keeps all hard gates: KillSwitch, real-balance truth, exposure, drawdown,
-#     precision, liquidity, structure, PreSend, SL breach exit, ambiguity and
-#     LONG_ONLY MEXC Spot remain authoritative.
-#
-# v4.5.62 FINAL AUTO-SL HARDENED / NATIVE RECONCILE
-#   * Hardens every native SL state-changing call to use a callable factory,
-#     so synchronous exceptions and async exceptions both enter the same
-#     fail-safe handling path.
-#   * Native SL verification is multi-path: fetch_order + live open/recent
-#     stop-order fallback; only a positively matched SELL trigger is CONFIRMED.
-#   * If native SL is unavailable/unverified, the trade is automatically kept
-#     open under SOFTWARE_SL_AUTO. A missing SL ID alone never sells.
-#   * Software SL checks price continuously through the dedicated PositionManager
-#     and auto-sells only on a real model-SL breach.
-#   * Protection-monitor heartbeat uses the configured V560 threshold directly;
-#     no hidden longer threshold can postpone the safety decision.
-#   * Any verified native-SL cancel followed by replacement failure (TP1/TP2/
-#     staircase/trailing/runner) immediately restores the prior SL level as the
-#     software watchdog's model and arms automatic software protection.
-#   * Ambiguous SELL outcomes are reconciled before duplicate SELL attempts.
-#   * Telegram /cancel and anti-recreate controls from v4.5.61 remain intact.
-#
-# v4.5.61 FINAL TELEGRAM ORDER CONTROL / ANTI-RECREATE
-#   * Adds authenticated Telegram command control using the configured
-#     TELEGRAM_CHAT only.
-#   * /cancel <SYMBOL> cancels OPEN LIMIT SELL target orders for that symbol
-#     and permanently disables automatic target recreation for the live process.
-#   * /cancel_all_targets cancels all OPEN LIMIT SELL target orders across the
-#     account and disables their automatic recreation for this process.
-#   * /orders shows current open orders so the operator can verify exact state.
-#   * Target-only reconciliation no longer recreates a target after cancellation
-#     when V561_TARGET_RECREATE_ON_CANCEL=False (default).
-#   * Cancellation is exchange-state reconciled; ambiguous cancellation does
-#     NOT trigger blind retries or new SELL orders.
-#   * Optional /cancel_all <SYMBOL> exists for emergency cancellation of every
-#     open order on a symbol, but is deliberately separate from target cancel.
-#   * No entry, SL, exposure, balance, TruthSeal or strategy gate is weakened.
-#
-# v4.5.60 FINAL AUTO-SL HYBRID NATIVE->SOFTWARE
-#   * Verified native exchange SL is preferred when explicitly supported.
-#   * Native SL unavailable/unverified after a confirmed BUY does not trigger
-#     an immediate SELL; an automatic software-SL watchdog is armed instead.
-#   * Software SL performs an automatic reconciled market SELL only when the
-#     actual price breaches the model SL.
-#   * Missing SL ID / stop verification failure / transient stop API error is
-#     not itself a price-breach event.
-#   * Dedicated PositionManager runs at 0.50s by default and is independent
-#     from the market scanner.
-#   * Missed protection heartbeat blocks NEW entries first; persistent monitor
-#     failure is a last-resort protection hazard and can emergency-close.
-#   * Native SL retries reconcile exchange state before another state-changing
-#     create, preventing blind duplicate stops after ambiguous responses.
-#   * Dynamic TP geometry, fee/risk/precision gates and LONG_ONLY MEXC SPOT
-#     authority remain intact.
-#
-# v4.5.59 FINAL DYNAMIC TARGETS / SL-FAIL / TARGET-ONLY / SL-MONITOR
-#   * Post-fill SL failure NEVER forces an automatic market SELL in the default
-#     TARGET_ONLY policy.
-#   * SL monitoring alternatives: verified native exchange SL, software
-#     ALERT_ONLY monitor, or manual TARGET_ONLY monitoring.
-#   * ALERT_ONLY mode can warn on SL-near / SL-breach conditions but cannot
-#     place a SELL or finalize the position.
-#   * TARGET_ONLY remains first in PositionManager, before pending SL/TP
-#     reconciliation and all automated exit mutations.
-#   * Dynamic targets remain bounded by StrategyExitProfiles + quality score
-#     + ATR volatility + family bias, with existing fee/risk gates authoritative.
-#   * 40-USDT sizing and 50/30/20 exit weights are unchanged.
-#
-# v4.5.58 FINAL DYNAMIC TARGETS / SL-FAIL / TARGET-ONLY
-#   * Exit targets are now dynamically derived from the existing StrategyExitProfiles
-#     plus signal quality and volatility, while preserving family-specific envelopes.
-#   * Quality tiers: B <70, A 70-84.99, A+ 85-94.99, Elite >=95; bounded RR scaling only.
-#   * ATR% volatility trims/extends target reach within a strict bounded range.
-#   * Family bias favors breakout/trend continuation and slightly shortens reversal targets.
-#   * Dynamic targets are checked against the existing hard fee-viability gate; if the
-#     adjusted geometry becomes uneconomic, the canonical profile is retained or the
-#     existing bounded fee-rescue is used and rechecked.
-#   * 40-USDT position sizing is unchanged; default exit weights remain 50/30/20.
-#   * SL-failure TARGET_ONLY behavior remains: no automatic market SELL; LIMIT SELL
-#     targets only; manual SL monitoring remains the operator responsibility.
-#
-# v4.5.58 FINAL DYNAMIC TARGETS / SL-FAIL / TARGET-ONLY CLOSURE
-#   * ROOT closure completed: SL missing-ID and repeated-unverified paths now
-#     enter TARGET_ONLY directly; no automatic market SELL is issued.
-#   * Explicit operator policy: failed/unverified native SL never causes an
-#     automatic market SELL when target-only mode is enabled.
-#   * The already-filled spot position remains open and LIMIT SELL exits are
-#     installed at TP1/TP2/TP3 using the actual-fill geometry.
-#   * TARGET_ONLY takes precedence over SLHealthAuditor, SoftwareSLFallback,
-#     market-TP, staircase, trailing and time-exit for that trade.
-#   * Target-order outcomes are reconciled from the exchange; ambiguous states
-#     are preserved and never blindly duplicated.
-#   * Any later SL replacement failure may enter the same target-only state.
-#   * Normal emergency_close remains available for unrelated hard hazards.
-#
-# v4.5.56 FINAL LIVE-EXECUTION / PROTECTION CLOSURE
-#   * ROOT-CAUSE FIX: current telemetry showed FULL_LIVE_RUNNING but ZERO sends
-#     because EquityDrawdownHalt was hard-blocking every new entry at
-#     19.60% drawdown. The halt remains a real safety authority (not removed),
-#     but an explicit operator-reset path is now available at boot without
-#     changing the limit or silently clearing the protection.
-#   * ROOT-CAUSE FIX: current MEXC spot CCXT capability reports do not certify
-#     trigger/stop orders; the old ProductionCapabilityGate treated a merely
-#     callable create_stop_market_order helper as sufficient. That could lead
-#     to a BUY fill followed by unverifiable protection and an immediate
-#     emergency SELL. Live MEXC spot now detects this honestly and uses a
-#     dedicated SOFTWARE_SL_ONLY protection mode when server-side stop support
-#     is not explicitly certified.
-#   * PROTECTION FIX: a failed exchange-stop verification no longer forces an
-#     immediate market SELL when the bounded software-SL fallback is healthy.
-#     The filled trade stays active and is protected by the software SL
-#     watchdog; an exit occurs only on an actual breach/timeout or unresolved
-#     protection hazard.
-#   * LATENCY FIX: PositionManager gets a dedicated 1-second (configurable)
-#     management task so software-SL protection is independent of the long
-#     market-scan cycle. A per-class async lock prevents overlapping ticks.
-#   * FAIL-CLOSED: KillSwitch, Balance/TruthSeal, Exposure, PreSend, precision,
-#     entry ambiguity, and all existing risk/SL geometry remain hard gates.
-#     No futures, leverage, shorts, or blind network retries are introduced.
-#
-# v4.5.55 FINAL CLEANED SCORE / FEE / MTF RECALL
-#   * Single active Global Opportunity score policy: 0.54 -> 0.52 -> 0.50;
-#     0.50 is the hard arbitration floor. Global score remains 0..1.
-#   * Canonical live execution score remains 0..100 with the existing
-#     V453 bounded 70 -> 68 -> 66 -> 64 -> 62 recovery; no cross-scale stacking.
-#   * One active Fee-Rescue implementation (V420FeeRescue.try_expand_targets)
-#     services both PreSend and the V554 ranking probe; original fee gate remains hard.
-#   * MTF_PULLBACK recall widened only at HTF/volume/TP1 geometry:
-#     HTF 62->58, volume 0.85->0.80, TP1 ATR 0.80->0.75; MID tier and confirmations remain.
-#   * Local per-symbol ranking retention 3->4, with existing elastic cap of 5.
-#   * No changes to Long-Only Spot, Balance/TruthSeal, Exposure, Liquidity/Spread,
-#     SL verification/fallback, PreSend, execution ambiguity handling, or exit invariants.
-#
-# v4.5.54 FINAL PREQUAL-COHERENCE / MSE FEE-RESCUE / STARVATION TELEMETRY CLOSURE
-#   * Discovery PASS can now be reconciled against CompositeRanking drops;
-#     strong PULLBACK candidates that are only economically blocked at the
-#     preliminary fee check remain rankable when the existing bounded target-
-#     expansion rescue proves the original fee gate can pass.
-#   * Empty Global pools no longer retain prior-cycle ranked/top-score values,
-#     eliminating false SCORE starvation labels.
-#   * Exact MSE rank-reject reasons and pullback fake-break context are logged
-#     for evidence-based tuning. No hard execution gate is bypassed.
-#
-# v4.5.53 FINAL PROTECTED-ENTRY / STOP-RECONCILIATION / LIVE-BLOCK RECOVERY
-#   * Fixes the observed ADA failure chain: entry filled -> exchange SL verification failed ->
-#     emergency protection exit -> unresolved/ambiguous residual could leave LIVE_ENTRIES_BLOCKED
-#     active and suppress all later BUY attempts.
-#   * Adds a bounded STOP verification path using open/recent orders before treating a
-#     correctly-created MEXC stop as failed. It matches symbol/side/trigger/amount without
-#     requiring `filled` on an open stop order.
-#   * Adds explicit reconciliation of an ambiguous emergency market-sell before declaring
-#     STOPLESS_EXPOSURE. If the sell is proven filled, the trade is finalized and the entry-only
-#     block is cleared through a dedicated proof-based recovery function.
-#   * Adds robust BUY fill-price reconciliation using trades VWAP and cost/filled, then a bounded
-#     fetch_order refresh. This prevents false FILL_DRIFT_ABORTs caused by bad average/price fields.
-#   * Enables bounded LIMIT-FIRST entry; the limit is never above the planned entry, has a short
-#     timeout, and market fallback is allowed only when current ask remains inside a small drift
-#     envelope. Ambiguous resting-order cancel still blocks.
-#   * No Balance/TruthSeal/Exposure/PreSend/SL hard gate is bypassed. LONG_ONLY MEXC SPOT and
-#     fail-closed semantics remain intact; ambiguous exchange state still blocks new entries.
-
-# v4.5.42 EXECUTION-PARITY / DISCOVERY-LIVE COHERENCE — SURGICAL LIVE HANDOFF CLOSURE
-#   * Adds a just-in-time canonical preflight for every globally selected preferred candidate,
-#     reusing the SAME canonical prequalification function used by global arbitration before
-#     entering the live builder. This closes the observed SELECTED -> EXEC_BLOCKED drift where
-#     a candidate was selected from one context and rejected immediately by final policy/HTF/structure.
-#   * Discovery Telegram remains KNOWLEDGE ONLY, but now exposes a truthful LIVE PREFLIGHT
-#     result and exact blocker reason when the same live snapshot is already provably blocked.
-#     A+/95+ discovery quality is never presented as equivalent to live eligibility.
-#   * Adds bounded V542 telemetry: preflight pass/block counts, top reasons, last blocker,
-#     and candidate/current-context diagnostics. Telemetry is non-authoritative.
-#   * Corrects the existing family-aware fake-break configuration drift so the configured
-#     PULLBACK/MTF_PULLBACK chase cap is actually used by the soft fake-break gate.
-#   * NO HTF/score/risk/liquidity/SL/exposure safety floor is lowered. No new order path is added.
-#     LONG_ONLY MEXC SPOT, PreSendGate, Balance/TruthSeal, SL verification, KillSwitch,
-#     watchdog, circuit-breaker and fail-closed execution authority remain unchanged.
-#
-# v4.5.44 FINAL BOOT-VALIDATION / RECOVERY-SELFTEST COHERENCE
-#   * Fixes a configuration-validation contradiction introduced by v4.5.43:
-#     runtime balance recovery was intentionally bounded to 2 fresh-REAL retries,
-#     but the legacy V531 self-test still required the old exact value of 1.
-#     That mismatch caused validate_config() to return False and the process to
-#     abort with `config_invalid` before the live loop could start.
-#   * The self-test now validates the actual supported bounded range (1..2),
-#     while V543 remains the feature that authorizes the second recovery attempt.
-#   * No trading gate, risk rule, network-timeout semantics, or fail-closed
-#     safety authority is relaxed.
-#
-# v4.5.45 FINAL LIVE-HANDOFF / JIT-PARITY STARVATION CLOSURE
-#   * V542 JIT execution-parity remains diagnostic/reconciliation telemetry,
-#     but is no longer an independent hard blocker before SignalBuilder.
-#   * The canonical SignalBuilder remains the sole live-entry authority and
-#     still re-runs freshness, family policy, HTF, microstructure, score,
-#     PreSend, balance, exposure, liquidity, precision, SL and execution gates.
-#   * This removes a duplicate policy gate that could reject selected candidates
-#     before the canonical builder's V457/V518 recovery branches had a chance
-#     to run. No hard safety gate is bypassed; the same canonical gate still
-#     decides the live order.
-#   * Adds explicit JIT-block / JIT-pass / builder-block telemetry to heartbeat
-#     so G->E and selected->live handoff failures are distinguishable.
-#   * Adds a per-cycle live-ready counter and explicit builder blocker ledger.
-#   * No retry of ambiguous network execution, no balance-truth bypass, no SL
-#     bypass, no reduction of MAX_CONCURRENT_TRADES, and no short/futures path.
-#
-# v4.5.47 FINAL HANDOFF / SCORE-LIQUIDITY / CYCLE-ACCOUNTING CLOSURE
-#   * Fixes a second-order starvation issue found in live telemetry: bounded
-#     pending candidates were appended only AFTER the generic execution reserve,
-#     so a full reserve could consume the attempt pool before exceptional
-#     high-quality Discovery PASS candidates were ever considered.
-#   * Pending handoff candidates are now inserted BEFORE the generic reserve,
-#     while finalists remain first. This preserves global ranking authority but
-#     makes the bounded Discovery->Execution bridge operational when capacity
-#     is actually unused.
-#   * Adds cycle-local handoff accounting for SELECTED -> EXEC_TRY -> BUILDER ->
-#     LIVE_READY -> QUEUED -> SENT and explicitly separates score/liquidity
-#     starvation from execution-handoff starvation.
-#   * Adds selected-vs-reserve-vs-pending attempt attribution, exact current-cycle
-#     builder-block reason tracking, and cumulative-vs-cycle heartbeat fields.
-#   * No score, HTF, liquidity, structure, PreSend, Balance, TruthSeal, SL,
-#     exposure, execution or long-only safety gate is bypassed or removed.
-#
-# v4.5.48 FINAL ELITE-GLOBAL-RECOVERY / PULLBACK-STRUCTURE-CLOSURE
-#   * Adds a bounded GLOBAL elite recovery lane when canonical prequalification
-#     passes but normal global arbitration selects zero candidates. The lane is
-#     restricted to the existing V540 elite-quality evidence plus a hard global
-#     safety floor; it never bypasses canonical execution gates.
-#   * Separates global-score starvation from canonical-score starvation in cycle
-#     telemetry. `relaxed=ON` can now be true without falsely implying that the
-#     Global Arbiter itself was relaxed.
-#   * Extends the family-aware PULLBACK fake-break soft gate with two existing,
-#     closed-bar structural confirmations: higher-low and EMA20 slope-up. These
-#     are bounded alternatives to reclaim/bullish-close; chase cap remains hard
-#     and applies unchanged. Breakout families remain hard-gated.
-#   * Adds explicit no-selection diagnostics: top prepared global score, global
-#     floor, elite candidates seen, elite rescue result, and top rejection reason.
-#   * No changes to Balance/TruthSeal/Exposure/PreSend/SL/Execution, no network
-#     order retries, no shorts/futures/leverage, LONG_ONLY MEXC SPOT preserved.
-#
-# v4.5.46 FINAL PENDING-HANDOFF / EXECUTION CLOSURE
-#   * Preserves exceptional, fresh Discovery candidates that passed the same
-#     canonical preflight but were not promoted by the global winner set.
-#   * Pending candidates are NOT orders and never bypass Global selection,
-#     Balance, TruthSeal, Exposure, Liquidity, PreSend, SL or Execution gates.
-#   * They are considered only as a bounded reserve AFTER the normal finalists
-#     and existing execution reserve, and only when live capacity remains.
-#   * Candidate freshness is rechecked against WALL_NOW at handoff time.
-#   * Adds cycle-scoped handoff telemetry so cumulative rejects cannot masquerade
-#     as current-cycle execution failures.
-#   * Discovery PASS remains KNOWLEDGE ONLY; handoff requires a current snapshot
-#     and canonical builder revalidation before any order can be queued/sent.
-#
-# v4.5.43 FINAL EXECUTION-STARVATION-RECOVERY-HARDENED
-#   * Reviews the proposed V542/LIVE-unblock changes against the actual v4.5.42
-#     implementation and keeps only changes that improve recall without turning
-#     safety gates into fall-open paths.
-#   * V537 dual-confirmation remains a hard gate for the dedicated dual engine,
-#     but gains a bounded HTF-quality recovery lane only after the original hard
-#     RSI floors and strong-bearish-body guards pass. This changes candidate
-#     generation for the dual lane only; it does NOT bypass canonical HTF,
-#     structure, liquidity, PreSend, Balance, TruthSeal or SL gates.
-#   * Balance-send recovery increases from one to two bounded SAME-candidate
-#     retries, but ONLY after a fresh REAL balance reconciliation. CACHE/BLOCK
-#     never re-submit, and network-timeout outcomes remain terminal/ambiguous.
-#     Recovery uses bounded exponential backoff and never blindly retries an
-#     exchange order whose acceptance is ambiguous.
-#   * Adds per-reason execution-blocker burst telemetry/alert logging at a
-#     bounded threshold without introducing a new execution authority.
-#   * Explicitly does NOT implement: breakout structural bypass, network-timeout
-#     tolerance, aggressive FailedSendCB=2 tightening, duplicate starvation
-#     relief, or blind Near-Miss promotion. Existing V453/V456/V542 bounded
-#     mechanisms already cover those areas; duplicating them would weaken the
-#     fail-closed design or create policy drift.
-#   * LONG_ONLY MEXC SPOT, TruthSeal, Balance, Exposure, KillSwitch, Watchdog,
-#     circuit breakers, PreSendGate, LiquidityDepth, SL verification and all
-#     existing execution authorities remain intact.
-#
-# v4.5.40 FINAL ELITE-LIVE SELECTIVE TUNING — FAMILY-AWARE / SPREAD-BOUNDED / DISCOVERY-CLOSURE
-#   * Adds an elite-live selection lane for the strongest candidates without bypassing hard safety/execution gates.
-#   * Extends existing V528 quality-spread relief with a stricter V540 elite lane instead of lowering global tier ceilings.
-#   * Gives fake-break handling explicit family semantics, preserving hard rejection for breakout families while keeping PULLBACK non-hard.
-#   * Adds a bounded elite ranking bonus and an optional LIVE-READY Telegram diagnostic for exceptional candidates.
-#   * Tightens knowledge-only Discovery noise (reviewed score >=80, bounded 5/cycle) without changing live execution floors.
-#   * Slows starvation-alert repetition to 15 minutes; detection logic remains unchanged.
-#   * No score/risk/SL/HTF/liquidity hard floor is globally bypassed; all fail-closed execution invariants remain.
-#
-# v4.5.40 FINAL UNIVERSAL/ELITE-LIVE DUAL-CONFIRMATION — REPLAY / TRANSIENT-SPREAD / BLOCKER TELEMETRY
-#   * Adds an opt-in offline replay harness for the same Dual A/B trigger logic.
-#   * Adds one bounded fresh spread recheck before a transient tier-spread reject.
-#   * Adds compact Top Execution Blocker telemetry to heartbeat.
-#   * No score/risk/SL/HTF/liquidity hard floor is relaxed; all fail-closed gates remain.
-#
-# v4.5.41 ELITE QUALITY / EXECUTION-BLOCKER CLOSURE
-#   * Elite qualification now requires the bounded reviewed-quality score in
-#     addition to raw engine score, preventing false-Elite relief on candidates
-#     whose raw score is high but volume/RS/chase quality is weak.
-#   * PreSend failures now record the exact final gate message in the execution
-#     blocker ledger, making E→Q starvation root causes directly observable.
-#   * LIVE-READY Elite diagnostics expose both canonical and reviewed quality.
-#   * No execution/risk/liquidity/SL/HTF hard gate is relaxed or bypassed.
-#
-# v4.5.25 PROTECTED-ENTRY CLOSURE
-#   CRITICAL: do not treat an entry fill as a healthy LIVE trade until the
-#   exchange SL is created and post-create verified. The previous version
-#   ignored the place_sl() return value, allowing an unprotected fill to stay
-#   active until the next PositionManager tick, where emergency_close could
-#   market-sell slightly below the fill. This version makes protection
-#   verification explicit and observable.
-#   Also adds opportunity A+/A/B/C grading and TradingView MEXC chart links.
-#
-# v4.5.33 FINAL OPPORTUNITY REFILL / EXECUTION RECOVERY
-# v4.5.34 FINAL LIVE-HANDOFF / RESERVE-REFILL / ROOT-CAUSE CLOSURE
-#   * Preserves the primary global-selected set and adds a bounded execution
-#     reserve of additional prequalified, quality-qualified distinct symbols.
-#     When selected routes fail before Q/S, reserve candidates are promoted in
-#     rank order. No HTF/liquidity/structure/score/PreSend hard gate is bypassed.
-#   * Adds explicit LIVE-READY telemetry immediately after PreSendGate PASS and
-#     before Q, separating score-qualified, live-ready, queued and sent states.
-#   * Adds exact per-attempt blocker attribution from the current rejection record
-#     so stale prior reasons cannot be misreported against a new attempt.
-#   * Adds one bounded balance-truth refresh/re-evaluation for a PreSend balance
-#     blocker; exchange orders are never blindly retried. Network-timeout entry
-#     attempts remain explicitly non-retryable because acceptance is ambiguous.
-#   * LONG_ONLY/SPOT, TruthSeal, Balance, Exposure, SL/TP, KillSwitch, Watchdog,
-#     circuit-breaker and all fail-closed invariants remain unchanged.
-#
-#   * Keeps a bounded prequalified global pool (default 8) while MAX_CONCURRENT_TRADES
-#     remains the hard live-position cap (default 3). If a selected candidate dies
-#     before Q/S, the router advances to the next-best independent candidate instead
-#     of leaving a live slot unused.
-#   * Balance send failures trigger ONE fresh canonical balance reconciliation for
-#     subsequent candidates; the rejected order is never blindly retried.
-#   * Network timeout remains explicitly non-retryable because exchange acceptance
-#     is ambiguous and duplicate buys are unsafe.
-#   * Send-fail telemetry preserves the exact root cause and avoids double-counting.
-#   * No relaxation of HTF, liquidity, structure, score, PreSend, balance truth,
-#     SL/TP, exposure, KillSwitch, watchdog, or LONG_ONLY/SPOT invariants.
-#
-# v4.5.32 FINAL QUALITY / EXECUTION HARDENING
-#   * Discovery noise closure: knowledge-only alerts now require a reviewed
-#     quality score >= 65 by default and are capped at 8 per rolling cycle.
-#     This does NOT change the live execution floor or any execution gate.
-#   * Stablecoin closure: adds USDGO explicitly; PAXG remains non-stable and
-#     eligible. Stablecoin filtering remains hard and fail-closed at MSE,
-#     discovery, and canonical execution entry points.
-#   * Discovery gate uses the reviewed score (not raw engine score) as the
-#     quality gate, while preserving raw score visibility in notifications.
-#   * Discovery self-tests validate the new reviewed-score floor, cycle cap,
-#     and USDGO exclusion.
-#   * No risk, sizing, SL, TP, balance-truth, TruthSeal, exposure, watchdog,
-#     or LONG_ONLY/SPOT execution invariant is loosened.
-#
-# v4.5.35 FINAL EXECUTION-HANDOFF / REFILL / TELEMETRY CLOSURE
-#   * Q is treated as a provisional pre-submit commit for refill decisions; a
-#     same-attempt send failure no longer suppresses the next-best candidate.
-#   * Deterministic balance send failure gets one bounded same-candidate retry
-#     after fresh balance truth; the failed order is never blindly duplicated.
-#   * Queue/candle scan throttles are rolled back on pre-acceptance send failure
-#     so the bounded balance recovery can actually re-evaluate the same candle.
-#   * Ambiguous network timeout remains terminal for the cycle; no alternate
-#     entry is submitted until the normal reconciliation/safety machinery can
-#     establish exchange state.
-#   * Heartbeat exposes execution attempts, LIVE_READY, send failures,
-#     ambiguous blocks, balance retries and alternate/refill promotions.
-#   * MAX_CONCURRENT_TRADES, TruthSeal, Balance, Exposure, HTF, liquidity,
-#     structure, PreSend, SL/TP, KillSwitch, watchdog and LONG_ONLY/SPOT remain
-#     hard authorities and are not bypassed.
-#
-# =============================================================================
 #  SECTION 0 — IMPORTS
 # =============================================================================
 import os
@@ -1345,6 +34,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 from v702_core__policy__family_policy import family_policy_from_config, regime_allowed
+from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES as _V702_PREDECLARED_FORBIDDEN_BASES
+from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK as _V702_KNOWLEDGE_LEDGER_WRITER_LOCK
 from v702_core__scoring__floor_policy import (
     effective_live_floor as _v702_effective_live_score_floor,
     valid_configured_floor as _v702_valid_configured_score_floor,
@@ -25489,7 +24180,6 @@ class KnowledgeOutcomeLedger:
 # KnowledgeOutcomeLedger uses one in-process SQLite writer lock. All async callers
 # route these synchronous DB methods through asyncio.to_thread; the RLock also
 # serializes Telegram delivery callbacks and sync validation hooks.
-_V702_KNOWLEDGE_LEDGER_WRITER_LOCK = threading.RLock()
 
 def _v702_ledger_single_writer(fn):
     def _serialized(*args, **kwargs):
@@ -26924,7 +25614,8 @@ async def run_bot(universe: List[str]):
                                 _frame.set_index("ts", inplace=True)
                                 _snap = dict(_snapshots.get(_sym) or {})
                                 _snap["symbol"] = _sym
-                                _result = _service.process_symbol(_sym, _frame, _snap)
+                                # SQLite research writes must never block the scanner's event loop.
+                                _result = await asyncio.to_thread(_service.process_symbol, _sym, _frame, _snap)
                                 _ok_count += 1
                                 _signal_count += int(_result.get("signals", 0) or 0)
                                 _resolved_count += int(_result.get("resolved", 0) or 0)
@@ -26940,7 +25631,7 @@ async def run_bot(universe: List[str]):
                                 _fail_count += 1
                                 STATS["v702_intraday_shadow_process_errors"] = int(STATS.get("v702_intraday_shadow_process_errors", 0) or 0) + 1
                                 logger.debug(f"[V702-A9-INTRADAY] {_sym} suppressed: {_process_exc}")
-                        _report = _service.periodic_report_if_due()
+                        _report = await asyncio.to_thread(_service.periodic_report_if_due)
                         return {
                             "v702_intraday_shadow_fetch_ok": _ok_count,
                             "v702_intraday_shadow_fetch_fail": _fail_count,
@@ -48131,7 +46822,6 @@ CONFIG.update({
 # Predeclared fail-closed source for the immutable V702 hard-deny assets.
 # The public runtime name is bound to this set later in module initialization;
 # early compatibility/self-test calls must still deny these bases before then.
-_V702_PREDECLARED_FORBIDDEN_BASES = frozenset({"CAKE", "PUMP", "BNB", "AERO", "ETHFI"})
 
 
 def _v587_norm_symbol(symbol: Any) -> str:
@@ -89339,7 +88029,7 @@ try:
             _answer = _fn(_symbol)
             return bool(_answer[0] if isinstance(_answer, tuple) else _answer)
         _base = str(_symbol or "").upper().split("/", 1)[0]
-        return _base in {"BNB", "CAKE", "PUMP", "AERO", "ETHFI"}
+        return _base in _V702_PREDECLARED_FORBIDDEN_BASES
     _V702_INTRADAY_SHADOW = _V702IntradayShadow(
         db_path=_v702_intraday_db_path,
         report_dir=os.path.join(_v702_intraday_parent, "reports"),
@@ -89361,6 +88051,53 @@ _V702_CF_SHADOW = None
 _V702_CF_SHADOW_INSTALL_ERROR = ""
 _V702_CF_SHADOW_PREQUAL_HOOK_INSTALLED = False
 _V702_CF_SHADOW_RANK_HOOK_INSTALLED = False
+_V702_CF_SHADOW_IO_TASKS = set()
+_V702_CF_SHADOW_IO_TASKS_LOCK = threading.Lock()
+
+def _v702_cf_shadow_submit(fn, *args, **kwargs):
+    """Bounded async offload for non-authoritative SQLite shadow operations."""
+    if not callable(fn):
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Startup/validation callers outside an event loop are rare and already
+        # serial; production scan callers always use the worker-thread path below.
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            STATS["v702_cf_shadow_process_errors"] = int(STATS.get("v702_cf_shadow_process_errors", 0) or 0) + 1
+            logger.debug("[V702-CF-SHADOW] synchronous fallback suppressed: %s", exc)
+            return None
+    try:
+        _cap = int(max(8, min(64, float(CONFIG.get("V702_CF_SHADOW_MAX_PENDING_IO", 16) or 16))))
+    except Exception:
+        _cap = 16
+    with _V702_CF_SHADOW_IO_TASKS_LOCK:
+        if len(_V702_CF_SHADOW_IO_TASKS) >= _cap:
+            STATS["v702_cf_shadow_io_backpressure_drops"] = int(STATS.get("v702_cf_shadow_io_backpressure_drops", 0) or 0) + 1
+            return None
+        async def _run_shadow_io():
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        task = loop.create_task(_run_shadow_io(), name="v702-cf-shadow-io")
+        _V702_CF_SHADOW_IO_TASKS.add(task)
+    def _finish_shadow_io(done):
+        with _V702_CF_SHADOW_IO_TASKS_LOCK:
+            _V702_CF_SHADOW_IO_TASKS.discard(done)
+            _pending_count = len(_V702_CF_SHADOW_IO_TASKS)
+        STATS["v702_cf_shadow_io_pending"] = _pending_count
+        try:
+            value = done.result()
+            if isinstance(value, dict) and getattr(fn, "__name__", "") == "process_market_data":
+                STATS["v702_cf_shadow_last_cycle"] = dict(value)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            STATS["v702_cf_shadow_process_errors"] = int(STATS.get("v702_cf_shadow_process_errors", 0) or 0) + 1
+            logger.debug("[V702-CF-SHADOW] worker I/O suppressed: %s", exc)
+    task.add_done_callback(_finish_shadow_io)
+    STATS["v702_cf_shadow_io_pending"] = len(_V702_CF_SHADOW_IO_TASKS)
+    return task
 try:
     from v702_counterfactual_shadow import V702CounterfactualShadow as _V702CounterfactualShadow
     _v702_cf_db_path = str(CONFIG.get("DB_PATH", "./unified_scalper.db") or "./unified_scalper.db")
@@ -89416,10 +88153,10 @@ try:
                         effective_floor_pass = float(effective_floor_pass)
                         if (regime_pass == "NEUTRAL" and strength_pass is not None
                                 and effective_floor_pass <= strength_pass < strict_floor_pass):
-                            _V702_CF_SHADOW.record_candidate(candidate, "CURRENT_HTF_RELIEF_PASS", "current_neutral_htf_relief_admit", snap,
+                            _v702_cf_shadow_submit(_V702_CF_SHADOW.record_candidate, candidate, "CURRENT_HTF_RELIEF_PASS", "current_neutral_htf_relief_admit", snap,
                                                               htf_strength=strength_pass, htf_floor=effective_floor_pass)
                         else:
-                            _V702_CF_SHADOW.record_candidate(candidate, "BASELINE_PASS", "prequal_pass", snap,
+                            _v702_cf_shadow_submit(_V702_CF_SHADOW.record_candidate, candidate, "BASELINE_PASS", "prequal_pass",
                                                               htf_strength=strength_pass, htf_floor=strict_floor_pass)
                     except Exception as _cf_pass_exc:
                         STATS["v702_cf_shadow_baseline_capture_errors"] = int(STATS.get("v702_cf_shadow_baseline_capture_errors", 0) or 0) + 1
@@ -89452,7 +88189,7 @@ try:
                         floor_val = float(floor_val)
                         relief = max(0.0, min(5.0, float(CONFIG.get("V702_CF_SHADOW_HTF_RELIEF_POINTS", 3.0) or 3.0)))
                         if strength is not None and floor_val - relief <= strength < floor_val:
-                            _V702_CF_SHADOW.record_candidate(candidate, "HTF_RELIEF", str(reason), snap,
+                            _v702_cf_shadow_submit(_V702_CF_SHADOW.record_candidate, candidate, "HTF_RELIEF", str(reason), snap,
                                                               htf_strength=strength, htf_floor=floor_val)
                     except Exception as _cf_htf_exc:
                         STATS["v702_cf_shadow_htf_capture_errors"] = int(STATS.get("v702_cf_shadow_htf_capture_errors", 0) or 0) + 1
@@ -89467,7 +88204,7 @@ try:
                         mid_min = max(0.0, float(CONFIG.get("V702_CF_SHADOW_MID_MIN_QUOTE_VOLUME", 1_000_000.0) or 1_000_000.0))
                         core_floor = max(mid_min, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0) or 3_000_000.0))
                         if qv is not None and mid_min <= qv < core_floor:
-                            _V702_CF_SHADOW.record_candidate(candidate, "MID_TIER_COUNTERFACTUAL", str(reason), snap)
+                            _v702_cf_shadow_submit(_V702_CF_SHADOW.record_candidate, candidate, "MID_TIER_COUNTERFACTUAL", str(reason), snap)
                     except Exception as _cf_liq_exc:
                         STATS["v702_cf_shadow_liquidity_capture_errors"] = int(STATS.get("v702_cf_shadow_liquidity_capture_errors", 0) or 0) + 1
                         logger.debug("[V702-CF-SHADOW] liquidity attribution skipped: %s", _cf_liq_exc)
@@ -89502,8 +88239,8 @@ try:
                                 and htf_shadow is not None and htf_shadow >= float(CONFIG.get("V702_A48_BEARISH_SHADOW_MIN_HTF_STRENGTH", 47.0))
                                 and volume_shadow is not None and volume_shadow >= float(CONFIG.get("V702_A48_BEARISH_SHADOW_VOLUME_FLOOR_RATIO", 1.4))
                                 and quote_shadow is not None and quote_shadow >= float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0))):
-                            _V702_CF_SHADOW.record_candidate(
-                                candidate, "BEARISH_NORMAL_LSR", str(reason), enriched_shadow,
+                            _v702_cf_shadow_submit(
+                                _V702_CF_SHADOW.record_candidate, candidate, "BEARISH_NORMAL_LSR", str(reason), enriched_shadow,
                                 htf_strength=htf_shadow, htf_floor=float(CONFIG.get("V702_A48_BEARISH_SHADOW_MIN_HTF_STRENGTH", 47.0)),
                             )
                     except Exception as _cf_bearish_shadow_exc:
@@ -89529,8 +88266,7 @@ try:
                     if (bool(CONFIG.get("V702_CF_SHADOW_ENABLE", True))
                             and not bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
                             and _V702_CF_SHADOW is not None):
-                        telemetry = _V702_CF_SHADOW.process_market_data(market_data_map)
-                        STATS["v702_cf_shadow_last_cycle"] = dict(telemetry)
+                        _v702_cf_shadow_submit(_V702_CF_SHADOW.process_market_data, market_data_map)
                 except Exception as _cf_proc_exc:
                     STATS["v702_cf_shadow_process_errors"] = int(STATS.get("v702_cf_shadow_process_errors", 0) or 0) + 1
                     logger.debug("[V702-CF-SHADOW] candle processing suppressed: %s", _cf_proc_exc)
@@ -89735,11 +88471,7 @@ async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> 
         return out
     status_store = _v702_a9_ob_status_store()
     md_by_symbol = {str(k or "").strip().upper(): v for k, v in market_data_map.items() if isinstance(v, dict)}
-    forbidden_bases = {"AERO", "BNB", "CAKE", "ETHFI", "PUMP"}
-    try:
-        forbidden_bases.update(str(x).upper() for x in globals().get("V702_HARD_FORBIDDEN_BASES", ()) if str(x).strip())
-    except Exception:
-        pass
+    forbidden_bases = set(_V702_PREDECLARED_FORBIDDEN_BASES)
     min_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MIN_QUOTE_VOLUME", 1_000_000.0))
     max_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MAX_QUOTE_VOLUME_EXCLUSIVE", 3_000_000.0))
     max_age = max(1.0, float(CONFIG.get("V702_A9_ORDERBOOK_PREFETCH_MAX_AGE_SEC", 15.0)))
@@ -90143,8 +88875,7 @@ def _v702_a7_micro_handoff_evidence(candidate, snapshot, tier=None, record=False
     # Explicitly retain the hard denylist, independent of the telemetry counters.
     try:
         base = sym.split("/", 1)[0].strip()
-        hard_forbidden = {str(x).upper() for x in globals().get("V702_HARD_FORBIDDEN_BASES", ())}
-        hard_forbidden.update({"AERO", "BNB", "CAKE", "ETHFI", "PUMP"})
+        hard_forbidden = set(_V702_PREDECLARED_FORBIDDEN_BASES)
         if base in hard_forbidden:
             return _finish(False, "forbidden_asset")
         forbidden_fn = globals().get("_v587_is_forbidden_coin")

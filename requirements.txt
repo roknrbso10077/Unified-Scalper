@@ -1,3 +1,3 @@
-# Canonical dependency entrypoint shared by Docker and Railway.
-# Direct constraints live in requirements-lock.txt; transitive packages are not hash-locked.
--r requirements-lock.txt
+# Canonical portable dependency input. CI generates requirements-lock.txt
+# as a complete Python 3.12 Linux/amd64 hash lock from requirements.in.
+-r requirements.in

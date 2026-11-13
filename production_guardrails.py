@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import functools
 import json
 import math
 import os
@@ -17,10 +18,24 @@ import time
 from collections import deque
 from typing import Any, Dict, Optional, Tuple
 
+from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
+from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
+
 LIVE_OPT_IN_ENV = "UNIFIED_ALLOW_LIVE_TRADING"
 LIVE_OPT_IN_TOKEN = "I_ACCEPT_LIVE_RISK"
 DEFAULT_DRAWDOWN_PCT = 5.0
 
+
+
+
+def _sqlite_serialized(method):
+    """Serialize synchronous DB work through the process-wide writer lock."""
+    @functools.wraps(method)
+    def _wrapped(self, *args, **kwargs):
+        with SQLITE_WRITER_LOCK:
+            return method(self, *args, **kwargs)
+    _wrapped._v702_sqlite_single_writer = True
+    return _wrapped
 
 def _num(value: Any, default: float = 0.0) -> float:
     try:
@@ -88,41 +103,41 @@ class V702PortfolioDrawdownGuard:
         if not 0.1 <= threshold <= 50.0:
             return {"ok": False, "allowed": False, "reason": "drawdown_threshold_invalid", "equity": equity}
         now = time.time()
-        conn = cls._connect(ns, path)
-        try:
-            row = conn.execute("SELECT * FROM v702_portfolio_drawdown_state WHERE singleton_id=1").fetchone()
-            if row is None:
-                peak = equity
-                halted = 0
-                halt_ts = None
-                halt_reason = None
-            else:
-                peak = max(_num(row["peak_equity"], equity), equity)
-                halted = int(row["halted"] or 0)
-                halt_ts = row["halt_ts"]
-                halt_reason = row["halt_reason"]
-            drawdown = max(0.0, (peak - equity) / peak * 100.0) if peak > 0 else 100.0
-            if not halted and drawdown + 1e-9 >= threshold:
-                halted = 1
-                halt_ts = now
-                halt_reason = f"peak_drawdown_{drawdown:.4f}_pct_ge_{threshold:.4f}_pct"
-            conn.execute("""INSERT INTO v702_portfolio_drawdown_state
-                (singleton_id,peak_equity,halted,halt_ts,halt_reason,last_equity,last_drawdown_pct,updated_ts)
-                VALUES (1,?,?,?,?,?,?,?)
-                ON CONFLICT(singleton_id) DO UPDATE SET
-                    peak_equity=excluded.peak_equity, halted=excluded.halted,
-                    halt_ts=excluded.halt_ts, halt_reason=excluded.halt_reason,
-                    last_equity=excluded.last_equity, last_drawdown_pct=excluded.last_drawdown_pct,
-                    updated_ts=excluded.updated_ts""",
-                (peak, halted, halt_ts, halt_reason, equity, drawdown, now))
-            conn.commit()
-            return {"ok": True, "allowed": not bool(halted), "halted": bool(halted),
-                    "peak_equity": peak, "equity": equity, "drawdown_pct": drawdown,
-                    "threshold_pct": threshold, "halt_reason": halt_reason,
-                    "updated_ts": now}
-        finally:
-            conn.close()
-
+        with SQLITE_WRITER_LOCK:
+            conn = cls._connect(ns, path)
+            try:
+                row = conn.execute("SELECT * FROM v702_portfolio_drawdown_state WHERE singleton_id=1").fetchone()
+                if row is None:
+                    peak = equity
+                    halted = 0
+                    halt_ts = None
+                    halt_reason = None
+                else:
+                    peak = max(_num(row["peak_equity"], equity), equity)
+                    halted = int(row["halted"] or 0)
+                    halt_ts = row["halt_ts"]
+                    halt_reason = row["halt_reason"]
+                drawdown = max(0.0, (peak - equity) / peak * 100.0) if peak > 0 else 100.0
+                if not halted and drawdown + 1e-9 >= threshold:
+                    halted = 1
+                    halt_ts = now
+                    halt_reason = f"peak_drawdown_{drawdown:.4f}_pct_ge_{threshold:.4f}_pct"
+                conn.execute("""INSERT INTO v702_portfolio_drawdown_state
+                    (singleton_id,peak_equity,halted,halt_ts,halt_reason,last_equity,last_drawdown_pct,updated_ts)
+                    VALUES (1,?,?,?,?,?,?,?)
+                    ON CONFLICT(singleton_id) DO UPDATE SET
+                        peak_equity=excluded.peak_equity, halted=excluded.halted,
+                        halt_ts=excluded.halt_ts, halt_reason=excluded.halt_reason,
+                        last_equity=excluded.last_equity, last_drawdown_pct=excluded.last_drawdown_pct,
+                        updated_ts=excluded.updated_ts""",
+                    (peak, halted, halt_ts, halt_reason, equity, drawdown, now))
+                conn.commit()
+                return {"ok": True, "allowed": not bool(halted), "halted": bool(halted),
+                        "peak_equity": peak, "equity": equity, "drawdown_pct": drawdown,
+                        "threshold_pct": threshold, "halt_reason": halt_reason,
+                        "updated_ts": now}
+            finally:
+                conn.close()
     # Shared short-lived ticker cache. Prices are cached per base asset so the
     # portfolio guard never downloads the entire market on every entry attempt.
     _equity_ticker_cache: Dict[str, Tuple[float, float]] = {}
@@ -319,7 +334,9 @@ class V702PortfolioDrawdownGuard:
         equity, valuation_reason = await cls.equity_usdt(exchange, ns=ns)
         if equity is None:
             return False, valuation_reason, {"monitor_only": False, "equity_valuation_ok": False}
-        state = cls.evaluate_equity(ns, equity)
+        # SQLite work is deliberately offloaded; the event loop must remain
+        # available for scan deadlines and runtime heartbeat emission.
+        state = await asyncio.to_thread(cls.evaluate_equity, ns, equity)
         details = dict(state)
         details["equity_valuation_ok"] = True
         if not state.get("ok"):
@@ -339,20 +356,23 @@ class V702PortfolioDrawdownGuard:
         equity, valuation_reason = await cls.equity_usdt(exchange, ns=ns)
         if equity is None:
             return {"ok": False, "reason": f"equity_valuation_failed:{valuation_reason}"}
-        now = time.time()
-        conn = cls._connect(ns)
-        try:
-            conn.execute("""INSERT INTO v702_portfolio_drawdown_state
-                (singleton_id,peak_equity,halted,halt_ts,halt_reason,last_equity,last_drawdown_pct,updated_ts,last_reset_reason)
-                VALUES (1,?,0,NULL,NULL,?,0,?,?)
-                ON CONFLICT(singleton_id) DO UPDATE SET peak_equity=excluded.peak_equity,
-                    halted=0,halt_ts=NULL,halt_reason=NULL,last_equity=excluded.last_equity,
-                    last_drawdown_pct=0,updated_ts=excluded.updated_ts,
-                    last_reset_reason=excluded.last_reset_reason""", (equity, equity, now, note))
-            conn.commit()
-            return {"ok": True, "equity": equity, "new_peak_equity": equity, "reason": note, "reset_ts": now}
-        finally:
-            conn.close()
+        def _persist_reset():
+            now = time.time()
+            with SQLITE_WRITER_LOCK:
+                conn = cls._connect(ns)
+                try:
+                    conn.execute("""INSERT INTO v702_portfolio_drawdown_state
+                        (singleton_id,peak_equity,halted,halt_ts,halt_reason,last_equity,last_drawdown_pct,updated_ts,last_reset_reason)
+                        VALUES (1,?,0,NULL,NULL,?,0,?,?)
+                        ON CONFLICT(singleton_id) DO UPDATE SET peak_equity=excluded.peak_equity,
+                            halted=0,halt_ts=NULL,halt_reason=NULL,last_equity=excluded.last_equity,
+                            last_drawdown_pct=0,updated_ts=excluded.updated_ts,
+                            last_reset_reason=excluded.last_reset_reason""", (equity, equity, now, note))
+                    conn.commit()
+                    return {"ok": True, "equity": equity, "new_peak_equity": equity, "reason": note, "reset_ts": now}
+                finally:
+                    conn.close()
+        return await asyncio.to_thread(_persist_reset)
 
 
 class V702ExpansionShadow:
@@ -491,6 +511,7 @@ class V702ExpansionShadow:
             stats["v702_cf_shadow_record_errors"] = int(stats.get("v702_cf_shadow_record_errors", 0) or 0) + 1
             self._last_error = f"{type(exc).__name__}:{str(exc)[:120]}"
 
+    @_sqlite_serialized
     def _flush_sync(self) -> int:
         with self._lock:
             rows = list(self._pending)
@@ -523,6 +544,7 @@ class V702ExpansionShadow:
             return None
         return {"ts": ts, "open": o, "high": h, "low": l, "close": c}
 
+    @_sqlite_serialized
     def _track_sync_rows(self, exchange_rows):
         conn = self._connect()
         now = time.time()
@@ -645,15 +667,22 @@ class V702ExpansionShadow:
         finally:
             conn.close()
 
+    @_sqlite_serialized
+    def _fetch_open_rows_sync(self, limit: int):
+        conn = self._connect()
+        try:
+            return conn.execute(
+                f"SELECT * FROM {self.TABLE} WHERE status='OPEN' ORDER BY created_ts ASC LIMIT ?",
+                (max(1, min(12, int(limit))),),
+            ).fetchall()
+        finally:
+            conn.close()
+
     async def _poll_once(self, exchange) -> None:
         try:
             await asyncio.to_thread(self._flush_sync)
             max_rows = max(1, min(12, int(self.ns.get("CONFIG", {}).get("V702_CF_SHADOW_MAX_ROWS_PER_POLL", 8) or 8)))
-            conn = self._connect()
-            try:
-                rows = conn.execute(f"SELECT * FROM {self.TABLE} WHERE status='OPEN' ORDER BY created_ts ASC LIMIT ?", (max_rows,)).fetchall()
-            finally:
-                conn.close()
+            rows = await asyncio.to_thread(self._fetch_open_rows_sync, max_rows)
             for row in rows:
                 age = time.time() - _num(row["created_ts"])
                 if age >= _num(self.ns.get("CONFIG", {}).get("V702_CF_SHADOW_MAX_HOLD_SEC", 14400), 14400):
@@ -755,7 +784,7 @@ def install(ns: Dict[str, Any]) -> None:
             and int(cfg.get("MAX_CONCURRENT_TRADES", 2) or 0) in (1, 2) \
             and float(cfg.get("MIN_LIVE_SCORE", 70.0) or 0.0) >= 70.0 \
             and float(cfg.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0) or 0.0) >= 3_000_000.0 \
-            and forbidden_set.issuperset({"AERO", "BNB", "CAKE", "ETHFI", "PUMP"}) \
+            and forbidden_set.issuperset(HARD_FORBIDDEN_BASES) \
             and ("V702_R38_HARD_GATE_BYPASS" not in cfg or cfg.get("V702_R38_HARD_GATE_BYPASS") is False)
         control = os.environ.get("UNIFIED_LIVE_PILOT_ENABLE", "").strip().lower()
         forced_off = control in {"0", "false", "no", "off", "disabled"}

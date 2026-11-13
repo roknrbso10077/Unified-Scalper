@@ -185,10 +185,12 @@ class CanonicalReleaseContracts(unittest.TestCase):
     def test_docker_copies_nested_requirements_constraints_before_install(self):
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY requirements.txt requirements-lock.txt /app/", docker)
-        self.assertIn("python -m pip install --require-hashes -r /app/requirements.txt", docker)
+        self.assertIn("--require-hashes -r /app/requirements-lock.txt", docker)
         self.assertIn("grep -q -- \"--hash=sha256:\" /app/requirements-lock.txt", docker)
+        self.assertIn("ARG STRICT_HASH_LOCK=0", docker)
+        self.assertIn("STRICT_HASH_LOCK=1", (ROOT / ".github/workflows/a58-production-audit.yml").read_text(encoding="utf-8"))
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("-r requirements-lock.txt", requirements)
+        self.assertIn("-r requirements.in", requirements)
 
     def test_counterfactual_shadow_module_is_packaged_and_runtime_wired(self):
         self.assertTrue((ROOT / "v702_counterfactual_shadow.py").is_file())

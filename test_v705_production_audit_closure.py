@@ -119,16 +119,20 @@ def test_v705_a32_a33_history_validators_use_canonical_wall_clock():
 def test_v705_submit_entry_has_no_silent_persistence_pass_handlers():
     import ast
     import inspect
+    import textwrap
 
-    package_source = Path(main.__file__).read_text(encoding="utf-8")
-    package_tree = ast.parse(package_source)
-    original = min(
-        (node for node in ast.walk(package_tree)
-         if isinstance(node, ast.AsyncFunctionDef) and node.name == "submit_entry"),
-        key=lambda node: node.lineno,
-    )
-    source = ast.get_source_segment(package_source, original)
-    assert source is not None
+    # Parse only the original OrderExecutor.submit_entry definition. Parsing
+    # the entire 5.6 MB main.py on every full-suite run is needlessly expensive
+    # and can amplify memory pressure in CI.
+    package_lines = Path(main.__file__).read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(package_lines)
+              if line.startswith("    async def submit_entry(")]
+    assert len(starts) == 1, starts
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(package_lines))
+                if package_lines[i].startswith(("    async def ", "    def ", "    @", "class "))),
+               len(package_lines))
+    source = textwrap.dedent("\n".join(package_lines[start:end]))
     for stage in ("maker_submission_unknown", "market_fill_unknown", "post_fill_confirmed"):
         assert stage in source
     tree = ast.parse(source)
