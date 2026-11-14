@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A61 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A63 CANONICAL FINAL
 
-**Release ID:** `UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL`  
+**Release ID:** `UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL`  
 **Release date:** 2026-11-14  
 **Canonical executable:** `main.py`  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
@@ -57,18 +57,18 @@ MEXC Spot native stop support must not be assumed. Where protection is software-
 
 ## Release integrity
 
-After obtaining the A61 archive, verify its contents from the package root:
+After obtaining the A63 archive, verify its contents from the package root:
 
 ```bash
-sha256sum -c A61_SHA256SUMS.txt
+sha256sum -c A63_SHA256SUMS.txt
 ```
 
-`A60` and older release metadata are historical only; A61 distribution integrity is defined exclusively by `A61_RELEASE_MANIFEST.json` and `A61_SHA256SUMS.txt`. The A61 ZIP contains 103 files. The A60 source package's complete runtime, all existing tests and historical audit documents are retained, with the A61 regression module and release evidence added. The non-executable `HISTORICAL_A53_main.py.baseline` snapshot was already absent from the supplied A60 package and is not a drop-in rollback. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, secrets and runtime databases remain excluded. A rollback requires the complete matching historical distribution, configuration and environment.
+`A62` and older release metadata are historical only; A63 distribution integrity is defined by `A63_RELEASE_MANIFEST.json` and `A63_SHA256SUMS.txt`. A63 retains the A62 runtime, tests and historical audit documents, then adds fail-closed execution reconciliation, A63 Edge/Paper evidence isolation, digest snapshot handling, CI/development dependency inputs, the A63 audit, manifest, checksums and regression coverage. The non-executable `HISTORICAL_A53_main.py.baseline` snapshot was already absent from the supplied A60 package and is not a drop-in rollback. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, secrets and runtime databases remain excluded. A rollback requires the complete matching historical distribution, configuration and environment.
 
-The GitHub Actions workflow `.github/workflows/a58-production-audit.yml` targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, publishes the generated lock artifact, runs compilation and pytest, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
+The GitHub Actions workflow `.github/workflows/a63-production-audit.yml` is the active A63 production audit workflow. It targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, runs compilation and `python main.py --validate-only` before pytest, publishes the generated lock artifact, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
 
 ## Final release evidence
 
-See `A61_FINAL_PRODUCTION_AUDIT_AR.md`, `A61_RELEASE_MANIFEST.json`, and `A61_SHA256SUMS.txt` for the current production audit. A58.2 Docker boot-artifact handling, A59 Bearish/HTF reject-shadow observability and A60 Paper outcome-model closure remain intact. A61 fixes a same-candidate evidence-attribution defect: a Builder return of `None` now overrides any stored Shadow row, and Builder completion/live-eligibility flags require a non-`None` Builder result. It does not change regime allowlists, Score, HTF, liquidity, PreSend, queue, execution or protection gates. The active decision remains **NO-GO for unattended live trading**.
+See `A63_FINAL_PRODUCTION_AUDIT_AR.md`, `A63_RELEASE_MANIFEST.json`, and `A63_SHA256SUMS.txt` for the current production audit. A58.2 Docker boot-artifact handling, A59 Bearish/HTF reject-shadow observability, A60 Paper outcome-model closure and A61 Builder/Edge evidence closure remain intact. A62 fixes stale structured Telegram blocker records being replayed in later Digest windows after successful delivery. A63 adds fail-closed order identity and precision checks, separates same-attempt market evidence from account/execution eligibility, enforces closed-candle coverage for Paper evidence, and uses snapshot-and-swap Digest generations. Queue acceptance is explicitly not a Telegram delivery ACK. The legacy and structured queues remain protected against reset races. Strategy admission, Score, HTF, liquidity, PreSend, queue, execution and protection gates are unchanged. The active decision remains **NO-GO for unattended live trading**.
 
 Historical changes and lineage are retained in `CHANGELOG.md` and `DOCS__audits__V702_A*_*.md`.

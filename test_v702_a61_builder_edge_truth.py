@@ -97,44 +97,64 @@ def test_a61_builder_none_cannot_make_ledger_row_edge_eligible(monkeypatch, tmp_
     assert notes["account_execution_eligible"] is False
 
 
-def test_a61_real_builder_and_shadow_pass_still_qualify_market_evidence(monkeypatch, tmp_path):
+def test_a61_same_attempt_shadow_pass_qualifies_market_without_trade_state(monkeypatch, tmp_path):
     db_path = _memory_ledger(monkeypatch, tmp_path)
+    attempt_id = "A63-ATTEMPT-EXACT-001"
+    candidate_key = "A61-EXACT-CANDIDATE-KEY"
     actual_shadow = {
-        "eligible": True,
+        "eligible": True, "reached": True,
+        "candidate_key": candidate_key,
+        "evaluation_attempt_id": attempt_id,
         "reason": "shadow_presend_pass",
-        "entry": 100.0,
-        "sl": 95.0,
-        "tp1": 105.0,
-        "tp2": 110.0,
-        "tp3": 115.0,
-        "spread_pct": 0.1,
-        "fee_cost_pct": 0.1,
-        "round_trip_cost_pct": 0.2,
+        "entry": 100.0, "sl": 95.0, "tp1": 105.0, "tp2": 110.0, "tp3": 115.0,
+        "spread_pct": 0.1, "fee_cost_pct": 0.1, "round_trip_cost_pct": 0.2,
     }
+    diag = {"candidate_key": candidate_key, "evaluation_attempt_id": attempt_id,
+            "reason": "monitor_only_forced_off"}
     resolved, status, _ = bot._v702_a60_resolve_paper_shadow(
-        {"A61-EXACT-CANDIDATE-KEY": actual_shadow},
-        "A61-EXACT-CANDIDATE-KEY",
-        {"candidate_key": "different-candidate", "reason": "unrelated"},
+        {attempt_id: actual_shadow}, candidate_key, diag,
     )
-    assert status == "shadow_evaluated"
+    assert status == "shadow_evaluated_after_builder_none"
     assert resolved["eligible"] is True
+    assert resolved["reached"] is True
     assert bot.KnowledgeOutcomeLedger.annotate_paper_edge(
         "A61-LEDGER-ROW", resolved, builder_completed=True, live_eligible=False,
-        builder_reason="builder_completed",
+        builder_reason="monitor_only_forced_off", market_qualification_completed=True,
+        trade_state_created=False, evaluation_attempt_id=attempt_id,
     ) is True
     with sqlite3.connect(db_path) as conn:
         notes = json.loads(conn.execute(
             "SELECT notes FROM knowledge_outcomes WHERE alert_id=?", ("A61-LEDGER-ROW",)
         ).fetchone()[0])
     assert notes["builder_completed"] is True
+    assert notes["trade_state_created"] is False
+    assert notes["evaluation_attempt_id"] == attempt_id
+    assert notes["shadow_presend_reached"] is True
     assert notes["shadow_presend_eligible"] is True
     assert notes["paper_edge_eligible"] is True
     assert notes["market_live_eligible"] is True
     assert notes["account_execution_eligible"] is False
 
 
+def test_a63_shadow_store_rejects_candidate_or_attempt_mismatch():
+    key = "CANDIDATE-A"
+    aid = "ATTEMPT-A"
+    shadow = {"eligible": True, "reached": True, "candidate_key": key,
+              "evaluation_attempt_id": aid, "reason": "shadow_pass"}
+    wrong_candidate, status1, _ = bot._v702_a60_resolve_paper_shadow(
+        {aid: shadow}, "CANDIDATE-B", {"candidate_key": "CANDIDATE-B", "evaluation_attempt_id": aid}
+    )
+    wrong_attempt, status2, _ = bot._v702_a60_resolve_paper_shadow(
+        {aid: shadow}, key, {"candidate_key": key, "evaluation_attempt_id": "ATTEMPT-B"}
+    )
+    assert status1 != "shadow_evaluated"
+    assert wrong_candidate.get("eligible") is False
+    assert status2 != "shadow_evaluated"
+    assert wrong_attempt.get("eligible") is False
+
+
 def test_a61_self_test_and_release_identity():
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL"
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
     report = bot._v702_a61_self_test()
     assert report["pass"] is True, report.get("failed")
     assert report["live_authority"] is False

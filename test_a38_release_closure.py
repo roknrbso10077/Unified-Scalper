@@ -249,7 +249,7 @@ def test_a60_same_bar_tp1_and_new_be_stop_is_marked_ambiguous(monkeypatch):
 
 
 def test_a60_release_identity_and_shadow_only_contract():
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL"
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
     report = bot._v702_a61_self_test()
     assert report["pass"] is True, report.get("failed")
     assert report["live_authority"] is False
@@ -273,8 +273,10 @@ def test_a60_shadow_missing_is_not_misreported_as_a_shadow_block():
     assert "not_reached:builder_returned_none:scorer:score_below_threshold" in reason
 
     actual_block, status, _ = bot._v702_a60_resolve_paper_shadow(
-        {key: {"eligible": False, "reason": "liquidity.spread=0.36%"}}, key, {}
+        {"A60-ATTEMPT": {"eligible": False, "reached": True, "candidate_key": key,
+                         "evaluation_attempt_id": "A60-ATTEMPT", "reason": "liquidity.spread=0.36%"}},
+        key, {"candidate_key": key, "evaluation_attempt_id": "A60-ATTEMPT"}
     )
-    assert status == "shadow_evaluated"
+    assert status == "shadow_evaluated_after_builder_none"
     assert actual_block.get("not_reached") is not True
     assert actual_block["reason"] == "liquidity.spread=0.36%"

@@ -28,10 +28,20 @@ def test_a26_terminal_contract_preserves_policy_and_revision_lineage():
 
 
 def test_final_validator_integrates_historical_a49_chain_through_additive_a57_and_a56_wrappers():
-    # A57 is additive and must preserve the complete A56 -> A55/A54 -> A49/A48 chain.
+    # A63 is additive and must preserve the complete A62 -> A61 -> A60 ->
+    # A59 -> A58 -> A57 -> A56 -> A55/A54 -> A49/A48 validator chain.
     assert callable(bot.validate_config)
     source = inspect.getsource(bot.validate_config)
-    assert "_V702_A60_PREVIOUS_VALIDATE_CONFIG()" in source
+    assert "_V702_A63_PREVIOUS_VALIDATE_CONFIG()" in source
+    assert callable(bot._V702_A63_PREVIOUS_VALIDATE_CONFIG)
+    a62_source = inspect.getsource(bot._V702_A63_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A62_PREVIOUS_VALIDATE_CONFIG()" in a62_source
+    assert callable(bot._V702_A62_PREVIOUS_VALIDATE_CONFIG)
+    a61_source = inspect.getsource(bot._V702_A62_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A61_PREVIOUS_VALIDATE_CONFIG()" in a61_source
+    assert callable(bot._V702_A61_PREVIOUS_VALIDATE_CONFIG)
+    a60_source = inspect.getsource(bot._V702_A61_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A60_PREVIOUS_VALIDATE_CONFIG()" in a60_source
     assert callable(bot._V702_A60_PREVIOUS_VALIDATE_CONFIG)
     a59_source = inspect.getsource(bot._V702_A60_PREVIOUS_VALIDATE_CONFIG)
     assert "_V702_A59_PREVIOUS_VALIDATE_CONFIG()" in a59_source

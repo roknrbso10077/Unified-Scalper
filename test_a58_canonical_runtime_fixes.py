@@ -59,7 +59,7 @@ def test_runtime_shadow_sqlite_is_offloaded_from_asyncio_loop():
 
 def test_docker_has_explicit_paper_and_strict_hash_install_paths():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "a58-production-audit.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "a63-production-audit.yml").read_text(encoding="utf-8")
     requirements = (ROOT / "requirements.in").read_text(encoding="utf-8")
     assert "ARG STRICT_HASH_LOCK=0" in dockerfile
     assert "--require-hashes -r /app/requirements-lock.txt" in dockerfile

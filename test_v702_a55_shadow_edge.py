@@ -105,11 +105,12 @@ def test_a55_paper_annotation_persists_shadow_geometry_and_dynamic_cost(tmp_path
     alert_id = bot.KnowledgeOutcomeLedger.register_alert(candidate, {}, source="SELECTED_ROUTE_PAPER", assume_fill=False)
     assert alert_id
     shadow = {
-        "eligible": True, "reason": "shadow_presend_pass", "round_trip_cost_pct": 0.42,
+        "reached": True, "eligible": True, "reason": "shadow_presend_pass", "round_trip_cost_pct": 0.42,
         "entry": 101.0, "sl": 99.0, "tp1": 104.0, "tp2": 107.0, "tp3": 111.0,
     }
     assert bot.KnowledgeOutcomeLedger.annotate_paper_edge(
-        alert_id, shadow, builder_completed=True, live_eligible=False, builder_reason="builder_completed"
+        alert_id, shadow, builder_completed=True, live_eligible=False, builder_reason="builder_completed",
+        market_qualification_completed=True, trade_state_created=False, evaluation_attempt_id="attempt-a55-1",
     ) is True
     conn = sqlite3.connect(db)
     row = conn.execute(
@@ -122,6 +123,9 @@ def test_a55_paper_annotation_persists_shadow_geometry_and_dynamic_cost(tmp_path
     assert notes["paper_edge_eligible"] is True
     assert notes["shadow_presend_eligible"] is True
     assert notes["live_eligible"] is False
+    assert notes["trade_state_created"] is False
+    assert notes["market_qualification_completed"] is True
+    assert notes["evaluation_attempt_id"] == "attempt-a55-1"
     assert notes["round_trip_cost_pct"] == bot._v702_unified_round_trip_cost_pct(measured_cost_pct=0.42)["round_trip_cost_pct"]
     assert notes["paper_final_geometry_source"] == "BUILDER_SHADOW_PRESEND"
 
@@ -149,6 +153,11 @@ def test_a55_edge_gate_requires_exact_recipe_and_fdr_validation(monkeypatch):
     monkeypatch.setattr(bot.LiveStateMachine, "is_live_runnable", staticmethod(lambda: True))
     monkeypatch.setattr(bot.ProductionCapabilityGate, "_checked", True)
     monkeypatch.setattr(bot.ProductionCapabilityGate, "_stop_mode", "dedicated_stop_market")
+    monkeypatch.setitem(bot.CONFIG, "POSITION_MANAGER_TASK_ENABLE", True)
+    monkeypatch.setitem(bot.STATS, "v702_pm_task_state", "RUNNING")
+    monkeypatch.setitem(bot.STATS, "v702_pm_healthy_ticks", 1)
+    monkeypatch.setitem(bot.STATS, "v702_pm_last_healthy_ts", time.time())
+    monkeypatch.setattr(bot, "ACTIVE_TRADES", {}, raising=False)
     monkeypatch.setattr(bot, "LIVE_ENTRIES_BLOCKED", {"active": False})
     ctx = {"family": "PULLBACK", "strategy_mode": "PULLBACK", "strategy_style": "SCALP",
            "timeframe_profile": "15M_5M", "htf_strength": 90.0}
@@ -157,14 +166,17 @@ def test_a55_edge_gate_requires_exact_recipe_and_fdr_validation(monkeypatch):
               "lower_bound_90_r": 0.02, "first_half_expectancy_r": 0.12,
               "second_half_expectancy_r": 0.18}
     monkeypatch.setattr(bot.KnowledgeOutcomeLedger, "_edge_report", classmethod(lambda cls: {
+        "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
         "generated_at": time.time(), "learned_recipes": {key: recipe}
     }))
     bot.STATS["v702_knowledge_edge_report"] = {
+        "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
         "generated_at": time.time(), "learned_recipes": {key: recipe}
     }
     assert bot._v702_live_buy_possible(ctx) is True
     recipe["status"] = "REQUIRES_FDR_VALIDATION"
     bot.STATS["v702_knowledge_edge_report"] = {
+        "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
         "generated_at": time.time(), "learned_recipes": {key: recipe}
     }
     assert bot._v702_live_buy_possible(ctx) is False
@@ -231,6 +243,8 @@ def test_a60_edge_report_separates_exploratory_paper_from_eligible_edge(tmp_path
             "market_live_eligible": eligible,
             "round_trip_cost_r": 0.10,
             "paper_virtual_sl_price": 100.02,
+            "coverage_contract": "CLOSED_CANDLE_SEQUENCE_V1",
+            "coverage_complete": True,
         }
         conn.execute("""INSERT INTO knowledge_outcomes
             (alert_id,alerted_at,symbol,family,strategy_mode,strategy_style,timeframe_profile,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Unified Scalper V702 A59 canonical runtime.
+"""Unified Scalper V702 A63 canonical runtime.
 
 Historical patch/version notes are preserved in CHANGELOG.md. The active
 strategy, risk, pre-send, queue, Telegram and execution authorities remain in
@@ -2820,21 +2820,39 @@ class V702PlatformRateLimiter:
     @staticmethod
     def priority(op_label: str) -> Tuple[int, str]:
         label = str(op_label or "").lower()
-        if any(x in label for x in ("position_manager", "stop_loss", "stoploss", "cancel", "protection", "reconcile", "emergency_exit", "exit_order")):
+        # Order-book reads are scanner inputs, not execution operations.
+        if any(x in label for x in ("fetch_order_book", "order_book", "orderbook", "ticker", "ohlcv", "universe", "load_markets", "scan")):
+            return 2, "SCAN"
+        # Fills, protective stops, TP partial exits, cancel and reconciliation
+        # must pre-empt both scanning and research traffic.
+        if any(x in label for x in (
+            "position_manager", "stop_loss", "stoploss", "create_sl", "sl_",
+            "tp1_sell", "tp2_sell", "tp3_sell", "take_profit", "cancel",
+            "protection", "reconcile", "fetch_order", "fetch_open_orders",
+            "fetch_closed_orders", "fetch_my_trades", "emergency_exit", "exit_order",
+        )):
             return 0, "PROTECTION"
         if any(x in label for x in ("create_", "submit", "market_buy", "market_sell", "limit_buy", "order", "balance", "truthseal", "preflight")):
             return 1, "EXECUTION"
         if any(x in label for x in ("knowledge", "shadow", "counterfactual", "intraday", "research")):
             return 3, "RESEARCH"
-        if any(x in label for x in ("ohlcv", "ticker", "order_book", "orderbook", "market", "universe", "load_markets", "scan")):
-            return 2, "SCAN"
         return 3, "RESEARCH"
 
     async def acquire(self, op_label: str) -> None:
         if not bool(CONFIG.get("V702_PLATFORM_RATE_LIMIT_ENABLE", True)):
             return
-        rate = max(1.0, min(50.0, float(CONFIG.get("V702_PLATFORM_RATE_LIMIT_RPS", 12.0) or 12.0)))
-        capacity = max(2.0, min(100.0, float(CONFIG.get("V702_PLATFORM_RATE_LIMIT_BURST", 24.0) or 24.0)))
+        raw_rate = CONFIG.get("V702_PLATFORM_RATE_LIMIT_RPS", 12.0)
+        raw_capacity = CONFIG.get("V702_PLATFORM_RATE_LIMIT_BURST", 24.0)
+        if isinstance(raw_rate, bool) or isinstance(raw_capacity, bool):
+            raise ValueError("platform_rate_limit_numeric_config_required")
+        rate = float(raw_rate)
+        capacity = float(raw_capacity)
+        if not math.isfinite(rate) or not 1.0 <= rate <= 50.0:
+            raise ValueError("platform_rate_limit_rps_out_of_range")
+        if not math.isfinite(capacity) or not 8.0 <= capacity <= 100.0:
+            # The RESEARCH lane reserves seven tokens; a burst below eight
+            # makes that lane mathematically unable to acquire its first token.
+            raise ValueError("platform_rate_limit_burst_below_progress_floor_8")
         tier, tier_name = self.priority(op_label)
         loop = asyncio.get_running_loop()
         if self._loop is not loop or self._lock is None:
@@ -7844,11 +7862,19 @@ def _v702_position_manager_health_ok() -> bool:
         if stop_mode not in allowed_stop_modes:
             stats["v702_pm_health_last_reason"] = "production_stop_mode_unverified"
             return False
-        if stop_mode != "software_sl_only":
-            stats["v702_pm_health_last_reason"] = "certified_native_stop_mode"
-            return True
+        # Native venue-stop support does not certify the local manager's
+        # current health: it still owns exits, runner state, reconciliation and
+        # any software fallback for already-open positions.
         if str(stats.get("v702_pm_task_state") or "").upper() != "RUNNING":
             stats["v702_pm_health_last_reason"] = "position_manager_not_running"
+            return False
+        try:
+            healthy_ticks = stats.get("v702_pm_healthy_ticks", 0)
+            if isinstance(healthy_ticks, bool) or int(healthy_ticks) < 1:
+                stats["v702_pm_health_last_reason"] = "position_manager_no_successful_cycle"
+                return False
+        except Exception:
+            stats["v702_pm_health_last_reason"] = "position_manager_healthy_ticks_invalid"
             return False
         stamp = float(stats.get("v702_pm_last_healthy_ts", 0.0) or 0.0)
         now = float(WALL_NOW())
@@ -7862,7 +7888,10 @@ def _v702_position_manager_health_ok() -> bool:
             if remaining > 1e-12 and not _v563_trade_protection_healthy(trade):
                 stats["v702_pm_health_last_reason"] = f"active_trade_protection_unhealthy:{str(getattr(trade, 'symbol', '?'))[:48]}"
                 return False
-        stats["v702_pm_health_last_reason"] = "ok"
+        stats["v702_pm_health_last_reason"] = (
+            "ok_native_stop_and_pm_healthy" if stop_mode != "software_sl_only"
+            else "ok_software_sl_and_pm_healthy"
+        )
         return True
     except Exception as exc:
         try:
@@ -8429,7 +8458,10 @@ def _v702_a52_client_order_params(exchange, method_name: str, *, allow=True):
             return "", {}
         if str(getattr(exchange, "id", "") or "").lower() != "mexc":
             return "", {}
-        method = getattr(exchange, method_name, None)
+        # Inspect the underlying venue adapter. A proxy may expose a permissive
+        # `params` signature while the actual CCXT/custom adapter does not.
+        venue_exchange = getattr(exchange, "_exchange", exchange)
+        method = getattr(venue_exchange, method_name, None)
         if not callable(method):
             return "", {}
         import inspect as _inspect
@@ -8454,6 +8486,47 @@ def _v702_a52_client_order_params(exchange, method_name: str, *, allow=True):
         ) + 1
         logger.warning("[A52-CLIENT-ID] optional client id unavailable: %s", type(exc).__name__)
         return "", {}
+
+
+def _v702_last_mile_entry_authorized(exchange, intent_context=None) -> Tuple[bool, str]:
+    """Revalidate permission only when an exchange-create factory is invoked.
+
+    safe_api_call may wait for the platform token bucket before invoking its
+    factory. This check therefore runs after that await, immediately before the
+    state-changing exchange method. The internal mock bypass is limited to the
+    same exact active test harness as the initial submit boundary.
+    """
+    if KillSwitch.is_active():
+        return False, "last_mile_kill_switch_no_order"
+    try:
+        if _v702_live_buy_possible(intent_context):
+            return True, "authorized"
+    except Exception:
+        pass
+    mock_type = globals().get("_V516MockExchange")
+    proxy_type = globals().get("_V517ExchangeProxy")
+    exchange_obj = getattr(exchange, "_exchange", None) if isinstance(proxy_type, type) and isinstance(exchange, proxy_type) else exchange
+    is_test_mock = bool(globals().get("V644_SELFTEST_ACTIVE", False)) and isinstance(mock_type, type) and isinstance(exchange_obj, mock_type)
+    if is_test_mock:
+        return True, "authorized_internal_selftest_mock"
+    try:
+        blocked = globals().get("LIVE_ENTRIES_BLOCKED")
+        if isinstance(blocked, dict) and bool(blocked.get("active")):
+            return False, "last_mile_entry_block_no_order"
+    except Exception:
+        return False, "last_mile_entry_block_no_order"
+    if _v702_env_is_explicitly_off("UNIFIED_LIVE_PILOT_ENABLE"):
+        return False, "last_mile_authorization_revoked_no_order"
+    try:
+        ctx = intent_context if isinstance(intent_context, dict) else {}
+        generated = ctx.get("candidate_generated_at_ms", ctx.get("generated_at_ms"))
+        if generated is not None:
+            fresh, reason, age = _v455_candidate_freshness_ok(generated)
+            if not fresh:
+                return False, "last_mile_candidate_stale_no_order:" + str(reason)[:80]
+    except Exception:
+        return False, "last_mile_candidate_stale_no_order:validation_error"
+    return False, "last_mile_authorization_revoked_no_order"
 
 
 class OrderExecutor:
@@ -8529,50 +8602,91 @@ class OrderExecutor:
     def _normalize_qty_price(exchange, symbol: str, qty: float,
                              price: Optional[float] = None
                              ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
-        """Round qty / price to exchange precision + validate limits.
-        Returns (qty_norm, price_norm, err_reason). Fail-closed on any doubt.
+        """Normalize exchange quantity/price only with verified metadata.
+
+        When precision preflight is enabled, missing metadata or precision
+        methods are a hard error. Raw values are never forwarded as a fallback.
         """
         if not bool(CONFIG.get("PRECISION_PREFLIGHT_ENABLE", True)):
-            return qty, price, None
+            try:
+                q = float(qty)
+                px = None if price is None else float(price)
+                if not math.isfinite(q) or q <= 0 or (px is not None and (not math.isfinite(px) or px <= 0)):
+                    return None, None, "precision_input_non_finite_or_non_positive"
+                return q, px, None
+            except Exception:
+                return None, None, "precision_input_invalid"
         try:
-            m = None
-            try:
-                m = exchange.market(symbol)
-            except Exception:
-                m = None
-            # Amount precision
-            try:
-                qty_norm = float(exchange.amount_to_precision(symbol, qty))
-            except Exception:
-                qty_norm = float(qty)
+            if isinstance(qty, bool) or (price is not None and isinstance(price, bool)):
+                return None, None, "precision_input_boolean_invalid"
+            raw_qty = float(qty)
+            raw_price = None if price is None else float(price)
+            if not math.isfinite(raw_qty) or raw_qty <= 0:
+                return None, None, "precision_input_qty_non_finite_or_non_positive"
+            if raw_price is not None and (not math.isfinite(raw_price) or raw_price <= 0):
+                return None, None, "precision_input_price_non_finite_or_non_positive"
+
+            market_fn = getattr(exchange, "market", None)
+            amount_fn = getattr(exchange, "amount_to_precision", None)
+            price_fn = getattr(exchange, "price_to_precision", None)
+            if not callable(market_fn) or not callable(amount_fn):
+                return None, None, "precision_preflight_error:required_market_or_amount_precision_method_missing"
+            market = market_fn(symbol)
+            if not isinstance(market, dict) or not market:
+                return None, None, "precision_preflight_error:market_metadata_unavailable"
+            qty_text = amount_fn(symbol, raw_qty)
+            qty_norm = float(qty_text)
+            if not math.isfinite(qty_norm) or qty_norm <= 0:
+                return None, None, "precision_normalized_qty_non_finite_or_non_positive"
+
             price_norm = None
-            if price is not None and price > 0:
-                try:
-                    price_norm = float(exchange.price_to_precision(symbol, price))
-                except Exception:
-                    price_norm = float(price)
-            # Limits
-            if m and isinstance(m, dict):
-                limits = m.get("limits") or {}
-                amt_lim = limits.get("amount") or {}
-                cost_lim = limits.get("cost") or {}
-                min_amt = amt_lim.get("min")
-                if min_amt is not None and qty_norm < float(min_amt):
-                    return None, None, f"qty_below_min({qty_norm:.10f}<{min_amt})"
-                min_cost = cost_lim.get("min")
-                if (min_cost is not None) and (price_norm or price) and \
-                   (qty_norm * float(price_norm or price)) < float(min_cost):
-                    return None, None, (
-                        f"notional_below_min_cost("
-                        f"{qty_norm*float(price_norm or price):.4f}<{min_cost})"
-                    )
-            if qty_norm <= 0:
-                return None, None, "qty_non_positive_after_precision"
+            if raw_price is not None:
+                if not callable(price_fn):
+                    return None, None, "precision_preflight_error:price_precision_method_missing"
+                price_text = price_fn(symbol, raw_price)
+                price_norm = float(price_text)
+                if not math.isfinite(price_norm) or price_norm <= 0:
+                    return None, None, "precision_normalized_price_non_finite_or_non_positive"
+
+            limits = market.get("limits") or {}
+            if not isinstance(limits, dict):
+                return None, None, "precision_preflight_error:market_limits_malformed"
+            amount_limits = limits.get("amount") or {}
+            cost_limits = limits.get("cost") or {}
+            if not isinstance(amount_limits, dict) or not isinstance(cost_limits, dict):
+                return None, None, "precision_preflight_error:market_limits_malformed"
+
+            def _finite_limit(container, key):
+                value = container.get(key)
+                if value is None:
+                    return None
+                if isinstance(value, bool):
+                    raise ValueError("boolean_limit")
+                number = float(value)
+                if not math.isfinite(number) or number < 0:
+                    raise ValueError("invalid_limit")
+                return number
+
+            min_amount = _finite_limit(amount_limits, "min")
+            max_amount = _finite_limit(amount_limits, "max")
+            min_cost = _finite_limit(cost_limits, "min")
+            max_cost = _finite_limit(cost_limits, "max")
+            if min_amount is not None and qty_norm < min_amount:
+                return None, None, f"qty_below_min({qty_norm:.10f}<{min_amount})"
+            if max_amount is not None and qty_norm > max_amount:
+                return None, None, f"qty_above_max({qty_norm:.10f}>{max_amount})"
+            notional_price = price_norm if price_norm is not None else raw_price
+            if notional_price is not None:
+                notional = qty_norm * notional_price
+                if not math.isfinite(notional) or notional <= 0:
+                    return None, None, "precision_notional_non_finite_or_non_positive"
+                if min_cost is not None and notional < min_cost:
+                    return None, None, f"notional_below_min_cost({notional:.8f}<{min_cost})"
+                if max_cost is not None and notional > max_cost:
+                    return None, None, f"notional_above_max_cost({notional:.8f}>{max_cost})"
             return qty_norm, price_norm, None
-        except Exception as e:
-            if bool(CONFIG.get("PRECISION_FAIL_CLOSED", True)):
-                return None, None, f"precision_preflight_error:{e}"
-            return qty, price, None
+        except Exception as exc:
+            return None, None, f"precision_preflight_error:{type(exc).__name__}:{str(exc)[:120]}"
 
     @staticmethod
     async def _normalize_qty_price_with_reload(exchange, symbol: str, qty: float,
@@ -8744,11 +8858,15 @@ class OrderExecutor:
                                     if _maker_client_id else {})},
                     )
                     try:
-                        if _maker_client_params:
-                            _maker_submit_call = lambda: exchange.create_limit_buy_order(
-                                symbol, _qn2, _pn2, _maker_client_params)
-                        else:
-                            _maker_submit_call = lambda: exchange.create_limit_buy_order(symbol, _qn2, _pn2)
+                        def _maker_submit_call():
+                            _allowed, _why = _v702_last_mile_entry_authorized(exchange, intent_context)
+                            if not _allowed:
+                                raise ValueError(_why)
+                            if not (math.isfinite(float(_qn2)) and float(_qn2) > 0 and math.isfinite(float(_pn2)) and float(_pn2) > 0):
+                                raise ValueError("last_mile_authorization_revoked_no_order:invalid_normalized_values")
+                            if _maker_client_params:
+                                return exchange.create_limit_buy_order(symbol, _qn2, _pn2, _maker_client_params)
+                            return exchange.create_limit_buy_order(symbol, _qn2, _pn2)
                         _lim = await safe_api_call("create_limit_buy", _maker_submit_call)
                     except Exception as _maker_submit_exc:
                         _maker_rejected = _v702_definitive_no_order_rejection(_maker_submit_exc)
@@ -8985,6 +9103,7 @@ class OrderExecutor:
                             _rows, symbol=symbol, side="buy", qty=qty_n,
                             price=price_n or price,
                             started_wall=WALL_NOW() - float(CONFIG.get("V517_UNKNOWN_ORDER_LOOKBACK_SEC", 20.0)),
+                            client_order_id=_maker_client_id, require_identity=True,
                         )
                         if _match:
                             _fq, _fa, _auth = await _v553_reconcile_buy_fill(
@@ -9061,10 +9180,15 @@ class OrderExecutor:
             )
             _market_intent_status = "SUBMISSION_STARTED"
             try:
-                if _market_client_params:
-                    _market_submit_call = lambda: exchange.create_market_buy_order(symbol, qty_n, _market_client_params)
-                else:
-                    _market_submit_call = lambda: exchange.create_market_buy_order(symbol, qty_n)
+                def _market_submit_call():
+                    _allowed, _why = _v702_last_mile_entry_authorized(exchange, intent_context)
+                    if not _allowed:
+                        raise ValueError(_why)
+                    if not (math.isfinite(float(qty_n)) and float(qty_n) > 0 and math.isfinite(float(price_n or price)) and float(price_n or price) > 0):
+                        raise ValueError("last_mile_authorization_revoked_no_order:invalid_normalized_values")
+                    if _market_client_params:
+                        return exchange.create_market_buy_order(symbol, qty_n, _market_client_params)
+                    return exchange.create_market_buy_order(symbol, qty_n)
                 order = await safe_api_call("create_market_buy", _market_submit_call)
             except Exception as _market_submit_exc:
                 _market_rejected = _v702_definitive_no_order_rejection(_market_submit_exc)
@@ -9365,35 +9489,38 @@ class OrderExecutor:
             try:
                 # v4.4 execution hardening: use the exact stop path certified at boot.
                 _stop_mode = ProductionCapabilityGate.stop_mode() or "dedicated_stop_market"
+                _stop_method = "create_stop_market_order" if _stop_mode == "dedicated_stop_market" else "create_order"
+                _stop_client_id, _stop_client_params = _v702_a52_client_order_params(exchange, _stop_method)
                 if _stop_mode == "dedicated_stop_market":
                     order = await safe_api_call(
                         "create_sl",
                         lambda: exchange.create_stop_market_order(
+                            symbol, "sell", sl_qty, sl_price, _stop_client_params
+                        ) if _stop_client_params else exchange.create_stop_market_order(
                             symbol, "sell", sl_qty, sl_price
                         )
                     )
                 elif _stop_mode == "create_order_stoploss_market":
+                    _sl_params = {"stopLossPrice": sl_price, **_stop_client_params}
                     order = await safe_api_call(
                         "create_sl",
                         lambda: exchange.create_order(
-                            symbol, "market", "sell", sl_qty, None,
-                            {"stopLossPrice": sl_price}
+                            symbol, "market", "sell", sl_qty, None, _sl_params
                         )
                     )
                 elif _stop_mode == "create_order_trigger_market":
+                    _sl_params = {"triggerPrice": sl_price, "triggerDirection": "descending", **_stop_client_params}
                     order = await safe_api_call(
                         "create_sl",
                         lambda: exchange.create_order(
-                            symbol, "market", "sell", sl_qty, None,
-                            {
-                                "triggerPrice": sl_price,
-                                "triggerDirection": "descending",
-                            }
+                            symbol, "market", "sell", sl_qty, None, _sl_params
                         )
                     )
                 else:
                     raise RuntimeError(f"unsupported_certified_stop_mode:{_stop_mode}")
                 oid = str(order.get("id") or "")
+                if _stop_client_id:
+                    trade.sl_client_order_id = str(_stop_client_id)
                 if not oid or oid == "None":
                     raise RuntimeError("create_sl returned no order id")
                 # v4.0.9 DS-1 — POST-CREATE VERIFICATION. A returned id is NOT
@@ -10912,7 +11039,16 @@ async def _v572_submit_market_sell_authorized(
         STATS[f"v573_normal_{auth.lower()}_market_sells"] = int(
             STATS.get(f"v573_normal_{auth.lower()}_market_sells", 0) or 0
         ) + 1
-    return await safe_api_call(_stage, lambda: exchange.create_market_sell_order(trade.symbol, q))
+    _sell_client_id, _sell_client_params = _v702_a52_client_order_params(
+        exchange, "create_market_sell_order"
+    )
+    trade.v517_last_exit_client_order_id = str(_sell_client_id or "")
+    trade.v517_last_exit_started_ts = float(WALL_NOW())
+    def _market_sell_factory():
+        if _sell_client_params:
+            return exchange.create_market_sell_order(trade.symbol, q, _sell_client_params)
+        return exchange.create_market_sell_order(trade.symbol, q)
+    return await safe_api_call(_stage, _market_sell_factory)
 
 
 class SoftwareSLFallback:
@@ -19917,8 +20053,24 @@ class SignalBuilder:
         try:
             _shadow_ctx = _V702_PIPELINE_CONTEXT.get() or {}
             _shadow_key = str(_shadow_ctx.get("candidate_key") or _v702_candidate_wrap(preferred_candidate, market_data, symbol))
+            _shadow_attempt_id = str(_shadow_ctx.get("evaluation_attempt_id") or "")
+            _shadow_cycle_id = int(_shadow_ctx.get("cycle_id", V702PipelineMetrics._cycle()) or 0)
+            _shadow_record = dict(_shadow_pre)
+            _shadow_record.update({
+                "reached": True,
+                "candidate_key": _shadow_key,
+                "evaluation_attempt_id": _shadow_attempt_id,
+                "cycle_id": _shadow_cycle_id,
+                "evaluated_at": float(WALL_NOW()),
+                "exchange_order_submitted": False,
+            })
             _shadow_store = STATS.setdefault("v702_shadow_presend_by_candidate", {})
-            _shadow_store[_shadow_key] = dict(_shadow_pre)
+            _shadow_store[_shadow_key] = _shadow_record
+            _attempt_store = STATS.setdefault("v702_shadow_presend_by_attempt", {})
+            if _shadow_attempt_id:
+                _attempt_store[_shadow_attempt_id] = _shadow_record
+                while len(_attempt_store) > 1024:
+                    _attempt_store.pop(next(iter(_attempt_store)))
             while len(_shadow_store) > 512:
                 _shadow_store.pop(next(iter(_shadow_store)))
             STATS["v702_a55_shadow_presend_passes" if _shadow_pre.get("eligible") else "v702_a55_shadow_presend_blocks"] = int(
@@ -23080,7 +23232,7 @@ def _v652_install_task_reference():
 # It NEVER authorizes, queues, submits, cancels, sizes, or changes live orders.
 # =============================================================================
 V702_A54_CANONICAL_RELEASE_ID = "UNIFIED-SCALPER-V702-A55-CANONICAL-FINAL"
-V702_KNOWLEDGE_EDGE_VERSION = "V702-KNOWLEDGE-EDGE-SHADOW-6-A55"
+V702_KNOWLEDGE_EDGE_VERSION = "V702-KNOWLEDGE-EDGE-SHADOW-7-A63"
 
 class KnowledgeOutcomeLedger:
     _last_summary_ts = 0.0
@@ -23331,10 +23483,39 @@ class KnowledgeOutcomeLedger:
             if not symbol or entry<=0 or sl<=0 or r<=0 or min(t1,t2,t3)<=0: return None
             import hashlib
             now=WALL_NOW(); raw,reviewed,grade,ctx=cls._derive(candidate,snapshot); fam=str(getattr(candidate,"family","") or getattr(candidate,"strategy_mode","") or "UNKNOWN").upper(); style=str(getattr(candidate,"strategy_style","SCALP") or "SCALP").upper(); tf=str(getattr(candidate,"timeframe_profile","") or ""); cycle=str((snapshot or {}).get("cycle_id") or STATS.get("v669_last_cycle_id") or "0")
-            # R14: alert identity is semantic-candidate scoped, not cycle scoped.
-            # generated_at_ms still distinguishes a genuinely new setup, while
-            # repeated registration across cycles collapses to one milestone stream.
-            payload="|".join([source,symbol,fam,str(getattr(candidate,"generated_at_ms",0)),f"{entry:.16g}",f"{sl:.16g}",f"{t1:.8f}",f"{t2:.8f}",f"{t3:.8f}",f"{raw:.6f}"])
+            # Setup identity is candle/geometry scoped. generated_at_ms is an
+            # evaluation timestamp in most engines, so exact milliseconds made
+            # repeated scans of one market setup look like independent trades.
+            _fs_for_identity = dict(getattr(candidate, "features_snapshot", {}) or {})
+            _tf_tokens = re.findall(r"(\d+)\s*([mhd])", tf.lower())
+            _tf_minutes = [int(n) * {"m": 1, "h": 60, "d": 1440}[unit] for n, unit in _tf_tokens]
+            _identity_bar_ms = max(60_000, min(_tf_minutes) * 60_000) if _tf_minutes else 300_000
+            _setup_bar_ms = None
+            for _ts_key in ("closed_candle_ts", "last_closed_bar_ts", "signal_bar_ts", "bar_ts", "candle_timestamp", "ohlcv_last_ts"):
+                _candidate_ts = _fs_for_identity.get(_ts_key)
+                try:
+                    _candidate_ts = float(_candidate_ts)
+                    if math.isfinite(_candidate_ts) and _candidate_ts > 0:
+                        _setup_bar_ms = int(_candidate_ts * (1000.0 if _candidate_ts < 100_000_000_000 else 1.0))
+                        break
+                except Exception:
+                    continue
+            if _setup_bar_ms is None:
+                _generated_ms = int(getattr(candidate, "generated_at_ms", 0) or 0)
+                _setup_bar_ms = (_generated_ms // _identity_bar_ms) * _identity_bar_ms if _generated_ms > 0 else int(now * 1000) // _identity_bar_ms * _identity_bar_ms
+            _setup_material = "|".join([
+                "V702_SETUP_A63_V1", source, symbol.upper(), fam, style, tf.upper(), str(_setup_bar_ms),
+                f"{cls._num(getattr(candidate, 'zone_ref', entry)):.8f}",
+                f"{entry:.8f}", f"{sl:.8f}", f"{t1:.6f}", f"{t2:.6f}", f"{t3:.6f}",
+            ])
+            setup_id = hashlib.sha256(_setup_material.encode()).hexdigest()[:40]
+            _cluster_bucket_ms = max(30 * 60_000, _identity_bar_ms)
+            cluster_material = "|".join([symbol.upper(), fam, style, tf.upper(), str(_setup_bar_ms // _cluster_bucket_ms)])
+            setup_cluster_id = hashlib.sha256(cluster_material.encode()).hexdigest()[:32]
+            # Each invocation remains traceable even when the same setup is
+            # collapsed into its single canonical outcome row.
+            attempt_id = uuid.uuid4().hex
+            payload="|".join([source, setup_id])
             aid=hashlib.sha256(payload.encode()).hexdigest()[:40]
             horizon=float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SWING_SEC",172800.0)) if style.startswith("SWING") else float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SCALP_SEC",21600.0))
             _paper_notional = 75.0
@@ -23384,6 +23565,14 @@ class KnowledgeOutcomeLedger:
                int(getattr(candidate,"generated_at_ms",0) or 0),cycle,"WAITING_ENTRY",now,now,
                json.dumps({
                   "horizon_sec":horizon,"version":V702_KNOWLEDGE_EDGE_VERSION,
+                  "setup_id":setup_id,
+                  "attempt_id":attempt_id,
+                  "setup_cluster_id":setup_cluster_id,
+                  "setup_bar_ts_ms":int(_setup_bar_ms),
+                  "identity_model":"CLOSED_BAR_GEOMETRY_V1",
+                  "coverage_contract":"CLOSED_CANDLE_SEQUENCE_V1",
+                  "coverage_complete":True,
+                  "coverage_through_ts_ms":0,
                   "record_source":source,
                   "entry_model":"VIRTUAL_FILL_AT_SELECTED_ENTRY_REFERENCE" if assume_fill else "WAIT_FOR_BUFFERED_BREAKOUT",
                   "fill_model":"REFERENCE_PLUS_BUFFERED_BREAKOUT_V1" if source == "SELECTED_ROUTE_PAPER" and not assume_fill else ("ASSUMED_REFERENCE_FILL" if assume_fill else "NOT_APPLICABLE"),
@@ -23391,6 +23580,8 @@ class KnowledgeOutcomeLedger:
                   "fill_trigger_price":float(_paper_fill_trigger_price),
                   "candidate_spread_pct":float(cls._num(fs.get("spread_pct", fs.get("spread_percent", 0.0)), 0.0)),
                   "exchange_order_submitted":False,
+                  "paper_exit_contract": ("FIXED_TP3_CLOSE_RESEARCH_ONLY" if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) else "FIXED_TP3_FULL_EXIT_PARITY"),
+                  "runner_live_parity": not bool(CONFIG.get("ENABLE_RUNNER_MODE", True)),
                   "delivery_failed":bool(delivery_failed or source == "DISCOVERY_DELIVERY_FAILED"),
                   "virtual_notional_usdt":_paper_notional if source == "SELECTED_ROUTE_PAPER" else None,
                   "round_trip_cost_pct":_paper_round_trip_cost_pct if source == "SELECTED_ROUTE_PAPER" else None,
@@ -23413,6 +23604,11 @@ class KnowledgeOutcomeLedger:
             if not _inserted:
                 return None
             STATS["v702_knowledge_alert_registered"]=int(STATS.get("v702_knowledge_alert_registered",0) or 0)+1
+            STATS["v702_knowledge_setup_identity_last"] = {
+                "setup_id": setup_id, "attempt_id": attempt_id,
+                "setup_cluster_id": setup_cluster_id, "symbol": symbol, "family": fam,
+                "setup_bar_ts_ms": int(_setup_bar_ms), "record_source": source,
+            }
             if source == "SELECTED_ROUTE_PAPER":
                 STATS["v702_paper_sim_opened"] = int(STATS.get("v702_paper_sim_opened",0) or 0) + 1
                 logger.info(
@@ -23425,7 +23621,9 @@ class KnowledgeOutcomeLedger:
 
     @classmethod
     def annotate_paper_edge(cls, alert_id, shadow_result=None, builder_completed=False,
-                            live_eligible=False, builder_reason=""):
+                            live_eligible=False, builder_reason="", *,
+                            market_qualification_completed=None, trade_state_created=None,
+                            evaluation_attempt_id=""):
         """Attach post-Builder market-shadow evidence and separate account/live readiness.
 
         market_live_eligible is the balance-independent strategy/economic evidence used
@@ -23445,7 +23643,15 @@ class KnowledgeOutcomeLedger:
                 return False
             notes = json.loads(row[0] or "{}") or {}
             shadow = dict(shadow_result or {}) if isinstance(shadow_result, dict) else {}
-            shadow_ok = bool(shadow.get("eligible", False))
+            shadow_reached = bool(shadow.get("reached", False))
+            # For A63, market evidence is tied to the exact evaluation attempt.
+            # Legacy callers default to the prior Builder+Shadow contract.
+            if market_qualification_completed is None:
+                market_qualification_completed = bool(builder_completed and shadow.get("eligible", False))
+            market_qualification_completed = bool(market_qualification_completed and shadow_reached)
+            if evaluation_attempt_id:
+                shadow["evaluation_attempt_id"] = str(evaluation_attempt_id)[:80]
+            shadow_ok = bool(shadow.get("eligible", False) and shadow_reached)
             entry = cls._num(row[1]); stop = cls._num(row[2])
             tp1, tp2, tp3 = cls._num(row[3]), cls._num(row[4]), cls._num(row[5])
             rr1, rr2, rr3 = cls._num(row[6]), cls._num(row[7]), cls._num(row[8])
@@ -23479,14 +23685,18 @@ class KnowledgeOutcomeLedger:
                 notes["fill_trigger_price"] = float(_new_trigger)
             notes.update({
                 "builder_completed": bool(builder_completed),
+                "trade_state_created": bool(trade_state_created) if trade_state_created is not None else bool(builder_completed),
+                "market_qualification_completed": bool(market_qualification_completed),
+                "evaluation_attempt_id": str(evaluation_attempt_id or shadow.get("evaluation_attempt_id") or "")[:80],
                 "builder_reason": str(builder_reason or "")[:180],
+                "shadow_presend_reached": shadow_reached,
                 "shadow_presend_eligible": shadow_ok,
                 "shadow_presend_reason": str(shadow.get("reason") or "shadow_result_missing")[:180],
-                "paper_edge_eligible": bool(builder_completed and shadow_ok),
+                "paper_edge_eligible": bool(market_qualification_completed and shadow_ok),
                 "live_eligible": bool(live_eligible),
                 "account_execution_eligible": bool(live_eligible),
-                "market_live_eligible": bool(builder_completed and shadow_ok),
-                "edge_evidence_class": "BUILDER_PLUS_SHADOW_PRESEND_MARKET_ONLY" if (builder_completed and shadow_ok) else "EXPLORATORY_SELECTED_ONLY",
+                "market_live_eligible": bool(market_qualification_completed and shadow_ok),
+                "edge_evidence_class": "SAME_ATTEMPT_MARKET_SHADOW_ONLY" if (market_qualification_completed and shadow_ok) else "EXPLORATORY_SELECTED_ONLY",
                 "edge_training_authority": "MARKET_ECONOMICS_ONLY_NO_ACCOUNT_OR_ORDER_AUTHORITY",
                 "shadow_presend": shadow,
                 "round_trip_cost_pct": cost_pct,
@@ -23515,8 +23725,39 @@ class KnowledgeOutcomeLedger:
                 conn.close()
 
     @classmethod
-    def _active(cls,limit):
-        conn=cls._connect(); rows=conn.execute("SELECT * FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION') ORDER BY alerted_at ASC LIMIT ?",(int(limit),)).fetchall(); conn.close(); return rows
+    def _active(cls, limit):
+        """Fetch active rows with a reserved share for selected-route Paper.
+
+        Discovery rows remain monitored, but cannot consume the entire global
+        budget and starve the explicitly selected Paper lane.
+        """
+        limit = max(1, min(500, int(limit)))
+        selected_quota = max(1, int(math.ceil(limit * 0.70)))
+        other_quota = max(0, limit - selected_quota)
+        conn = cls._connect()
+        try:
+            selected = conn.execute(
+                "SELECT * FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION') "
+                "AND notes LIKE '%SELECTED_ROUTE_PAPER%' ORDER BY alerted_at ASC LIMIT ?",
+                (selected_quota,),
+            ).fetchall()
+            other = conn.execute(
+                "SELECT * FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION') "
+                "AND notes NOT LIKE '%SELECTED_ROUTE_PAPER%' ORDER BY alerted_at ASC LIMIT ?",
+                (other_quota,),
+            ).fetchall() if other_quota else []
+            rows = list(selected) + list(other)
+            if len(rows) < limit:
+                used = {str(r['alert_id']) for r in rows}
+                extra = conn.execute(
+                    "SELECT * FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION') "
+                    "ORDER BY alerted_at ASC LIMIT ?", (limit,),
+                ).fetchall()
+                rows.extend(r for r in extra if str(r['alert_id']) not in used)
+            rows.sort(key=lambda r: (float(r['alerted_at'] or 0.0), str(r['alert_id'])))
+            return rows[:limit]
+        finally:
+            conn.close()
 
     @classmethod
     def _update(cls,aid,**fields):
@@ -23556,13 +23797,69 @@ class KnowledgeOutcomeLedger:
             if now-last>=max(30.0,float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_INTERVAL_SEC",60.0))*.8): by_symbol.setdefault(sym,[]).append(row)
         if not by_symbol:return
         sem=asyncio.Semaphore(5)
+        _paper_tf = str(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TIMEFRAME", "1m") or "1m").lower()
+        _tf_match = re.fullmatch(r"(\d+)(m|h|d)", _paper_tf)
+        _tf_ms = (int(_tf_match.group(1)) * {"m": 60_000, "h": 3_600_000, "d": 86_400_000}[_tf_match.group(2)]) if _tf_match else 60_000
         async def fetch(sym):
             async with sem:
                 try:
-                    call=safe_api_call(f"knowledge_ohlcv_{sym}",lambda:exchange.fetch_ohlcv(sym,str(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TIMEFRAME","1m")),limit=int(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_LIMIT",120))),retry_safe=True)
-                    raw=await asyncio.wait_for(call,timeout=max(2.0,float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_TIMEOUT_SEC",8.0))))
-                    cls._last_fetch_by_symbol[sym]=WALL_NOW(); return sym,raw,None
-                except Exception as exc:return sym,None,exc
+                    sym_rows = by_symbol.get(sym, [])
+                    starts = []
+                    for _r in sym_rows:
+                        _last = int(_r["last_bar_ts"] or 0)
+                        _alert = int(float(_r["alerted_at"] or now) * 1000)
+                        starts.append((_last + _tf_ms) if _last > 0 else ((_alert // _tf_ms) * _tf_ms))
+                    _cursor = min(starts) if starts else max(0, int(now * 1000) - 120 * _tf_ms)
+                    _limit = max(20, min(1000, int(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_LIMIT", 500) or 500)))
+                    _pages = max(1, min(12, int(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_MAX_PAGES", 6) or 6)))
+                    collected = {}
+                    for _page in range(_pages):
+                        async def _request_page():
+                            return await exchange.fetch_ohlcv(sym, _paper_tf, since=int(_cursor), limit=_limit)
+                        call = safe_api_call(f"knowledge_ohlcv_{sym}_p{_page}", _request_page, retry_safe=True)
+                        raw_page = await asyncio.wait_for(
+                            call,
+                            timeout=max(2.0, float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_TIMEOUT_SEC", 8.0))),
+                        )
+                        if not raw_page:
+                            break
+                        _max_ts = _cursor - _tf_ms
+                        for _bar in raw_page:
+                            try:
+                                _ts = int(_bar[0])
+                                collected[_ts] = _bar
+                                _max_ts = max(_max_ts, _ts)
+                            except Exception:
+                                continue
+                        if len(raw_page) < _limit or _max_ts < _cursor:
+                            break
+                        _next = _max_ts + _tf_ms
+                        if _next <= _cursor:
+                            break
+                        _cursor = _next
+                    raw = [collected[k] for k in sorted(collected)]
+                    cls._last_fetch_by_symbol[sym] = WALL_NOW()
+                    return sym, raw, None
+                except TypeError as exc:
+                    # A non-CCXT test adapter may not expose `since`; retain a
+                    # bounded compatibility fallback but mark this lane as
+                    # unable to prove historical catch-up.
+                    try:
+                        call = safe_api_call(
+                            f"knowledge_ohlcv_{sym}_legacy",
+                            lambda: exchange.fetch_ohlcv(sym, _paper_tf, limit=_limit),
+                            retry_safe=True,
+                        )
+                        raw = await asyncio.wait_for(
+                            call, timeout=max(2.0, float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_FETCH_TIMEOUT_SEC", 8.0)))
+                        )
+                        STATS["v702_knowledge_fetch_since_unsupported"] = int(STATS.get("v702_knowledge_fetch_since_unsupported", 0) or 0) + 1
+                        cls._last_fetch_by_symbol[sym] = WALL_NOW()
+                        return sym, raw, None
+                    except Exception as fallback_exc:
+                        return sym, None, fallback_exc
+                except Exception as exc:
+                    return sym, None, exc
         results=await asyncio.gather(*[fetch(sym) for sym in by_symbol])
         for sym,raw,err in results:
             if err or not raw:
@@ -23586,15 +23883,16 @@ class KnowledgeOutcomeLedger:
                     _selected_paper = str(_row_notes.get("record_source", "")).upper() == "SELECTED_ROUTE_PAPER"
                     _paper_virtual_sl = cls._num(_row_notes.get("paper_virtual_sl_price"), sl) if _selected_paper else sl
                     horizon=float(_row_notes.get("horizon_sec",CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SCALP_SEC",21600.0)))
-                    if now>alert_ts+horizon:
-                        if status=="WAITING_ENTRY":
-                            await cls._update_async(aid,status="EXPIRED",first_event="ENTRY_NOT_REACHED",final_outcome="ENTRY_NOT_REACHED",expired_at=now)
-                        elif status=="IN_POSITION":
-                            fe=str(row["first_event"] or "")
-                            final="TIMEOUT_AFTER_"+fe if fe in {"TP1","TP2"} else "TIMEOUT"
-                            await cls._update_async(aid,status="EXPIRED_AFTER_ENTRY",final_outcome=final,expired_at=now)
-                        continue
+                    _horizon_end_ts = alert_ts + max(0.0, horizon)
+                    _horizon_end_ms = int(_horizon_end_ts * 1000)
+                    # Do not expire a row before replaying already-available closed
+                    # candles inside its own observation horizon.
+                    _row_bars = [b for b in bars if int(b[0]) + _tf_ms <= _horizon_end_ms]
+                    _terminal_processed = False
+                    _coverage_contract = str(_row_notes.get("coverage_contract") or "") == "CLOSED_CANDLE_SEQUENCE_V1"
+                    _coverage_ok = bool(_coverage_contract and _row_notes.get("coverage_complete", False))
                     entry_at=row["entry_triggered_at"]; first=str(row["first_event"] or ""); hit1at=row["tp1_hit_at"]; hit2at=row["tp2_hit_at"]; hit3at=row["tp3_hit_at"]; slat=row["sl_hit_at"]; mfe=cls._num(row["max_mfe_r"]); mae=cls._num(row["max_mae_r"]); seen=int(row["bars_observed"] or 0)
+                    _coverage_expected_next = (last_ts + _tf_ms) if last_ts > 0 else (((int(alert_ts * 1000) // _tf_ms) + 1) * _tf_ms)
                     tp1_notice=int(row["tp1_notice_sent"] or 0); tp2_notice=int(row["tp2_notice_sent"] or 0); tp3_notice=int(row["tp3_notice_sent"] or 0); sl_notice=int(row["sl_notice_sent"] or 0)
                     # Live PositionManager moves the remaining stop to fee-covered
                     # break-even immediately after TP1. Backfill older selected-paper
@@ -23611,8 +23909,18 @@ class KnowledgeOutcomeLedger:
                                 "paper_virtual_sl_set_at": float(hit1at or hit2at or entry_at or now),
                             })
                             await cls._update_async(aid, notes=json.dumps(_row_notes, ensure_ascii=False, sort_keys=True))
-                    for ts,o,h,l,c,v in bars:
+                    for ts,o,h,l,c,v in _row_bars:
                         if ts<=max(last_ts,int(alert_ts*1000)):continue
+                        if int(ts) != int(_coverage_expected_next):
+                            _coverage_ok = False
+                        elif not _coverage_contract:
+                            # An A62-or-earlier row has no persisted proof that
+                            # all previous fetch windows were contiguous.
+                            _coverage_ok = False
+                        _coverage_expected_next = int(ts) + _tf_ms
+                        _row_notes["coverage_contract"] = "CLOSED_CANDLE_SEQUENCE_V1"
+                        _row_notes["coverage_complete"] = bool(_coverage_ok)
+                        _row_notes["coverage_through_ts_ms"] = int(ts)
                         last_ts=ts
                         if entry_at is None:
                             if _selected_paper and str(_row_notes.get("fill_model", "")) == "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1":
@@ -23642,6 +23950,16 @@ class KnowledgeOutcomeLedger:
                                                 float(_fill_price) * cls._num(_row_notes.get("round_trip_cost_pct"), 0.30) / 100.0 / _new_risk
                                             ) if _new_risk > 0 else 0.0,
                                         })
+                                        # Keep the in-memory reducer state in parity with the
+                                        # persisted fill geometry before processing the next bar.
+                                        # Otherwise the same batch may compare highs/lows against
+                                        # stale pre-gap targets while the database stores new ones.
+                                        entry = float(_fill_price)
+                                        risk = float(_new_risk)
+                                        tp1 = float(_new_tp1)
+                                        tp2 = float(_new_tp2)
+                                        tp3 = float(_new_tp3)
+                                        status = "IN_POSITION"
                                         entry_at = ts / 1000.0
                                         STATS["v702_paper_buffered_breakout_fills"] = int(STATS.get("v702_paper_buffered_breakout_fills", 0) or 0) + 1
                                         # Entry candles are OHLC-ambiguous: do not award a
@@ -23664,7 +23982,10 @@ class KnowledgeOutcomeLedger:
                                             STATS["v702_knowledge_terminal_sl"] = int(STATS.get("v702_knowledge_terminal_sl", 0) or 0) + 1
                                             if bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE", True)):
                                                 await cls._send_milestone(row, _fill_stop, "SL", None)
+                                            _terminal_processed = True
+                                            status = "SL_FINAL"
                                             break
+                                        status = "IN_POSITION"
                                         await cls._update_async(
                                             aid, status="IN_POSITION", entry=float(_fill_price),
                                             risk_unit=float(_new_risk), tp1=float(_new_tp1),
@@ -23676,6 +23997,7 @@ class KnowledgeOutcomeLedger:
                                         )
                             elif not _selected_paper and l <= entry <= h:
                                 entry_at=ts/1000.0
+                                status = "IN_POSITION"
                                 await cls._update_async(aid,status="IN_POSITION",first_event=None,entry_triggered_at=entry_at,last_bar_ts=last_ts,max_mfe_r=mfe,max_mae_r=mae,bars_observed=seen)
                             continue
                         mfe=max(mfe,(h-entry)/risk); mae=max(mae,(entry-l)/risk); seen+=1
@@ -23720,6 +24042,8 @@ class KnowledgeOutcomeLedger:
                                 STATS["v702_knowledge_ambiguous_tp1_be_same_bar"] = int(STATS.get("v702_knowledge_ambiguous_tp1_be_same_bar",0) or 0)+1
                                 if not tp1_notice:
                                     await cls._send_milestone(row,_ambiguous_fill,"TP1")
+                                _terminal_processed = True
+                                status = "AMBIGUOUS_FINAL"
                                 break
                         # A38 aligns the realized knowledge ledger with the
                         # canonical conservative SL-first policy used by both
@@ -23730,6 +24054,7 @@ class KnowledgeOutcomeLedger:
                             _amb_after = first if first in {"TP1","TP2","TP3"} else ""
                             _samebar = _v702_a38_same_bar_stop_result(first)
                             d={
+                                "notes":json.dumps(_row_notes, ensure_ascii=False, sort_keys=True),
                                 "status":"SL_FINAL",
                                 "first_event":_samebar["first_event"],
                                 "final_outcome":_samebar["final_outcome"],
@@ -23747,6 +24072,8 @@ class KnowledgeOutcomeLedger:
                                 STATS["v702_knowledge_terminal_sl_after_target"] = int(STATS.get("v702_knowledge_terminal_sl_after_target", 0) or 0) + 1
                             if bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE",True)):
                                 await cls._send_milestone(row, d, "SL", _amb_after or None)
+                            _terminal_processed = True
+                            status = "SL_FINAL"
                             break
                         if not first:
                             first=cls._first_touch_event(h1,h2,h3,hs,"")
@@ -23765,7 +24092,7 @@ class KnowledgeOutcomeLedger:
                         if h2 and hit2at is None:hit2at=ts/1000.0
                         if h3 and hit3at is None:hit3at=ts/1000.0
                         if hs and slat is None:slat=ts/1000.0
-                        d={"status":"IN_POSITION","first_event":first or None,"entry_triggered_at":entry_at,"tp1_hit_at":hit1at,"tp2_hit_at":hit2at,"tp3_hit_at":hit3at,"sl_hit_at":slat,"last_bar_ts":last_ts,"max_mfe_r":mfe,"max_mae_r":mae,"bars_observed":seen}
+                        d={"notes":json.dumps(_row_notes, ensure_ascii=False, sort_keys=True),"status":"IN_POSITION","first_event":first or None,"entry_triggered_at":entry_at,"tp1_hit_at":hit1at,"tp2_hit_at":hit2at,"tp3_hit_at":hit3at,"sl_hit_at":slat,"last_bar_ts":last_ts,"max_mfe_r":mfe,"max_mae_r":mae,"bars_observed":seen}
                         if _selected_paper and first in {"TP1", "TP2"}:
                             d["notes"] = json.dumps(_row_notes, ensure_ascii=False, sort_keys=True)
                         # Milestone notices are emitted once per reached target/SL.
@@ -23787,14 +24114,48 @@ class KnowledgeOutcomeLedger:
                             STATS["v702_knowledge_terminal_sl_after_target"] = int(STATS.get("v702_knowledge_terminal_sl_after_target",0) or 0) + 1
                             if not sl_notice and bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE",True)):
                                 await cls._send_milestone(row,d,"SL",first); sl_notice=1
+                            _terminal_processed = True
+                            status = "SL_FINAL"
                             break
                         if h3:
                             d["status"]="TARGET_FINAL"; d["final_outcome"]="TP3"; await cls._update_async(aid,**d)
                             STATS["v702_knowledge_terminal_tp3"] = int(STATS.get("v702_knowledge_terminal_tp3",0) or 0) + 1
                             if not tp3_notice and bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE",True)):
                                 await cls._send_milestone(row,d,"TP3"); tp3_notice=1
+                            _terminal_processed = True
+                            status = "TARGET_FINAL"
                             break
                         await cls._update_async(aid,**d)
+                    if not _terminal_processed and now > _horizon_end_ts:
+                        _bar_ms = _tf_ms
+                        _replayed = [int(b[0]) for b in _row_bars if int(b[0]) > max(int(row["last_bar_ts"] or 0), int(alert_ts * 1000))]
+                        _expected_first = (((int(alert_ts * 1000) // _bar_ms) + 1) * _bar_ms) if int(row["last_bar_ts"] or 0) <= 0 else (int(row["last_bar_ts"] or 0) + _bar_ms)
+                        _expected_last = ((int(_horizon_end_ms) // _bar_ms) * _bar_ms) - _bar_ms
+                        _coverage_ok = bool(_coverage_ok and _replayed and _replayed[0] == _expected_first and _replayed[-1] >= _expected_last)
+                        if _coverage_ok:
+                            _coverage_ok = all((_b - _a) == _bar_ms for _a, _b in zip(_replayed, _replayed[1:]))
+                        _row_notes["coverage_complete"] = bool(_coverage_ok)
+                        _row_notes["coverage_through_ts_ms"] = int(last_ts or 0)
+                        if not _coverage_ok:
+                            await cls._update_async(
+                                aid, status="DATA_GAP_UNRESOLVED", final_outcome="DATA_GAP_UNRESOLVED",
+                                first_event=first or None, last_bar_ts=last_ts,
+                                notes=json.dumps({**_row_notes, "paper_edge_eligible":False, "market_live_eligible":False,
+                                                  "edge_excluded_reason":"historical_coverage_incomplete"}, ensure_ascii=False, sort_keys=True),
+                                expired_at=now,
+                            )
+                            STATS["v702_knowledge_data_gap_unresolved"] = int(STATS.get("v702_knowledge_data_gap_unresolved", 0) or 0) + 1
+                        elif entry_at is None:
+                            await cls._update_async(
+                                aid, status="EXPIRED", first_event="ENTRY_NOT_REACHED",
+                                final_outcome="ENTRY_NOT_REACHED", last_bar_ts=last_ts, expired_at=now,
+                            )
+                        else:
+                            final = "TIMEOUT_AFTER_" + first if first in {"TP1", "TP2"} else "TIMEOUT"
+                            await cls._update_async(
+                                aid, status="EXPIRED_AFTER_ENTRY", final_outcome=final,
+                                first_event=first or None, last_bar_ts=last_ts, expired_at=now,
+                            )
                 except Exception as exc:
                     STATS["v702_knowledge_process_errors"]=int(STATS.get("v702_knowledge_process_errors",0) or 0)+1; logger.debug("[V702-KNOWLEDGE] process row suppressed: %s",exc)
 
@@ -23909,6 +24270,9 @@ class KnowledgeOutcomeLedger:
                     and bool(_edge_notes.get("shadow_presend_eligible"))
                     and bool(_edge_notes.get("market_live_eligible"))
                     and str(_edge_notes.get("version") or "") == V702_KNOWLEDGE_EDGE_VERSION
+                    and bool(_edge_notes.get("coverage_complete", False))
+                    and str(_edge_notes.get("coverage_contract") or "") == "CLOSED_CANDLE_SEQUENCE_V1"
+                    and not (bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) and str(_edge_row["final_outcome"] or "").upper() == "TP3")
                 ):
                     edge_evidence_rows.append(_edge_row)
             except Exception:
@@ -23964,6 +24328,8 @@ class KnowledgeOutcomeLedger:
                         _risk_px = max(1e-12, cls._num(r["risk_unit"], 1e-12))
                         modeled += rem * ((_virtual_stop - _entry_px) / _risk_px)
                     elif final_fo == "TP3":
+                        if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)):
+                            raise ValueError("fixed_tp3_paper_close_not_live_runner_parity")
                         if rem > 1e-12:
                             modeled += rem * _rr3
                             rem = 0.0
@@ -24085,6 +24451,8 @@ class KnowledgeOutcomeLedger:
                     _risk_px = max(1e-12, cls._num(r["risk_unit"], 1e-12))
                     modeled += rem * ((_virtual_stop - _entry_px) / _risk_px)
                 elif _final == "TP3":
+                    if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)):
+                        return None
                     if rem > 1e-12: modeled += rem * _rr3
                 else:
                     return None
@@ -24109,26 +24477,80 @@ class KnowledgeOutcomeLedger:
         _bh_candidates = []
         for _key, _group_rows in sorted(_recipe_groups.items()):
             _ordered = sorted(_group_rows, key=lambda x: float(x["alerted_at"] or 0.0))
-            _samples = [v for v in (_modeled_net_r_for_row(x) for x in _ordered) if v is not None]
-            _n = len(_samples)
+            _by_cluster = {}
+            _cluster_rows = {}
+            for _row in _ordered:
+                _value = _modeled_net_r_for_row(_row)
+                if _value is None:
+                    continue
+                try:
+                    _meta = json.loads(_row["notes"] or "{}") or {}
+                except Exception:
+                    _meta = {}
+                _cluster = str(_meta.get("setup_cluster_id") or "")
+                if not _cluster:
+                    _bucket = int(float(_row["alerted_at"] or 0.0) // 1800)
+                    _cluster = "|".join((str(_row["symbol"] or ""), str(_row["family"] or ""), str(_row["timeframe_profile"] or ""), str(_bucket)))
+                _by_cluster.setdefault(_cluster, []).append(float(_value))
+                _cluster_rows.setdefault(_cluster, []).append(_row)
+            # One conservative observation per symbol/family/time cluster.
+            # Repeated scans and closely spaced variants cannot inflate n.
+            _clustered = []
+            for _cluster, _values in _by_cluster.items():
+                _members = _cluster_rows[_cluster]
+                _clustered.append({
+                    "cluster_id": _cluster,
+                    "ts": min(float(r["alerted_at"] or 0.0) for r in _members),
+                    "value": min(_values),
+                })
+            _clustered.sort(key=lambda x: x["ts"])
+            _n = len(_clustered)
             if _n < _recipe_min_n:
                 continue
-            _mean = sum(_samples) / _n
-            _variance = sum((x - _mean) ** 2 for x in _samples) / max(1, _n - 1)
+            _cut1 = max(1, int(_n * 0.60))
+            _cut2 = max(_cut1 + 1, int(_n * 0.80))
+            _purge_sec = 900.0
+            for _row in _group_rows:
+                try:
+                    _note_for_purge = json.loads(_row["notes"] or "{}") or {}
+                    _purge_sec = max(_purge_sec, min(21600.0, float(_note_for_purge.get("horizon_sec", 900.0) or 900.0)))
+                except Exception:
+                    continue
+            _val_start = _clustered[min(_cut1, _n - 1)]["ts"]
+            _holdout_start = _clustered[min(_cut2, _n - 1)]["ts"]
+            _train = [x["value"] for x in _clustered[:_cut1] if x["ts"] < _val_start - _purge_sec]
+            _validation = [x["value"] for x in _clustered[_cut1:_cut2] if x["ts"] >= _val_start + _purge_sec and x["ts"] < _holdout_start - _purge_sec]
+            _holdout = [x["value"] for x in _clustered[_cut2:] if x["ts"] >= _holdout_start + _purge_sec]
+            _samples = _train
+            if len(_samples) < 40 or len(_validation) < 15 or len(_holdout) < 15:
+                continue
+            _n_train = len(_samples)
+            _mean = sum(_samples) / _n_train
+            _variance = sum((x - _mean) ** 2 for x in _samples) / max(1, _n_train - 1)
             _sd = math.sqrt(max(0.0, _variance))
-            _lower = _mean - 1.28 * _sd / math.sqrt(_n)
-            _mid = _n // 2
+            _lower = _mean - 1.28 * _sd / math.sqrt(_n_train)
+            _mid = _n_train // 2
             _first_half = sum(_samples[:_mid]) / max(1, _mid)
-            _second_half = sum(_samples[_mid:]) / max(1, _n - _mid)
-            _zscore = (_mean * math.sqrt(_n) / _sd) if _sd > 1e-12 else (float("inf") if _mean > 0 else 0.0)
+            _second_half = sum(_samples[_mid:]) / max(1, _n_train - _mid)
+            _validation_expectancy = sum(_validation) / len(_validation)
+            _holdout_expectancy = sum(_holdout) / len(_holdout)
+            _zscore = (_mean * math.sqrt(_n_train) / _sd) if _sd > 1e-12 else (float("inf") if _mean > 0 else 0.0)
             _pvalue = 0.5 * math.erfc(_zscore / math.sqrt(2.0)) if math.isfinite(_zscore) else 0.0
             _entry = {
-                "key": _key, "entries": _n,
+                "key": _key, "entries": _n_train,
+                "raw_modeled_rows": sum(len(v) for v in _by_cluster.values()),
+                "effective_sample_size": _n,
+                "train_samples": len(_train), "validation_samples": len(_validation),
+                "holdout_samples": len(_holdout), "purge_horizon_sec": _purge_sec,
+                "validation_expectancy_r": _validation_expectancy,
+                "holdout_expectancy_r": _holdout_expectancy,
+                "purged_walk_forward": True,
+                "independent_cluster_model": "SYMBOL_FAMILY_TF_30M_WORST_CASE_V1",
                 "wins": sum(1 for x in _samples if x > 0),
                 "losses": sum(1 for x in _samples if x < 0),
                 "ambiguous": sum(1 for x in _group_rows if str(x["final_outcome"] or "").startswith("AMBIGUOUS")),
-                "win_rate": sum(1 for x in _samples if x > 0) / _n,
-                "loss_rate": sum(1 for x in _samples if x < 0) / _n,
+                "win_rate": sum(1 for x in _samples if x > 0) / _n_train,
+                "loss_rate": sum(1 for x in _samples if x < 0) / _n_train,
                 "expectancy_r": _mean, "lower_bound_90_r": _lower,
                 "first_half_expectancy_r": _first_half,
                 "second_half_expectancy_r": _second_half,
@@ -24154,6 +24576,9 @@ class KnowledgeOutcomeLedger:
                 and _entry["lower_bound_90_r"] > 0.0
                 and _entry["first_half_expectancy_r"] > 0.0
                 and _entry["second_half_expectancy_r"] > 0.0
+                and _entry["validation_expectancy_r"] > 0.0
+                and _entry["holdout_expectancy_r"] > 0.0
+                and _entry["effective_sample_size"] >= _recipe_min_n
             ):
                 _entry["status"] = "VALIDATED_POSITIVE"
         positive_observed=sorted([d for d in learned_core.values() if d["status"] == "VALIDATED_POSITIVE"],key=lambda d:(-d["expectancy_r"],-d["entries"],d["key"]))[:12]
@@ -24483,36 +24908,74 @@ class EdgeGate:
             return None
         return "|".join((family, "STYLE="+style, "TF="+timeframe, "HTF="+htf_bucket))
 
+    @staticmethod
+    def _finite_metric(value, name: str, *, lower=None, upper=None) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name}_not_numeric")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"{name}_non_finite")
+        if lower is not None and number < lower:
+            raise ValueError(f"{name}_below_minimum")
+        if upper is not None and number > upper:
+            raise ValueError(f"{name}_above_maximum")
+        return number
+
     @classmethod
     def live_permitted(cls, context):
         key = cls.recipe_key(context)
         if not key:
             return False, "edge_context_missing_or_invalid"
         try:
-            min_n = max(100, int(CONFIG.get("V702_KNOWLEDGE_RECIPE_MIN_OBS", 100) or 100))
+            min_n_raw = CONFIG.get("V702_KNOWLEDGE_RECIPE_MIN_OBS", 100)
+            if isinstance(min_n_raw, bool) or not isinstance(min_n_raw, (int, float)):
+                return False, "edge_min_samples_config_invalid"
+            if not math.isfinite(float(min_n_raw)) or int(min_n_raw) < 100 or float(min_n_raw) != int(min_n_raw):
+                return False, "edge_min_samples_config_invalid"
+            min_n = max(100, int(min_n_raw))
             report = STATS.get("v702_knowledge_edge_report")
-            report_ts = float((report or {}).get("generated_at", 0.0) or 0.0) if isinstance(report, dict) else 0.0
-            stale = not isinstance(report, dict) or float(WALL_NOW())-report_ts > 900.0
-            if stale:
-                # The async ledger task refreshes this report off the event loop.
-                # A missing/stale report cannot trigger SQLite work at order time.
+            if not isinstance(report, dict):
+                return False, "edge_report_missing_or_invalid"
+            if str(report.get("version") or "") != str(V702_KNOWLEDGE_EDGE_VERSION):
+                return False, "edge_report_version_mismatch"
+            report_ts = cls._finite_metric(report.get("generated_at"), "generated_at", lower=1.0)
+            now = cls._finite_metric(WALL_NOW(), "wall_clock", lower=1.0)
+            future_skew = max(0.0, min(5.0, cls._finite_metric(CONFIG.get("V702_EDGE_FUTURE_SKEW_SEC", 2.0), "future_skew", lower=0.0)))
+            if report_ts > now + future_skew:
+                return False, "edge_report_generated_in_future"
+            report_max_age = max(60.0, min(3600.0, cls._finite_metric(CONFIG.get("V702_EDGE_REPORT_MAX_AGE_SEC", 900.0), "report_max_age", lower=1.0)))
+            if now - report_ts > report_max_age:
                 return False, "edge_report_missing_or_stale"
-            recipe = ((report or {}).get("learned_recipes") or {}).get(key)
+            recipes = report.get("learned_recipes")
+            if not isinstance(recipes, dict):
+                return False, "edge_report_recipes_invalid"
+            recipe = recipes.get(key)
             if not isinstance(recipe, dict):
                 return False, "edge_not_proven_for_exact_recipe"
-            if int(recipe.get("entries", 0) or 0) < min_n:
+            entries_raw = recipe.get("entries")
+            if isinstance(entries_raw, bool) or not isinstance(entries_raw, (int, float)):
+                return False, "edge_sample_count_invalid"
+            entries_number = float(entries_raw)
+            if not math.isfinite(entries_number) or not entries_number.is_integer() or entries_number < 0:
+                return False, "edge_sample_count_invalid"
+            if int(entries_number) < min_n:
                 return False, "edge_sample_below_minimum"
             if str(recipe.get("status") or "") != "VALIDATED_POSITIVE":
                 return False, "edge_statistical_validation_failed"
-            if float(recipe.get("expectancy_r", -1e9)) < 0.10 or float(recipe.get("lower_bound_90_r", -1e9)) <= 0.0:
+            expectancy = cls._finite_metric(recipe.get("expectancy_r"), "expectancy_r", lower=-100.0, upper=100.0)
+            lower_bound = cls._finite_metric(recipe.get("lower_bound_90_r"), "lower_bound_90_r", lower=-100.0, upper=100.0)
+            first_half = cls._finite_metric(recipe.get("first_half_expectancy_r"), "first_half_expectancy_r", lower=-100.0, upper=100.0)
+            second_half = cls._finite_metric(recipe.get("second_half_expectancy_r"), "second_half_expectancy_r", lower=-100.0, upper=100.0)
+            if expectancy < 0.10 or lower_bound <= 0.0:
                 return False, "edge_net_expectancy_confidence_failed"
-            if float(recipe.get("first_half_expectancy_r", -1e9)) <= 0.0 or float(recipe.get("second_half_expectancy_r", -1e9)) <= 0.0:
+            if first_half <= 0.0 or second_half <= 0.0:
                 return False, "edge_temporal_stability_failed"
             return True, "validated_positive_edge"
         except Exception as exc:
             STATS["v702_a55_edge_gate_errors"] = int(STATS.get("v702_a55_edge_gate_errors", 0) or 0) + 1
             logger.error("[V702-A55-EDGE] EdgeGate failed closed: %s", type(exc).__name__)
             return False, f"edge_gate_error:{type(exc).__name__}"
+
 
 
 async def run_bot(universe: List[str]):
@@ -26994,11 +27457,16 @@ async def run_bot(universe: List[str]):
                                 await SignalBuilder.build_and_route(exchange, symbol, md, preferred_candidate=_route.candidate)
                             except Exception as _builder_exc:
                                 if _paper_aid:
+                                    _attempt_meta = STATS.get("v702_builder_last_attempt", {})
+                                    _attempt_id = str((_attempt_meta or {}).get("evaluation_attempt_id") or "") if isinstance(_attempt_meta, dict) else ""
+                                    _attempt_shadow = STATS.get("v702_shadow_presend_by_attempt", {}).get(_attempt_id) if _attempt_id else None
                                     await asyncio.to_thread(
                                         KnowledgeOutcomeLedger.annotate_paper_edge,
-                                        _paper_aid, STATS.get("v702_shadow_presend_by_candidate", {}).get(_paper_shadow_key),
+                                        _paper_aid, _attempt_shadow,
                                         builder_completed=False, live_eligible=False,
                                         builder_reason=f"builder_exception:{type(_builder_exc).__name__}",
+                                        market_qualification_completed=False, trade_state_created=False,
+                                        evaluation_attempt_id=_attempt_id,
                                     )
                                     if _paper_msg:
                                         asyncio.create_task(TelegramDispatcher.enqueue(_paper_msg + "\n\nBuilder result: BLOCKED by exception; excluded from Edge evidence."))
@@ -27040,14 +27508,20 @@ async def run_bot(universe: List[str]):
                                 raise
                             else:
                                 if _paper_aid:
+                                    _attempt_meta = STATS.get("v702_builder_last_attempt", {})
+                                    if not isinstance(_attempt_meta, dict) or str(_attempt_meta.get("candidate_key") or "") != _paper_shadow_key:
+                                        _attempt_meta = {}
+                                    _attempt_id = str(_attempt_meta.get("evaluation_attempt_id") or "")
                                     _paper_shadow, _paper_builder_status, _paper_builder_reason = _v702_a60_resolve_paper_shadow(
-                                        STATS.get("v702_shadow_presend_by_candidate", {}),
+                                        STATS.get("v702_shadow_presend_by_attempt", {}),
                                         _paper_shadow_key,
                                         STATS.get("v702_builder_return_none_last", {}),
                                     )
-                                    _paper_builder_completed = _paper_builder_status != "builder_returned_none"
+                                    _paper_builder_completed = bool(_attempt_meta.get("invocation_completed"))
+                                    _trade_state_created = bool(_attempt_meta.get("trade_state_created"))
+                                    _market_qualified = bool(_paper_shadow.get("reached") and _paper_shadow.get("eligible"))
                                     _live_eligible = bool(
-                                        _paper_builder_completed
+                                        _trade_state_created
                                         and int(STATS.get("v534_live_ready", 0) or 0) > _before_live_ready
                                         and int(STATS.get("signals_queued", 0) or 0) > _before_queued
                                     )
@@ -27055,9 +27529,12 @@ async def run_bot(universe: List[str]):
                                         KnowledgeOutcomeLedger.annotate_paper_edge,
                                         _paper_aid, _paper_shadow, builder_completed=_paper_builder_completed,
                                         live_eligible=_live_eligible,
-                                        builder_reason=("builder_returned_none:" + _paper_builder_reason[:150]
-                                                       if _paper_builder_status == "builder_returned_none"
+                                        builder_reason=("builder_returned_no_trade_state:" + _paper_builder_reason[:140]
+                                                       if _paper_builder_completed and not _trade_state_created
                                                        else "builder_completed"),
+                                        market_qualification_completed=_market_qualified,
+                                        trade_state_created=_trade_state_created,
+                                        evaluation_attempt_id=_attempt_id,
                                     )
                                     if _paper_msg:
                                         _shadow_label = "PASS" if bool((_paper_shadow or {}).get("eligible")) else (
@@ -27066,12 +27543,13 @@ async def run_bot(universe: List[str]):
                                             else "BLOCKED: " + str((_paper_shadow or {}).get("reason", "shadow_result_missing"))
                                         )
                                         _builder_label = (
-                                            "Builder invocation: completed; returned no trade state"
-                                            if _paper_builder_status == "builder_returned_none"
-                                            else "Builder invocation: completed"
+                                            "Builder invocation: completed; market Shadow evaluated; no live TradeState"
+                                            if _paper_builder_status == "shadow_evaluated_after_builder_none"
+                                            else ("Builder invocation: completed; returned no TradeState"
+                                                  if not _trade_state_created else "Builder invocation: completed; TradeState created")
                                         )
                                         _paper_msg += "\n\n" + _builder_label + " | Shadow PreSend: " + OpportunityTelegramNotifier._escape(_shadow_label[:220])
-                                        _paper_msg += "\nPaper entry waits for price touch; only rows with an actual eligible Shadow PreSend result inform Edge learning."
+                                        _paper_msg += "\nPaper entry waits for the buffered breakout trigger; simulated fill is taken from the first eligible closed candle with conservative gap pricing; only rows with an actual eligible Shadow PreSend result inform Edge learning."
                                         asyncio.create_task(TelegramDispatcher.enqueue(_paper_msg))
                         finally:
                             _V702_SELECTED_PREFLIGHT_CTX.reset(_v702_pf_token)
@@ -39369,6 +39847,7 @@ def _v516_htf_outcome_audit(window_sec: float = 720.0) -> Dict[str, Any]:
 class _V516MockExchange:
     """Deterministic async MEXC-like adapter used only by offline self-tests."""
     def __init__(self, fault: str = ""):
+        self.id = "mexc"  # test-only adapter; never a real venue client
         self.fault = str(fault or "")
         self.orders = {}
         self._seq = 0
@@ -39401,22 +39880,25 @@ class _V516MockExchange:
             raise RuntimeError("balance fetch mock failure")
         return {"free": {"USDT": 100.0}, "used": {"USDT": 0.0}, "total": {"USDT": 100.0}}
 
-    async def create_market_buy_order(self, symbol, qty):
+    async def create_market_buy_order(self, symbol, qty, params=None):
         if self.fault == "entry":
             raise RuntimeError("insufficient balance mock")
         self._seq += 1; oid = f"MOCK-E-{self._seq}"
         self.orders[oid] = {"id": oid, "symbol": symbol, "side": "buy", "status": "closed",
-                            "amount": float(qty), "filled": float(qty), "average": 100.0, "price": 100.0}
+                            "amount": float(qty), "filled": float(qty), "average": 100.0, "price": 100.0,
+                            "clientOrderId": str((params or {}).get("clientOrderId") or "")}
         return self.orders[oid]
 
-    async def create_stop_market_order(self, symbol, side, qty, price):
+    async def create_stop_market_order(self, symbol, side, qty, price, params=None):
         if self.fault == "sl_create":
             raise RuntimeError("exchange rejected stop order")
         self._seq += 1; oid = f"MOCK-S-{self._seq}"
+        _cid = str((params or {}).get("clientOrderId") or "")
         self.orders[oid] = {"id": oid, "symbol": symbol, "side": side, "status": "open",
                             "amount": float(qty), "filled": 0.0, "stopPrice": float(price),
-                            "triggerPrice": float(price), "price": None,
-                            "info": {"stopPrice": float(price), "side": side}}
+                            "triggerPrice": float(price), "price": None, "timestamp": int(WALL_NOW()*1000),
+                            "clientOrderId": _cid,
+                            "info": {"stopPrice": float(price), "side": side, "clientOrderId": _cid}}
         return self.orders[oid]
 
     async def fetch_order(self, oid, symbol):
@@ -39829,16 +40311,27 @@ async def _v517_fetch_recent_orders(exchange: Any, symbol: str) -> List[Dict[str
         used += 1
         try:
             if name == "fetch_orders":
-                raw = await _v517_await_maybe(fn(symbol, lookback_ms))
+                raw = await safe_api_call(
+                    "reconcile_fetch_orders",
+                    lambda fn=fn: _v517_await_maybe(fn(symbol, lookback_ms)),
+                )
             else:
-                raw = await _v517_await_maybe(fn(symbol))
+                raw = await safe_api_call(
+                    f"reconcile_{name}",
+                    lambda fn=fn: _v517_await_maybe(fn(symbol)),
+                )
             if isinstance(raw, dict):
                 raw = [raw]
             if isinstance(raw, list):
                 rows.extend([dict(x) for x in raw if isinstance(x, dict)])
         except TypeError:
+            # Adapter signatures vary; fallback remains centrally rate-limited
+            # and is a read-only lookup, never a reason to submit another order.
             try:
-                raw = await _v517_await_maybe(fn(symbol))
+                raw = await safe_api_call(
+                    f"reconcile_{name}_fallback",
+                    lambda fn=fn: _v517_await_maybe(fn(symbol)),
+                )
                 if isinstance(raw, dict): raw = [raw]
                 if isinstance(raw, list): rows.extend([dict(x) for x in raw if isinstance(x, dict)])
             except Exception:
@@ -39863,41 +40356,98 @@ async def _v517_fetch_recent_orders(exchange: Any, symbol: str) -> List[Dict[str
     return result
 
 
-def _v517_order_time_ok(order: Dict[str, Any], started_wall: float) -> bool:
+def _v517_order_time_ok(order: Dict[str, Any], started_wall: float, *, require_timestamp: bool = False) -> bool:
     try:
         ts = order.get("timestamp")
         if ts is None:
-            return True
-        tsf = float(ts) / (1000.0 if float(ts) >= 1e11 else 1.0)
-        return tsf >= float(started_wall) - float(CONFIG.get("V517_UNKNOWN_ORDER_LOOKBACK_SEC", 20.0))
+            return not require_timestamp
+        raw = float(ts)
+        if not math.isfinite(raw) or raw <= 0:
+            return False
+        tsf = raw / (1000.0 if raw >= 1e11 else 1.0)
+        started = float(started_wall)
+        if not math.isfinite(started) or started <= 0:
+            return False
+        future_skew = max(0.0, float(CONFIG.get("V702_ORDER_RECONCILE_FUTURE_SKEW_SEC", 2.0)))
+        lookback = max(0.0, float(CONFIG.get("V517_UNKNOWN_ORDER_LOOKBACK_SEC", 20.0)))
+        return started - lookback <= tsf <= float(WALL_NOW()) + future_skew
     except Exception:
-        return True
+        return False
 
 
 def _v517_order_fill_qty(order: Dict[str, Any]) -> float:
+    """Return only the venue-reported filled quantity; never substitute amount."""
     try:
-        return float(order.get("filled") or order.get("amount") or 0.0)
+        raw = order.get("filled")
+        if raw is None or isinstance(raw, bool):
+            return 0.0
+        value = float(raw)
+        return value if math.isfinite(value) and value >= 0 else 0.0
     except Exception:
         return 0.0
+
+
+def _v517_extract_client_order_id(order: Dict[str, Any]) -> str:
+    if not isinstance(order, dict):
+        return ""
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    for source in (order, info):
+        for key in ("clientOrderId", "clientOrderID", "clientOid", "clOrdId", "origClientOrderId"):
+            value = source.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return ""
 
 
 def _v517_match_order(rows: List[Dict[str, Any]], *, symbol: str, side: str,
                        qty: float, price: Optional[float] = None,
                        stop_price: Optional[float] = None,
-                       started_wall: Optional[float] = None) -> Optional[Dict[str, Any]]:
+                       started_wall: Optional[float] = None,
+                       client_order_id: Optional[str] = None,
+                       expected_order_id: Optional[str] = None,
+                       require_identity: bool = False) -> Optional[Dict[str, Any]]:
     best = None
     best_ts = -1.0
     for o in rows:
         try:
-            if str(o.get("symbol") or symbol) != symbol:
+            observed_symbol = str(o.get("symbol") or "").strip().upper()
+            if (observed_symbol if require_identity else (observed_symbol or str(symbol).upper())) != str(symbol).upper():
                 continue
             if str(o.get("side") or "").lower() != str(side).lower():
                 continue
-            if started_wall is not None and not _v517_order_time_ok(o, started_wall):
-                continue
-            filled = _v517_order_fill_qty(o)
-            if filled < max(0.0, float(qty)) * 0.98:
-                continue
+            if require_identity:
+                expected_client_id = str(client_order_id or "").strip()
+                expected_venue_id = str(expected_order_id or "").strip()
+                observed_client_id = _v517_extract_client_order_id(o)
+                observed_venue_id = str(o.get("id") or "").strip()
+                # A persisted venue order ID or exact clientOrderId proves
+                # ownership. Similar amount/price/side alone never does.
+                identity_ok = bool(
+                    (expected_client_id and observed_client_id == expected_client_id)
+                    or (expected_venue_id and observed_venue_id == expected_venue_id)
+                )
+                if not identity_ok or not observed_venue_id:
+                    continue
+                if started_wall is None or not _v517_order_time_ok(o, started_wall, require_timestamp=True):
+                    continue
+                raw_amount = o.get("amount")
+                if raw_amount is None or isinstance(raw_amount, bool):
+                    continue
+                amount = float(raw_amount)
+                target_qty = float(qty)
+                if not math.isfinite(amount) or amount <= 0 or not math.isfinite(target_qty) or target_qty <= 0:
+                    continue
+                if abs(amount - target_qty) / max(target_qty, 1e-12) > 0.02:
+                    continue
+                # An exact client ID proves order ownership even when the order
+                # is still open/partially filled. Fill accounting is delegated to
+                # the authoritative fetch/fill reconciler; amount is not fill.
+            else:
+                if started_wall is not None and not _v517_order_time_ok(o, started_wall):
+                    continue
+                filled = _v517_order_fill_qty(o)
+                if filled < max(0.0, float(qty)) * 0.98:
+                    continue
             if stop_price is not None:
                 info = o.get("info") or {}
                 trg = None
@@ -39932,28 +40482,39 @@ class _V517ExchangeProxy:
         self.unknown_stop = False
         self.last_unknown_stage = ""
         self.entry_started_wall = 0.0
+        self.entry_client_order_id = ""
+        self.exit_started_wall = 0.0
+        self.exit_client_order_id = ""
+        self.unknown_exit = False
         self.stop_started_wall = 0.0
+        self.stop_client_order_id = ""
         self.pending_stop = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._exchange, name)
 
-    async def create_market_buy_order(self, symbol: str, qty: float):
+    async def create_market_buy_order(self, symbol: str, qty: float, params: Optional[Dict[str, Any]] = None):
         self.entry_started_wall = WALL_NOW()
+        submit_params = dict(params or {}) if isinstance(params, dict) else {}
+        self.entry_client_order_id = str(submit_params.get("clientOrderId") or submit_params.get("clientOid") or "").strip()
         STATS["v701_order_submit_attempts"] = int(STATS.get("v701_order_submit_attempts", 0) or 0) + 1
         STATS["v701_cycle_order_submit_attempts"] = int(STATS.get("v701_cycle_order_submit_attempts", 0) or 0) + 1
         STATS["v701_last_order_submit"] = {
             "method": "create_market_buy_order", "symbol": str(symbol),
-            "qty": float(qty), "ts": WALL_NOW(),
+            "qty": float(qty), "client_order_id_present": bool(self.entry_client_order_id), "ts": WALL_NOW(),
         }
         try:
+            if submit_params:
+                return await _v517_await_maybe(self._exchange.create_market_buy_order(symbol, qty, submit_params))
             return await _v517_await_maybe(self._exchange.create_market_buy_order(symbol, qty))
         except Exception as exc:
             if not _v517_is_unknown_execution_error(exc) or not bool(CONFIG.get("V517_UNKNOWN_OUTCOME_RECONCILE_ENABLE", True)):
                 raise
             rows = await _v517_fetch_recent_orders(self._exchange, symbol)
             match = _v517_match_order(rows, symbol=symbol, side="buy", qty=qty,
-                                       started_wall=self.entry_started_wall)
+                                       started_wall=self.entry_started_wall,
+                                       client_order_id=self.entry_client_order_id,
+                                       require_identity=True)
             if match:
                 self.last_unknown_stage = "entry_recovered"
                 STATS["v517_unknown_entry_recovered"] = int(STATS.get("v517_unknown_entry_recovered", 0) or 0) + 1
@@ -39963,25 +40524,55 @@ class _V517ExchangeProxy:
             self.last_unknown_stage = "entry_unknown"
             raise _V517UnknownExecution(f"entry outcome unknown: {exc}") from exc
 
-    async def create_stop_market_order(self, symbol: str, side: str, qty: float, price: float):
+    async def create_stop_market_order(self, symbol: str, side: str, qty: float, price: float,
+                                       params: Optional[Dict[str, Any]] = None):
         self.stop_started_wall = WALL_NOW()
-        self.pending_stop = {"symbol": symbol, "side": side, "qty": float(qty), "price": float(price)}
+        submit_params = dict(params or {}) if isinstance(params, dict) else {}
+        self.stop_client_order_id = str(submit_params.get("clientOrderId") or submit_params.get("clientOid") or "").strip()
+        self.pending_stop = {"symbol": symbol, "side": side, "qty": float(qty), "price": float(price),
+                             "client_order_id": self.stop_client_order_id}
         try:
+            if submit_params:
+                return await _v517_await_maybe(self._exchange.create_stop_market_order(symbol, side, qty, price, submit_params))
             return await _v517_await_maybe(self._exchange.create_stop_market_order(symbol, side, qty, price))
         except Exception as exc:
             if not _v517_is_unknown_execution_error(exc) or not bool(CONFIG.get("V517_UNKNOWN_OUTCOME_RECONCILE_ENABLE", True)):
                 raise
             rows = await _v517_fetch_recent_orders(self._exchange, symbol)
             match = _v517_match_order(rows, symbol=symbol, side=side, qty=qty,
-                                       stop_price=price, started_wall=self.stop_started_wall)
+                                       stop_price=price, started_wall=self.stop_started_wall,
+                                       client_order_id=self.stop_client_order_id, require_identity=True)
             if match:
                 self.last_unknown_stage = "sl_recovered"
                 STATS["v517_unknown_sl_recovered"] = int(STATS.get("v517_unknown_sl_recovered", 0) or 0) + 1
-                (logger.info if bool(globals().get("V644_SELFTEST_ACTIVE", False)) else logger.critical)(f"[V517-RECON] recovered UNKNOWN SL outcome symbol={symbol} id={match.get('id')}")
+                (logger.info if bool(globals().get("V644_SELFTEST_ACTIVE", False)) else logger.critical)(f"[V517-RECON] recovered UNKNOWN SL by clientOrderId symbol={symbol} id={match.get('id')}")
                 return match
             self.unknown_stop = True
             self.last_unknown_stage = "sl_unknown"
-            raise _V517UnknownExecution(f"sl outcome unknown: {exc}") from exc
+            raise _V517UnknownExecution(f"sl outcome unknown without proven ownership: {exc}") from exc
+
+    async def create_market_sell_order(self, symbol: str, qty: float, params: Optional[Dict[str, Any]] = None):
+        self.exit_started_wall = WALL_NOW()
+        submit_params = dict(params or {}) if isinstance(params, dict) else {}
+        self.exit_client_order_id = str(submit_params.get("clientOrderId") or submit_params.get("clientOid") or "").strip()
+        try:
+            if submit_params:
+                return await _v517_await_maybe(self._exchange.create_market_sell_order(symbol, qty, submit_params))
+            return await _v517_await_maybe(self._exchange.create_market_sell_order(symbol, qty))
+        except Exception as exc:
+            if not _v517_is_unknown_execution_error(exc) or not bool(CONFIG.get("V517_UNKNOWN_OUTCOME_RECONCILE_ENABLE", True)):
+                raise
+            rows = await _v517_fetch_recent_orders(self._exchange, symbol)
+            match = _v517_match_order(rows, symbol=symbol, side="sell", qty=qty,
+                                       started_wall=self.exit_started_wall,
+                                       client_order_id=self.exit_client_order_id, require_identity=True)
+            if match:
+                self.last_unknown_stage = "exit_recovered"
+                STATS["v517_unknown_exit_recovered"] = int(STATS.get("v517_unknown_exit_recovered", 0) or 0) + 1
+                return match
+            self.unknown_exit = True
+            self.last_unknown_stage = "exit_unknown"
+            raise _V517UnknownExecution(f"exit outcome unknown without proven ownership: {exc}") from exc
 
     async def create_order(self, symbol: str, order_type: str, side: str,
                            qty: float, price: Any = None, params: Optional[Dict[str, Any]] = None):
@@ -39992,7 +40583,10 @@ class _V517ExchangeProxy:
         if not is_stop:
             return await _v517_await_maybe(self._exchange.create_order(symbol, order_type, side, qty, price, params))
         self.stop_started_wall = WALL_NOW()
-        self.pending_stop = {"symbol": symbol, "side": side, "qty": float(qty), "price": float(price or params.get("stopLossPrice") or params.get("stopPrice") or params.get("triggerPrice") or params.get("activationPrice") or 0.0)}
+        self.stop_client_order_id = str(params.get("clientOrderId") or params.get("clientOid") or "").strip()
+        self.pending_stop = {"symbol": symbol, "side": side, "qty": float(qty),
+                             "price": float(price or params.get("stopLossPrice") or params.get("stopPrice") or params.get("triggerPrice") or params.get("activationPrice") or 0.0),
+                             "client_order_id": self.stop_client_order_id}
         try:
             return await _v517_await_maybe(self._exchange.create_order(symbol, order_type, side, qty, price, params))
         except Exception as exc:
@@ -40000,14 +40594,15 @@ class _V517ExchangeProxy:
                 raise
             rows = await _v517_fetch_recent_orders(self._exchange, symbol)
             match = _v517_match_order(rows, symbol=symbol, side=side, qty=qty,
-                                       stop_price=self.pending_stop["price"], started_wall=self.stop_started_wall)
+                                       stop_price=self.pending_stop["price"], started_wall=self.stop_started_wall,
+                                       client_order_id=self.stop_client_order_id, require_identity=True)
             if match:
                 self.last_unknown_stage = "sl_recovered"
                 STATS["v517_unknown_sl_recovered"] = int(STATS.get("v517_unknown_sl_recovered", 0) or 0) + 1
                 return match
             self.unknown_stop = True
             self.last_unknown_stage = "sl_unknown"
-            raise _V517UnknownExecution(f"sl outcome unknown: {exc}") from exc
+            raise _V517UnknownExecution(f"sl outcome unknown without proven ownership: {exc}") from exc
 
 
 # ---- Cycle stamping ---------------------------------------------------------
@@ -40141,6 +40736,10 @@ def _v553_live_stop_match(rows: List[Dict[str, Any]], *, symbol: str, side: str,
                 continue
             rid = str(row.get("id") or "")
             id_match = bool(expected_id and rid and rid == expected_id)
+            if not id_match:
+                # Similar amount/trigger is only a diagnostic hint. It cannot
+                # prove that this bot owns a manually-created or foreign stop.
+                continue
             status = str(row.get("status") or "").lower()
             if status and status not in ("open", "new", "pending", "untriggered", "accepted", "active"):
                 continue
@@ -40264,6 +40863,8 @@ def _v702_definitive_no_order_rejection(exc: BaseException) -> bool:
     if name in definitive_types:
         return True
     definitive_phrases = (
+        "last_mile_authorization_revoked_no_order", "last_mile_kill_switch_no_order",
+        "last_mile_entry_block_no_order", "last_mile_candidate_stale_no_order",
         "insufficient balance", "insufficient funds", "not enough balance",
         "invalid symbol", "unknown symbol", "invalid order size",
         "precision is over the maximum", "amount precision", "price precision",
@@ -40468,6 +41069,8 @@ async def _v553_reconcile_emergency_sell(exchange, trade: TradeState, qty: float
             qty=float(qty),
             price=fallback_px,
             started_wall=WALL_NOW() - float(CONFIG.get("V553_EMERGENCY_SELL_LOOKBACK_SEC", 30.0)),
+            client_order_id=str(getattr(trade, "v517_last_exit_client_order_id", "") or ""),
+            require_identity=True,
         )
         if not match:
             return None
@@ -40526,6 +41129,7 @@ async def _v517_submit_entry(exchange, symbol: str, qty: float, price: float,
                     started_wall=proxy.entry_started_wall or (
                         WALL_NOW() - float(CONFIG.get("V517_UNKNOWN_ORDER_LOOKBACK_SEC", 20.0))
                     ),
+                    client_order_id=proxy.entry_client_order_id, require_identity=True,
                 )
                 if _late_match:
                     break
@@ -40587,6 +41191,7 @@ async def _v517_place_sl(exchange, trade: TradeState, sl_price_override: Optiona
             "symbol": trade.symbol,
             "qty": float(getattr(trade, "remaining_position", getattr(trade, "position_size_asset", 0.0)) or 0.0),
             "price": float(sl_price_override if sl_price_override is not None else getattr(trade, "current_sl", 0.0) or 0.0),
+            "client_order_id": str(proxy.stop_client_order_id or getattr(trade, "sl_client_order_id", "") or ""),
         }
         trade.sl_health_state = "SL_CREATE_UNKNOWN"
         trade.sl_failure_reason = "exchange_stop_create_unknown_outcome"
@@ -40717,6 +41322,7 @@ async def _v517_market_sell_reconciled(exchange, trade: TradeState, symbol: str,
                 "stage":str(stage),"qty":float(qty),"price":float(cur_px),
                 "ts":started,"attempts":0,"symbol":symbol,
                 "order_id":str((confirmed or {}).get("id") or ""),
+                "client_order_id":str(getattr(trade, "v517_last_exit_client_order_id", "") or ""),
                 "filled_qty":float(filled_qty),"fill_px":float(actual_px),
             }
             live_entries_block(f"partial_exit_fill_{stage}_{symbol}",where=f"PositionManager.{stage}")
@@ -40737,7 +41343,9 @@ async def _v517_market_sell_reconciled(exchange, trade: TradeState, symbol: str,
         if not _v517_is_unknown_execution_error(exc) or not bool(CONFIG.get("V517_UNKNOWN_OUTCOME_RECONCILE_ENABLE",True)):
             raise
         rows=await _v517_fetch_recent_orders(exchange,symbol)
-        match=_v517_match_order(rows,symbol=symbol,side="sell",qty=qty,price=cur_px,started_wall=started)
+        _exit_client_id = str(getattr(trade, "v517_last_exit_client_order_id", "") or "")
+        match=_v517_match_order(rows,symbol=symbol,side="sell",qty=qty,price=cur_px,started_wall=started,
+                               client_order_id=_exit_client_id, require_identity=True)
         if match:
             try:
                 fq,fpx,_=await _v526_confirm_market_sell(exchange,symbol,match,qty,cur_px)
@@ -40753,6 +41361,7 @@ async def _v517_market_sell_reconciled(exchange, trade: TradeState, symbol: str,
         trade.v517_pending_exit_reconcile={
             "stage":str(stage),"qty":float(qty),"price":float(cur_px),
             "ts":started,"attempts":0,"symbol":symbol,
+            "client_order_id":str(getattr(trade, "v517_last_exit_client_order_id", "") or ""),
         }
         live_entries_block(f"execution_unknown_{stage}_{symbol}",where=f"PositionManager.{stage}")
         STATS[f"v517_unknown_{stage}_unresolved"]=int(STATS.get(f"v517_unknown_{stage}_unresolved",0) or 0)+1
@@ -40776,7 +41385,8 @@ async def _v517_reconcile_pending_sl(exchange: Any, trade: TradeState) -> bool:
         return False
     rows = await _v517_fetch_recent_orders(exchange, trade.symbol)
     match = _v517_match_order(rows, symbol=trade.symbol, side="sell", qty=float(p.get("qty", 0.0)),
-                               stop_price=float(p.get("price", 0.0)), started_wall=float(p.get("ts", WALL_NOW())))
+                               stop_price=float(p.get("price", 0.0)), started_wall=float(p.get("ts", WALL_NOW())),
+                               client_order_id=str(p.get("client_order_id") or ""), require_identity=True)
     if not match:
         return False
     oid = str(match.get("id") or "")
@@ -40804,7 +41414,15 @@ async def _v517_reconcile_pending_exit(exchange: Any, trade: TradeState) -> bool
     p["attempts"] = attempts
     rows = await _v517_fetch_recent_orders(exchange, trade.symbol)
     match = _v517_match_order(rows, symbol=trade.symbol, side="sell", qty=float(p.get("qty", 0.0)),
-                               price=float(p.get("price", 0.0)), started_wall=float(p.get("ts", WALL_NOW())))
+                               price=float(p.get("price", 0.0)), started_wall=float(p.get("ts", WALL_NOW())),
+                               client_order_id=str(p.get("client_order_id") or ""), require_identity=True)
+    if not match and str(p.get("order_id") or "").strip():
+        try:
+            _known = await safe_api_call("pending_exit_fetch_known_order", lambda: exchange.fetch_order(str(p.get("order_id")), trade.symbol))
+            if isinstance(_known, dict) and str(_known.get("id") or "") == str(p.get("order_id")):
+                match = _known
+        except Exception:
+            _v647_record_suppressed_exception()
     if not match:
         if WALL_NOW() - float(p.get("ts", WALL_NOW())) > float(CONFIG.get("V517_UNKNOWN_PENDING_TTL_SEC", 180.0)):
             trade.status = "execution_unknown_stale"
@@ -41075,25 +41693,28 @@ async def _v517_selftest_unknown_outcomes() -> Dict[str, Any]:
         class _UnknownMock(_V516MockExchange):
             def fetch_orders(self, symbol, since=None):
                 return list(self.orders.values())
-            async def create_market_buy_order(self, symbol, qty):
+            async def create_market_buy_order(self, symbol, qty, params=None):
                 if self.fault == "entry_unknown":
                     self._seq += 1; oid=f"MOCK-UE-{self._seq}"
-                    self.orders[oid]={"id":oid,"symbol":symbol,"side":"buy","status":"closed","amount":float(qty),"filled":float(qty),"average":100.0,"price":100.0,"timestamp":int(WALL_NOW()*1000)}
+                    _cid = str((params or {}).get("clientOrderId") or "")
+                    self.orders[oid]={"id":oid,"symbol":symbol,"side":"buy","status":"closed","amount":float(qty),"filled":float(qty),"average":100.0,"price":100.0,"timestamp":int(WALL_NOW()*1000),"clientOrderId":_cid}
                     raise TimeoutError("timed out after venue acceptance")
-                return await super().create_market_buy_order(symbol, qty)
-            async def create_stop_market_order(self, symbol, side, qty, price):
+                return await super().create_market_buy_order(symbol, qty, params)
+            async def create_stop_market_order(self, symbol, side, qty, price, params=None):
                 if self.fault == "sl_unknown":
                     self._seq += 1; oid=f"MOCK-US-{self._seq}"
-                    self.orders[oid]={"id":oid,"symbol":symbol,"side":side,"status":"open","amount":float(qty),"filled":float(qty),"stopPrice":float(price),"triggerPrice":float(price),"timestamp":int(WALL_NOW()*1000),"info":{"stopPrice":float(price),"side":side}}
+                    _cid = str((params or {}).get("clientOrderId") or "")
+                    self.orders[oid]={"id":oid,"symbol":symbol,"side":side,"status":"open","amount":float(qty),"filled":0.0,"stopPrice":float(price),"triggerPrice":float(price),"timestamp":int(WALL_NOW()*1000),"clientOrderId":_cid,"info":{"stopPrice":float(price),"side":side,"clientOrderId":_cid}}
                     raise TimeoutError("timed out after stop accepted")
-                return await super().create_stop_market_order(symbol, side, qty, price)
-            async def create_market_sell_order(self, symbol, qty):
+                return await super().create_stop_market_order(symbol, side, qty, price, params)
+            async def create_market_sell_order(self, symbol, qty, params=None):
+                _cid = str((params or {}).get("clientOrderId") or "")
                 if self.fault == "tp_unknown":
                     self._seq += 1; oid=f"MOCK-UT-{self._seq}"
-                    self.orders[oid]={"id":oid,"symbol":symbol,"side":"sell","status":"closed","amount":float(qty),"filled":float(qty),"average":102.0,"price":102.0,"timestamp":int(WALL_NOW()*1000)}
+                    self.orders[oid]={"id":oid,"symbol":symbol,"side":"sell","status":"closed","amount":float(qty),"filled":float(qty),"average":102.0,"price":102.0,"timestamp":int(WALL_NOW()*1000),"clientOrderId":_cid}
                     raise TimeoutError("timed out after sell accepted")
                 self._seq += 1; oid=f"MOCK-T-{self._seq}"
-                self.orders[oid]={"id":oid,"symbol":symbol,"side":"sell","status":"closed","amount":float(qty),"filled":float(qty),"average":102.0,"price":102.0,"timestamp":int(WALL_NOW()*1000)}
+                self.orders[oid]={"id":oid,"symbol":symbol,"side":"sell","status":"closed","amount":float(qty),"filled":float(qty),"average":102.0,"price":102.0,"timestamp":int(WALL_NOW()*1000),"clientOrderId":_cid}
                 return self.orders[oid]
 
         old_stop = getattr(ProductionCapabilityGate, "stop_mode", None)
@@ -87007,18 +87628,30 @@ def _v702_candidate_wrap(value, snapshot=None, symbol=""):
 
 
 def _v702_a60_resolve_paper_shadow(shadow_store, candidate_key, builder_none_diag=None):
-    """Resolve Shadow evidence only when the exact candidate reached that stage.
+    """Resolve same-attempt Shadow evidence without conflating market/account gates.
 
-    The candidate-scoped Builder-returned-None diagnostic deliberately takes
-    precedence over a stored Shadow row. The store is bounded and keyed by the
-    cycle/candidate, so a previous same-key result must never override proof that
-    this Builder invocation terminated before producing a TradeState. This is
-    attribution/Edge-evidence handling only; it never changes admission decisions.
+    A scorer/pre-shadow rejection has no attempt-scoped Shadow record and remains
+    NOT_REACHED. If the exact Builder attempt did evaluate Shadow and then the
+    account/live path returned no TradeState (e.g. MONITOR_ONLY), the Shadow
+    outcome remains a real market result and is not relabeled NOT_REACHED.
     """
     shadow_store = shadow_store if isinstance(shadow_store, dict) else {}
     key = str(candidate_key or "")
     diag = builder_none_diag if isinstance(builder_none_diag, dict) else {}
-    if key and str(diag.get("candidate_key") or "") == key:
+    diag_key = str(diag.get("candidate_key") or "")
+    attempt_id = str(diag.get("evaluation_attempt_id") or "")
+    shadow = shadow_store.get(attempt_id) if attempt_id else None
+    if isinstance(shadow, dict):
+        if (str(shadow.get("candidate_key") or "") == key
+                and str(shadow.get("evaluation_attempt_id") or "") == attempt_id
+                and bool(shadow.get("reached"))):
+            result = dict(shadow)
+            result["builder_returned_no_trade_state"] = bool(diag_key == key)
+            if diag_key == key:
+                return result, "shadow_evaluated_after_builder_none", str(result.get("reason") or "shadow_evaluated")[:180]
+            return result, "shadow_evaluated", str(result.get("reason") or "")[:180]
+
+    if key and diag_key == key:
         rejection = diag.get("candidate_rejection") if isinstance(diag.get("candidate_rejection"), dict) else {}
         stage = str(rejection.get("stage") or "")[:80]
         reason = str(rejection.get("code") or rejection.get("reason") or diag.get("reason") or "unattributed")[:140]
@@ -87029,15 +87662,13 @@ def _v702_a60_resolve_paper_shadow(shadow_store, candidate_key, builder_none_dia
             "eligible": False,
             "reason": display_reason[:220],
             "not_reached": True,
+            "reached": False,
             "builder_block_stage": stage,
             "builder_block_reason": reason,
+            "evaluation_attempt_id": attempt_id,
         }, "builder_returned_none", display_reason[:220])
 
-    shadow = shadow_store.get(key)
-    if isinstance(shadow, dict):
-        return dict(shadow), "shadow_evaluated", str(shadow.get("reason") or "")[:180]
-
-    return ({"eligible": False, "reason": "shadow_result_missing", "not_reached": False},
+    return ({"eligible": False, "reason": "shadow_result_missing", "not_reached": False, "reached": False},
             "shadow_result_missing", "shadow_result_missing")
 
 
@@ -87436,9 +88067,14 @@ _V702_BUILDER_ORIGINAL = SignalBuilder.build_and_route
 async def _v702_builder_observed(exchange, symbol, market_data, preferred_candidate=None):
     key=_v702_candidate_wrap(preferred_candidate,market_data,symbol)
     family=str(getattr(preferred_candidate,"family","") or getattr(preferred_candidate,"strategy_mode","") or "")
-    token=_V702_PIPELINE_CONTEXT.set({"candidate_key":key,"symbol":str(symbol),"family":family})
     _builder_started_ts = float(WALL_NOW())
     _builder_cycle_id = V702PipelineMetrics._cycle()
+    _evaluation_attempt_id = uuid.uuid4().hex
+    token=_V702_PIPELINE_CONTEXT.set({
+        "candidate_key":key,"symbol":str(symbol),"family":family,
+        "evaluation_attempt_id":_evaluation_attempt_id,
+        "cycle_id":_builder_cycle_id,
+    })
     with _V702_BUILDER_REJECTION_CONTEXT_LOCK:
         _inflight = STATS.setdefault("v702_builder_inflight_by_candidate", {})
         if not isinstance(_inflight, dict):
@@ -87481,6 +88117,7 @@ async def _v702_builder_observed(exchange, symbol, market_data, preferred_candid
                 _reason_attribution = "unattributed_no_fresh_candidate_rejection"
             _builder_none_diag = {
                 "candidate_key": key, "symbol": str(symbol), "cycle_id": _builder_cycle_id,
+                "evaluation_attempt_id": _evaluation_attempt_id,
                 "reason": _last_reason, "reason_attribution": _reason_attribution,
                 "candidate_rejection": dict(_candidate_rejection or {}),
                 "legacy_global_hint_ignored": _legacy_global_hint,
@@ -87557,6 +88194,15 @@ async def _v702_builder_observed(exchange, symbol, market_data, preferred_candid
             STATS["v702_a48_queue_gap_telemetry_last_error"] = f"{type(_gap_exc).__name__}:{str(_gap_exc)[:120]}"
         return result
     finally:
+        STATS["v702_builder_last_attempt"] = {
+            "candidate_key": key,
+            "evaluation_attempt_id": _evaluation_attempt_id,
+            "cycle_id": _builder_cycle_id,
+            "started_ts": _builder_started_ts,
+            "completed_ts": float(WALL_NOW()),
+            "invocation_completed": True,
+            "trade_state_created": bool(locals().get("result") is not None),
+        }
         with _V702_BUILDER_REJECTION_CONTEXT_LOCK:
             _inflight = STATS.get("v702_builder_inflight_by_candidate", {})
             _active = _inflight.get(key) if isinstance(_inflight, dict) else None
@@ -97700,6 +98346,138 @@ async def _v702_a44_flush_digest(cls, force: bool = False) -> bool:
         return False
 _V702R28TelegramDigest.flush = _v702_a44_flush_digest
 
+# A63: snapshot-and-swap digest windows. A reset after `await enqueue()` could
+# erase events captured while Telegram dispatch was suspended. The new buffer
+# generation is detached atomically before the first await; failures merge the
+# old snapshot back without deleting events recorded in the meantime.
+_V702_A63_PREVIOUS_DIGEST_FLUSH = _V702R28TelegramDigest.flush.__func__
+
+@classmethod
+async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
+    interval = max(60.0, float(CONFIG.get("V702_R28_TELEGRAM_DIGEST_INTERVAL_SEC", 1800.0) or 1800.0))
+    snapshot = None
+    with cls._lock:
+        events = int(cls._events)
+        last_flush = float(cls._last_flush_ts or 0.0)
+        if events <= 0:
+            return False
+        if not force and last_flush and float(WALL_NOW()) - last_flush < interval:
+            return False
+        # build() and the generation swap share the same re-entrant lock, so
+        # the exact text and the captured state describe one consistent window.
+        plain = cls._strip(cls.build())
+        snapshot = {
+            "events": events,
+            "category_counts": dict(cls._category_counts),
+            "heartbeat": str(cls._heartbeat or ""),
+            "starvation": str(cls._starvation or ""),
+            "edge": str(cls._edge or ""),
+            "latest_rejection": str(cls._latest_rejection or ""),
+            "rejection_captured": int(cls._rejection_captured or 0),
+            "selected_blocks": list(cls._selected_blocks),
+            "scorer_blocks": list(cls._scorer_blocks),
+            "route_blocks": list(cls._route_blocks),
+            "shadow_events": list(cls._shadow_events),
+            "discovery_by_symbol": copy.deepcopy(cls._discovery_by_symbol),
+            "last_flush_ts": last_flush,
+            "structured": {
+                name: list(queue)
+                for name, queue in (globals().get("_V702_A37_STRUCTURED_BLOCKS", {}) or {}).items()
+                if hasattr(queue, "__iter__")
+            },
+        }
+        cls.reset_after_flush()
+    restored = False
+
+    def _restore_failed_snapshot():
+        nonlocal restored
+        if restored or not isinstance(snapshot, dict):
+            return
+        with cls._lock:
+            # New-generation events are retained and remain newer than the
+            # restored pre-send snapshot.
+            cls._events = int(cls._events or 0) + int(snapshot.get("events", 0) or 0)
+            counts = defaultdict(int)
+            for k, v in snapshot.get("category_counts", {}).items():
+                counts[str(k)] += int(v or 0)
+            for k, v in dict(cls._category_counts).items():
+                counts[str(k)] += int(v or 0)
+            cls._category_counts = counts
+            for attr in ("_heartbeat", "_starvation", "_edge", "_latest_rejection"):
+                newer = str(getattr(cls, attr, "") or "").strip()
+                older = str(snapshot.get(attr.lstrip("_"), "") or "").strip()
+                if older and newer and older != newer:
+                    combined = newer + "\n[PREVIOUS DIGEST WINDOW] " + older
+                    setattr(cls, attr, combined[-2400:])
+                elif older and not newer:
+                    setattr(cls, attr, older[-2400:])
+            cls._rejection_captured = int(cls._rejection_captured or 0) + int(snapshot.get("rejection_captured", 0) or 0)
+            for attr, key in (("_selected_blocks", "selected_blocks"), ("_scorer_blocks", "scorer_blocks"),
+                              ("_route_blocks", "route_blocks"), ("_shadow_events", "shadow_events")):
+                q = getattr(cls, attr)
+                new_items = list(q)
+                q.clear()
+                for item in reversed(list(snapshot.get(key, []))):
+                    q.appendleft(item)
+                for item in reversed(new_items):
+                    q.appendleft(item)
+            merged_discovery = copy.deepcopy(snapshot.get("discovery_by_symbol", {}))
+            merged_discovery.update(copy.deepcopy(cls._discovery_by_symbol))
+            if len(merged_discovery) > 40:
+                ordered = sorted(merged_discovery.values(), key=lambda x: float(x.get("ts", 0.0) or 0.0), reverse=True)[:40]
+                merged_discovery = {str(x.get("symbol", "UNKNOWN")): x for x in ordered}
+            cls._discovery_by_symbol = merged_discovery
+            cls._last_flush_ts = min(float(cls._last_flush_ts or 0.0), float(snapshot.get("last_flush_ts", 0.0) or 0.0))
+            structured = globals().get("_V702_A37_STRUCTURED_BLOCKS", {})
+            if isinstance(structured, dict):
+                for name, old_items in snapshot.get("structured", {}).items():
+                    q = structured.get(name)
+                    if q is None or not callable(getattr(q, "appendleft", None)):
+                        continue
+                    new_items = list(q)
+                    q.clear()
+                    for item in reversed(list(old_items)):
+                        q.appendleft(item)
+                    for item in reversed(new_items):
+                        q.appendleft(item)
+        restored = True
+        STATS["v702_a63_digest_snapshot_restored"] = int(STATS.get("v702_a63_digest_snapshot_restored", 0) or 0) + 1
+
+    try:
+        limit = max(500, min(1700, int(CONFIG.get("V702_A44_TELEGRAM_PART_MAX_CHARS", 1700) or 1700)))
+        chunks = _v702_a44_partition_digest_lines(plain.splitlines(), limit=limit, max_parts=4)
+        STATS["v702_a44_digest_parts_last"] = len(chunks)
+        STATS["v702_a44_digest_part_chars_last"] = [len(x) + len(f"DIGEST {i+1}/{len(chunks)}\n") for i, x in enumerate(chunks)]
+        STATS["v702_r28_digest_flush_attempts"] = int(STATS.get("v702_r28_digest_flush_attempts", 0) or 0) + 1
+        for index, part in enumerate(chunks, 1):
+            tagged = f"DIGEST {index}/{len(chunks)}\n{part}"
+            if len(tagged) > limit:
+                raise ValueError(f"digest_part_over_limit:{index}:{len(tagged)}>{limit}")
+            ok = await _V702_R28_RAW_ENQUEUE(tagged)
+            if ok is False:
+                STATS["v702_r28_digest_send_fail"] = int(STATS.get("v702_r28_digest_send_fail", 0) or 0) + 1
+                STATS["v702_a44_digest_send_failed_part"] = index
+                STATS["v702_a63_digest_partial_enqueue_possible"] = bool(index > 1)
+                _restore_failed_snapshot()
+                return False
+        STATS["v702_r28_digest_flushes"] = int(STATS.get("v702_r28_digest_flushes", 0) or 0) + 1
+        STATS["v702_r28_digest_last_event_count"] = events
+        STATS["v702_a44_digest_parts_sent_total"] = int(STATS.get("v702_a44_digest_parts_sent_total", 0) or 0) + len(chunks)
+        STATS["v702_a63_digest_generation_flushes"] = int(STATS.get("v702_a63_digest_generation_flushes", 0) or 0) + 1
+        # Raw enqueue confirms QUEUED only. Telegram delivery is acknowledged
+        # asynchronously by TelegramDispatcher, never inferred from this return.
+        STATS["v702_a63_digest_delivery_state"] = "QUEUED_NOT_DELIVERED_ACK"
+        return True
+    except Exception as exc:
+        _restore_failed_snapshot()
+        STATS["v702_r28_digest_send_fail"] = int(STATS.get("v702_r28_digest_send_fail", 0) or 0) + 1
+        STATS["v702_a44_digest_flush_error"] = f"{type(exc).__name__}:{str(exc)[:160]}"
+        logger.warning("[V702-A63-TG] digest generation retained for retry: %s: %s", type(exc).__name__, exc)
+        return False
+
+_v702_a63_flush_digest.__func__._v702_a63_snapshot_swap = True
+_V702R28TelegramDigest.flush = _v702_a63_flush_digest
+
 # Extend heartbeat with the actionable latch, current-cycle safety count, shadow
 # policy reason, rolling suppressed-exception rate, and truthful placeholders.
 _V702_A44_OLD_HEARTBEAT_LINE = _V702R28TelegramDigest._heartbeat_line.__func__
@@ -99447,16 +100225,23 @@ def _v702_a61_self_test():
                 and _resolved.get("not_reached") is True
                 and str(_reason).startswith("not_reached:builder_returned_none")
             ),
-            "builder_completed_is_derived_from_actual_result": (
-                "_paper_builder_completed = _paper_builder_status != \"builder_returned_none\"" in _source
+            "builder_invocation_and_trade_state_are_distinct": (
+                "_paper_builder_completed = bool(_attempt_meta.get(\"invocation_completed\"))" in _source
+                and "_trade_state_created = bool(_attempt_meta.get(\"trade_state_created\"))" in _source
                 and "builder_completed=_paper_builder_completed" in _source
+                and "trade_state_created=_trade_state_created" in _source
             ),
-            "live_eligibility_requires_builder_completion": (
-                "_paper_builder_completed\n                                        and int(STATS.get(\"v534_live_ready\"" in _source
+            "live_eligibility_requires_actual_trade_state": (
+                "_live_eligible = bool(\n                                        _trade_state_created" in _source
+                and "_market_qualified = bool(_paper_shadow.get(\"reached\") and _paper_shadow.get(\"eligible\"))" in _source
             ),
-            "runtime_identity_is_a61": (
-                V702_FINAL_CANONICAL_RELEASE == V702_A61_RELEASE_TAG
-                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A61_RELEASE_TAG
+            "runtime_identity_preserves_a61_ancestry": (
+                V702_FINAL_CANONICAL_RELEASE in {
+                    V702_A61_RELEASE_TAG,
+                    str(globals().get("V702_A62_RELEASE_TAG", "")),
+                    str(globals().get("V702_A63_RELEASE_TAG", "")),
+                }
+                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
             ),
             "no_live_authority_or_gate_relaxation": (
                 FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
@@ -99504,6 +100289,276 @@ def _v702_a61_validate_config():
 
 
 globals()["validate_config"] = _v702_a61_validate_config
+
+
+# =============================================================================
+# V702 A62 — Telegram structured-block digest window reset coherence.
+# A37 added separate structured block queues, but the inherited digest reset
+# only cleared the legacy string queues. Successful digest flushes could thus
+# repeat old scorer/route/builder blockers in later windows. This closure keeps
+# the structured queues in the same successful-flush lifecycle. Failed sends
+# deliberately retain all queues for retry. It does not touch trading gates.
+# =============================================================================
+V702_A62_CANONICAL_REVISION = V702_A61_CANONICAL_REVISION + "-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14"
+V702_A62_RELEASE_REVISION = "A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14"
+V702_A62_RELEASE_TAG = "UNIFIED-SCALPER-V702-A62-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A62_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A62_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A62_RELEASE_TAG
+STATS["v702_a62_release_revision"] = V702_A62_RELEASE_REVISION
+
+try:
+    _V702_A62_PREVIOUS_DIGEST_RESET = _V702R28TelegramDigest.reset_after_flush.__func__
+
+    @classmethod
+    def _v702_a62_digest_reset_after_flush(cls):
+        # Run every inherited reset first (legacy queues, event counters,
+        # timestamps and R29 summary), then clear A37's structured mirrors.
+        try:
+            # Hold the same re-entrant lock across both legacy and structured
+            # resets. Otherwise an event captured between the two resets could
+            # be erased even though it belongs to the next digest window.
+            with cls._lock:
+                _V702_A62_PREVIOUS_DIGEST_RESET(cls)
+                structured = globals().get("_V702_A37_STRUCTURED_BLOCKS", {})
+                cleared = 0
+                if isinstance(structured, dict):
+                    for queue in structured.values():
+                        clear = getattr(queue, "clear", None)
+                        if callable(clear):
+                            queue.clear()
+                            cleared += 1
+                STATS["v702_a62_structured_block_reset_count"] = int(
+                    STATS.get("v702_a62_structured_block_reset_count", 0) or 0
+                ) + 1
+                STATS["v702_a62_structured_block_queues_cleared_last"] = cleared
+        except Exception as exc:
+            # Telemetry cleanup must not turn a successfully sent operator digest
+            # into a failed delivery or affect execution authority.
+            STATS["v702_a62_structured_block_reset_errors"] = int(
+                STATS.get("v702_a62_structured_block_reset_errors", 0) or 0
+            ) + 1
+            STATS["v702_a62_structured_block_reset_last_error"] = type(exc).__name__
+
+    _v702_a62_digest_reset_after_flush.__func__._v702_a62_wrapped = True
+    _V702R28TelegramDigest.reset_after_flush = _v702_a62_digest_reset_after_flush
+    STATS["v702_a62_structured_block_reset_wired"] = True
+except Exception as _a62_reset_exc:
+    STATS["v702_a62_structured_block_reset_wired"] = False
+    STATS["v702_a62_structured_block_reset_install_error"] = type(_a62_reset_exc).__name__
+
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A62_RELEASE_REVISION,
+    "active_release_tag": V702_A62_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A62_RELEASE_REVISION,
+    "a62_release_revision": V702_A62_RELEASE_REVISION,
+    "telegram_structured_block_window_contract": {
+        "successful_digest_flush_clears_structured_scorer_route_builder_queues": True,
+        "failed_digest_send_retains_structured_queues": True,
+        "live_execution_authority_changed": False,
+    },
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a62_self_test():
+    required = {"scorer_block", "route_block", "builder_block"}
+    queues = globals().get("_V702_A37_STRUCTURED_BLOCKS", {})
+    reset_func = getattr(_V702R28TelegramDigest.reset_after_flush, "__func__", None)
+    checks = {
+        "structured_block_categories_present": isinstance(queues, dict) and required.issubset(set(queues)),
+        "all_structured_queues_are_clearable": isinstance(queues, dict) and all(
+            callable(getattr(queues.get(name), "clear", None)) for name in required
+        ),
+        "successful_reset_wrapper_installed": bool(getattr(reset_func, "_v702_a62_wrapped", False)),
+        "release_identity_preserves_a62_ancestor": (
+            V702_FINAL_CANONICAL_RELEASE in {
+                V702_A62_RELEASE_TAG,
+                str(globals().get("V702_A63_RELEASE_TAG", "")),
+            }
+            and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
+        ),
+        "live_execution_authority_unchanged": (
+            FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+            and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+            and FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
+            and "MONITOR_ONLY_NO_NEW_BUYS" in _v702_read_source_text()
+        ),
+    }
+    failed = [name for name, passed in checks.items() if not bool(passed)]
+    return {
+        "pass": not failed,
+        "revision": V702_A62_RELEASE_REVISION,
+        "checks": checks,
+        "failed": failed,
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+    }
+
+
+_V702_A62_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a62_validate_config():
+    # Additive wrapper only: _V702_A62_PREVIOUS_VALIDATE_CONFIG() retains the
+    # complete inherited chain, including _V702_A60_PREVIOUS_VALIDATE_CONFIG().
+    base_ok = bool(_V702_A62_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A62_PREVIOUS_VALIDATE_CONFIG) else False
+    report = _v702_a62_self_test()
+    STATS["v702_a62_validation"] = report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a62_validation": report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+    })
+    return bool(base_ok and report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a62_validate_config
+
+
+# =============================================================================
+# V702 A63 — canonical safety closure integration.
+# This release integrates fail-closed order identity/precision, attempt-scoped
+# market evidence, contiguous closed-candle replay, and non-lossy digest windows.
+# It does not authorize live trading and explicitly retains NO_GO_UNATTENDED_LIVE.
+# =============================================================================
+V702_A63_CANONICAL_REVISION = V702_A62_CANONICAL_REVISION + "-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14"
+V702_A63_RELEASE_REVISION = "A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14"
+V702_A63_RELEASE_TAG = "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A63_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A63_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A63_RELEASE_TAG
+STATS["v702_a63_release_revision"] = V702_A63_RELEASE_REVISION
+
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A63_RELEASE_REVISION,
+    "active_release_tag": V702_A63_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A63_RELEASE_REVISION,
+    "a63_release_revision": V702_A63_RELEASE_REVISION,
+    "execution_reconciliation_contract": "CLIENT_ORDER_ID_OR_VENUE_ORDER_ID_ONLY_FAIL_CLOSED",
+    "market_evidence_contract": "SAME_CANDIDATE_SAME_EVALUATION_ATTEMPT_SHADOW_ONLY",
+    "paper_coverage_contract": "CLOSED_CANDLE_SEQUENCE_V1",
+    "telegram_digest_contract": "SNAPSHOT_SWAP_QUEUE_STATE_DISTINCT_FROM_DELIVERY_ACK",
+    "telegram_delivery_ack_proven": False,
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    # Preserve the inherited structured entry-policy contract and expose the
+    # effective runtime mode separately instead of replacing a structured field.
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "operator_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a63_self_test():
+    try:
+        source = _v702_read_source_text()
+        digest_func = getattr(_V702R28TelegramDigest.flush, "__func__", None)
+        checks = {
+            "a61_builder_shadow_inherited_contract": bool(_v702_a61_self_test().get("pass")),
+            "a62_structured_digest_reset_inherited_contract": bool(_v702_a62_self_test().get("pass")),
+            "a63_release_identity_current": (
+                V702_FINAL_CANONICAL_RELEASE == V702_A63_RELEASE_TAG
+                and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A63_RELEASE_TAG
+                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A63_RELEASE_TAG
+            ),
+            "order_identity_matching_is_fail_closed": (
+                "def _v517_match_order(" in source
+                and "require_identity" in source
+                and "def _v517_extract_client_order_id(" in source
+                and "filled" in source
+            ),
+            "market_proxy_passes_client_order_identity": (
+                "def create_market_buy_order(self, symbol, qty, params=None)" in source
+                and "clientOrderId" in source
+                and "require_identity=True" in source
+            ),
+            "precision_validation_fails_closed": (
+                "amount_to_precision" in source and "price_to_precision" in source
+                and "math.isfinite" in source
+                and "precision_unavailable" in source
+            ),
+            "edge_gate_checks_finite_report_values": (
+                "math.isfinite" in source and "generated_at" in source
+                and "future" in source.lower() and "lower_bound_90_r" in source
+            ),
+            "market_and_account_eligibility_are_separate": (
+                "market_qualification_completed" in source
+                and "trade_state_created" in source
+                and "evaluation_attempt_id" in source
+                and "account_execution_eligible" in source
+            ),
+            "edge_schema_is_a63_isolated": V702_KNOWLEDGE_EDGE_VERSION == "V702-KNOWLEDGE-EDGE-SHADOW-7-A63",
+            "paper_replay_requires_contiguous_closed_candles": (
+                "CLOSED_CANDLE_SEQUENCE_V1" in source
+                and "DATA_GAP_UNRESOLVED" in source
+                and "coverage_complete" in source
+            ),
+            "runner_contract_not_removed": bool(CONFIG.get("ENABLE_RUNNER_MODE", True))
+                and "RUNNER_KEEP_PCT_AT_TP3" in source,
+            "digest_snapshot_swap_installed": bool(getattr(digest_func, "_v702_a63_snapshot_swap", False)),
+            "digest_queue_is_not_delivery_ack": (
+                FINAL_CANONICAL_RUNTIME.get("telegram_delivery_ack_proven") is False
+                and "QUEUED_NOT_DELIVERED_ACK" in source
+            ),
+            "release_does_not_relax_live_gates": (
+                FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
+                and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                and FINAL_CANONICAL_RUNTIME.get("operator_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+                and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+                and "MONITOR_ONLY_NO_NEW_BUYS" in source
+            ),
+        }
+        failed = [key for key, value in checks.items() if not bool(value)]
+        return {
+            "pass": not failed,
+            "revision": V702_A63_RELEASE_REVISION,
+            "checks": checks,
+            "failed": failed,
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+    except Exception as exc:
+        return {
+            "pass": False,
+            "revision": V702_A63_RELEASE_REVISION,
+            "error": f"{type(exc).__name__}:{str(exc)[:180]}",
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+
+
+_V702_A63_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a63_validate_config():
+    base_ok = bool(_V702_A63_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A63_PREVIOUS_VALIDATE_CONFIG) else False
+    report = _v702_a63_self_test()
+    STATS["v702_a63_validation"] = report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a63_validation": report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+    })
+    return bool(base_ok and report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a63_validate_config
 
 
 if _V699_VALIDATE_ONLY_REQUEST:

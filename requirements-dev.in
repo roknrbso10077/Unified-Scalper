@@ -1,0 +1,4 @@
+# Reproducible development/test dependency inputs for V702 A63.
+-r requirements.in
+pytest==9.0.2
+pytest-asyncio==1.3.0

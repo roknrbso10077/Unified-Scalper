@@ -66,8 +66,13 @@ def test_a56_software_sl_mode_requires_recent_position_manager_health_lease(monk
     assert bot._v702_position_manager_health_ok() is False
 
     monkeypatch.setitem(bot.STATS, "v702_pm_task_state", "RUNNING")
+    monkeypatch.setitem(bot.STATS, "v702_pm_healthy_ticks", 1)
     monkeypatch.setitem(bot.STATS, "v702_pm_last_healthy_ts", time.time())
     assert bot._v702_position_manager_health_ok() is True
+
+    monkeypatch.setitem(bot.STATS, "v702_pm_healthy_ticks", 0)
+    assert bot._v702_position_manager_health_ok() is False
+    monkeypatch.setitem(bot.STATS, "v702_pm_healthy_ticks", 1)
 
     monkeypatch.setitem(bot.STATS, "v702_pm_last_healthy_ts", time.time() - 120.0)
     assert bot._v702_position_manager_health_ok() is False
@@ -137,6 +142,7 @@ def test_a56_validator_contains_all_new_safety_closures():
 def test_a57_unknown_or_uncertified_stop_mode_fails_closed(monkeypatch):
     monkeypatch.setitem(bot.CONFIG, "POSITION_MANAGER_TASK_ENABLE", True)
     monkeypatch.setitem(bot.STATS, "v702_pm_task_state", "RUNNING")
+    monkeypatch.setitem(bot.STATS, "v702_pm_healthy_ticks", 1)
     monkeypatch.setitem(bot.STATS, "v702_pm_last_healthy_ts", time.time())
     monkeypatch.setattr(bot.ProductionCapabilityGate, "_checked", False)
     monkeypatch.setattr(bot.ProductionCapabilityGate, "_stop_mode", "dedicated_stop_market")

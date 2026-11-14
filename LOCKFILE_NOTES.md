@@ -1,4 +1,4 @@
-# Dependency inputs and release lock policy — A61 current packaging boundary
+# Dependency inputs and release lock policy — A63 current packaging boundary
 
 `requirements.in` is the sole source of direct runtime dependencies. It keeps the six declared package pins:
 
@@ -13,20 +13,21 @@
 
 ## Connected CI release path
 
-`.github/workflows/a58-production-audit.yml` resolves a platform-specific lock for Python 3.12 / Linux amd64:
+`.github/workflows/a63-production-audit.yml` resolves a platform-specific lock for Python 3.12 / Linux amd64:
 
 ```bash
-uv pip compile requirements.in \
-  --python-version 3.12 \
-  --python-platform x86_64-unknown-linux-gnu \
-  --generate-hashes \
+uv pip compile requirements.in --python-version 3.12 \
+  --python-platform x86_64-unknown-linux-gnu --generate-hashes \
   --output-file requirements-lock.txt
-python -m pip install --require-hashes -r requirements-lock.txt
+uv pip compile requirements-dev.in --python-version 3.12 \
+  --python-platform x86_64-unknown-linux-gnu --generate-hashes \
+  --output-file requirements-dev-lock.txt
+python -m pip install --require-hashes -r requirements-dev-lock.txt
 python -m pip check
 docker build --build-arg STRICT_HASH_LOCK=1 .
 ```
 
-The workflow publishes the generated lock as the `a58-python312-linux-amd64-hash-lock` artifact. It currently does not commit generated resolver output back into the repository. CI can therefore prove a strict ephemeral build, while Railway's normal build uses Docker's default `STRICT_HASH_LOCK=0` path and installs the direct pins from `requirements.in`. This avoids the previous deterministic build failure but does not make Railway's transitive resolver bit-for-bit reproducible. The checked-in lock should only be replaced with a generated, verified lock artifact from the target platform.
+The workflow publishes the generated lock as the `a63-python312-linux-amd64-hash-lock` artifact. It currently does not commit generated resolver output back into the repository. CI can therefore prove a strict ephemeral build, while Railway's normal build uses Docker's default `STRICT_HASH_LOCK=0` path and installs the direct pins from `requirements.in`. This avoids the previous deterministic build failure but does not make Railway's transitive resolver bit-for-bit reproducible. The checked-in lock should only be replaced with a generated, verified lock artifact from the target platform.
 
 ## Deployment boundaries
 

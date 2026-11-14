@@ -87,12 +87,16 @@ def main() -> int:
             runtime_boot = str(runtime.get("boot_id") or "")
             pm_boot = str(pm.get("boot_id") or "")
             pm_positions_num = _finite_number(pm.get("open_positions", 0), "pm_open_positions", minimum=0.0)
+            pm_ticks_num = _finite_number(pm.get("healthy_ticks", 0), "pm_healthy_ticks", minimum=0.0)
             if not pm_positions_num.is_integer():
                 raise ValueError("pm_open_positions_not_integer")
+            if not pm_ticks_num.is_integer():
+                raise ValueError("pm_healthy_ticks_not_integer")
             pm_positions = int(pm_positions_num)
+            pm_state = str(pm.get("state", "")).strip().upper()
             if (not math.isfinite(pm_age) or pm_stamp <= 0 or pm_age < -5.0
                     or pm_age > pm_stale or not runtime_boot or pm_boot != runtime_boot
-                    or pm_positions < 1 or str(pm.get("state", "")).upper() == "STOPPED"):
+                    or pm_positions < 1 or pm_state != "RUNNING" or int(pm_ticks_num) < 1):
                 print(
                     f"unhealthy: position_manager_heartbeat_age_sec={pm_age:.1f} "
                     f"threshold_sec={pm_stale:.1f} runtime_positions={open_positions} "

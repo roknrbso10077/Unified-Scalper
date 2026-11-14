@@ -1,3 +1,25 @@
+# V702 A63 — execution identity, Edge/Paper evidence and telemetry closure (2026-11-14)
+
+- Preserve A62 as the canonical baseline and carry forward all existing strategies, policy gates, Spot/Long-only constraints, two-key arming, KillSwitch, execution intents, recovery, software/native protection and Runner behavior.
+- Fail closed on unknown order precision and invalid numerical inputs; forward clientOrderId through the Market proxy and use exact identity for UNKNOWN reconciliation. Similar manual orders, missing IDs or missing timestamps are not adopted as bot orders.
+- Harden EdgeGate against NaN/Inf/bool, future/stale reports and invalid sample counts; version-isolate old Edge/Paper evidence and bind market Shadow qualification to the exact candidate and evaluation attempt independently of account/Live readiness.
+- Fix Paper gap-fill geometry within the same replay batch, replay available closed candles before expiry, require a contiguous coverage contract, use bounded historical pagination and prevent Discovery records from starving Selected Paper follow-up. Fixed TP3-close records are excluded from Runner-mode Edge proof; Live Runner behavior is retained.
+- Require PositionManager RUNNING state, a successful cycle and fresh heartbeat regardless of native-stop capability; make Docker healthcheck validate the producer's RUNNING/healthy_ticks contract.
+- Enforce a minimum rate-limiter burst that permits every lane to progress; route order reconciliation reads through the central rate limiter with protection/reconciliation priority.
+- Replace Telegram digest reset-after-await with snapshot-and-swap generations and merge failed batches for retry. Report QUEUED_NOT_DELIVERED_ACK distinctly; a durable ACK-backed outbox remains open.
+- Add attempt-identity, UNKNOWN-recovery, numeric fail-closed, Edge freshness, RateLimiter progress, digest race and reconciliation scheduling regression tests. Move CI to the A63 workflow and add pinned development test dependencies.
+- Keep `NO_GO_UNATTENDED_LIVE` and `MONITOR_ONLY_NO_NEW_BUYS`. No exchange account, order, Telegram-delivery, Docker, or deployment test was performed in this offline environment. See `A63_FINAL_PRODUCTION_AUDIT_AR.md` for per-item closure status and remaining limitations.
+
+---
+
+# V702 A62 — Telegram structured-block window reset closure (2026-11-14)
+
+- Fixed the A37 structured scorer/route/builder telemetry queues not being reset after a successful R28/R29 Telegram digest flush. Old blockers could otherwise be repeated in later Digests even when the current Pipeline window recorded no corresponding selected/scorer/builder stage.
+- The legacy and structured queues now reset under one shared re-entrant lock after successful delivery only. A failed enqueue retains structured rows for retry; events captured after the reset belong to the next window.
+- Added regression tests for successful reset, failed-send retention, A62 release identity, and unchanged fail-closed execution authority.
+- Updated release contracts and CI to run `python main.py --validate-only` before the full suite. No strategy, score, spread, liquidity, HTF, risk, pre-send, queue, or execution gate was relaxed.
+- Live execution remains `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`; actual exchange, Telegram delivery, Docker target, and profitability remain unverified by offline audit.
+
 # UNIFIED SCALPER V702 — A61 canonical production-audit closure (2026-11-14)
 
 **Active distribution:** `UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL`. A61 supersedes A60 as the canonical package, keeps `MONITOR_ONLY_NO_NEW_BUYS`, and does not enable live authority.
