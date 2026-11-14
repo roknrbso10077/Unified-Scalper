@@ -1,12 +1,12 @@
-UNIFIED SCALPER V702 — A60 CANONICAL FINAL
-Release ID: UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL
+UNIFIED SCALPER V702 — A61 CANONICAL FINAL
+Release ID: UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL
 Release date: 2026-11-14
 Canonical executable: main.py
 Production decision: NO_GO_UNATTENDED_LIVE
 
 Upload the complete release folder to the repository root. Include hidden paths, especially `.github/workflows/a58-production-audit.yml`; use Git (`git add -f .github/workflows/a58-production-audit.yml` only if your ignore rules require it) rather than a web uploader that omits hidden directories. The archive manifest is the source of truth for the file count; do not assume an exact historical count. Do not upload .env, secrets, API credentials, runtime databases, cache folders, __pycache__, .pytest_cache, generated logs, or local market snapshots.
 
-Active release integrity files are A60_RELEASE_MANIFEST.json and A60_SHA256SUMS.txt. Verify from the repository root with: `sha256sum -c A60_SHA256SUMS.txt`. A57 and earlier manifests/checksums are historical artifacts only.
+Active release integrity files are A61_RELEASE_MANIFEST.json and A61_SHA256SUMS.txt. Verify from the repository root with: `sha256sum -c A61_SHA256SUMS.txt`. A60 and older manifests/checksums are historical artifacts only.
 
 Default operation is monitor/paper only. Keep UNIFIED_LIVE_PILOT_ENABLE=0 and UNIFIED_A55_LIVE_ARM=0. Never enable live trading through GitHub Actions, automatic deployment or startup scripts. The entry path remains guarded by the two-key operator arm and all pre-existing safety gates.
 
@@ -17,7 +17,7 @@ Dependency source of truth is requirements.in. Railway's normal image build uses
 
 For Railway persistent storage, set `SCALPER_DB=/data/unified_scalper.db`, `V702_KNOWLEDGE_RECIPE_EXPORT_PATH=/data/knowledge_recipe_memory.json`, and `RAILWAY_RUN_UID=0`; use Restart Policy `Always`. Do not set an HTTP healthcheck path because the bot has no HTTP server. Railway's deployment healthcheck is not a continuous watchdog.
 
-The non-executable HISTORICAL_A53_main.py.baseline snapshot is intentionally not included in A60 to keep the release at 99 files; it was not a standalone rollback artifact. A rollback requires restoring the entire matching historical release package and configuration.
+The non-executable HISTORICAL_A53_main.py.baseline snapshot was already absent from the supplied A60 package; A61 retains every file from that package and adds A61 release evidence and regression coverage. It was not a standalone rollback artifact. A rollback requires restoring the entire matching historical release package and configuration.
 
 Release restrictions: Spot LONG_ONLY, Futures off, score floor 70, no hard-gate bypass, forbidden assets PUMP/BNB/CAKE/AERO/ETHFI, maximum two positions, maximum 75 USDT per position. Paper evidence requires buffered breakout fills, fill-candle stop checks, fee-covered break-even after TP1 and conservative ambiguity handling for same-bar TP1/BE events. Exploratory Paper results are not Edge evidence unless Builder and Shadow PreSend both qualify.
 

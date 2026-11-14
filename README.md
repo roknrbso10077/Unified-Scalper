@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A60 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A61 CANONICAL FINAL
 
-**Release ID:** `UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL`  
+**Release ID:** `UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL`  
 **Release date:** 2026-11-14  
 **Canonical executable:** `main.py`  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
@@ -57,18 +57,18 @@ MEXC Spot native stop support must not be assumed. Where protection is software-
 
 ## Release integrity
 
-After obtaining the A60 archive, verify its contents from the package root:
+After obtaining the A61 archive, verify its contents from the package root:
 
 ```bash
-sha256sum -c A60_SHA256SUMS.txt
+sha256sum -c A61_SHA256SUMS.txt
 ```
 
-`A59` and older release metadata are historical only; A60 distribution integrity is defined exclusively by `A60_RELEASE_MANIFEST.json` and `A60_SHA256SUMS.txt`. The A60 ZIP contains 99 files. To meet the hard package ceiling without removing runtime code or tests, the large `HISTORICAL_A53_main.py.baseline` snapshot (non-executable, explicitly not a drop-in rollback) is excluded; the full canonical runtime, active tests and historical audit documents remain. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, secrets and runtime databases remain excluded. A rollback requires the complete matching historical distribution, configuration and environment.
+`A60` and older release metadata are historical only; A61 distribution integrity is defined exclusively by `A61_RELEASE_MANIFEST.json` and `A61_SHA256SUMS.txt`. The A61 ZIP contains 103 files. The A60 source package's complete runtime, all existing tests and historical audit documents are retained, with the A61 regression module and release evidence added. The non-executable `HISTORICAL_A53_main.py.baseline` snapshot was already absent from the supplied A60 package and is not a drop-in rollback. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, secrets and runtime databases remain excluded. A rollback requires the complete matching historical distribution, configuration and environment.
 
 The GitHub Actions workflow `.github/workflows/a58-production-audit.yml` targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, publishes the generated lock artifact, runs compilation and pytest, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
 
 ## Final release evidence
 
-See `A60_FINAL_PRODUCTION_AUDIT_AR.md`, `A60_RELEASE_MANIFEST.json`, and `A60_SHA256SUMS.txt` for the current production audit. A58.2 Docker boot-artifact handling and A59 Bearish/HTF reject-shadow observability remain intact. A60 aligns the selected-route Paper ledger with the already-existing live fee-covered break-even protection after TP1, checks the buffered-entry candle for a stop, flags same-candle TP1/BE-stop ambiguity rather than guessing, and reports exploratory Paper outcomes separately from Edge-eligible rows. It does not change regime allowlists, Score, HTF, liquidity, PreSend, queue, execution or protection gates. The active decision remains **NO-GO for unattended live trading**.
+See `A61_FINAL_PRODUCTION_AUDIT_AR.md`, `A61_RELEASE_MANIFEST.json`, and `A61_SHA256SUMS.txt` for the current production audit. A58.2 Docker boot-artifact handling, A59 Bearish/HTF reject-shadow observability and A60 Paper outcome-model closure remain intact. A61 fixes a same-candidate evidence-attribution defect: a Builder return of `None` now overrides any stored Shadow row, and Builder completion/live-eligibility flags require a non-`None` Builder result. It does not change regime allowlists, Score, HTF, liquidity, PreSend, queue, execution or protection gates. The active decision remains **NO-GO for unattended live trading**.
 
 Historical changes and lineage are retained in `CHANGELOG.md` and `DOCS__audits__V702_A*_*.md`.

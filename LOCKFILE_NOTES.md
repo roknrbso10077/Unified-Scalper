@@ -1,4 +1,4 @@
-# Dependency inputs and release lock policy — A58
+# Dependency inputs and release lock policy — A61 current packaging boundary
 
 `requirements.in` is the sole source of direct runtime dependencies. It keeps the six declared package pins:
 

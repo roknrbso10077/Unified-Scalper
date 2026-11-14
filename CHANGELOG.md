@@ -1,3 +1,18 @@
+# UNIFIED SCALPER V702 — A61 canonical production-audit closure (2026-11-14)
+
+**Active distribution:** `UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL`. A61 supersedes A60 as the canonical package, keeps `MONITOR_ONLY_NO_NEW_BUYS`, and does not enable live authority.
+
+- Fixed a confirmed post-Builder attribution defect: the selected-route Paper caller no longer passes `builder_completed=True` unconditionally after a normal return.
+- The exact-candidate `BUILDER_RETURNED_NONE` diagnostic now takes precedence over any stored same-key Shadow result. A candidate whose Builder returned `None` is recorded as `Shadow NOT REACHED`, never as an eligible Shadow/Edge row.
+- Live/account eligibility deltas are additionally conditioned on a non-`None` Builder result. Actual Builder output plus an eligible Shadow PreSend result still qualifies market-only evidence; this does not authorize orders.
+- Added SQLite-backed regressions proving (a) a stale/prior eligible Shadow cannot qualify a Builder-None row and (b) a real non-None Builder plus Shadow PASS still qualifies market evidence. A61's startup self-test verifies the same contract.
+- Preserved all A60 Paper fill/stop/fee/ambiguity fixes and every existing strategy, market-quality, scoring, risk, PreSend, queue, Telegram authorization, execution and protection function. No hard gate was relaxed.
+- Production-log correlation remains: Macro/Family policy is the dominant Prequal rejection; occasional MID spread, depth and Score rejections are additional blockers. The logs show no market-signal Queue/Telegram enqueue, order submission, live position or native protection event. The AKE TP1-then-SL notice is virtual Paper only.
+
+**Verification boundary:** local source tests and `--validate-only` do not prove live MEXC behavior, Telegram delivery for trade signals, native-stop protection, Railway deployment, Python 3.12/linux-amd64 Docker build or profitability. The complete transitive hash lock is not included in the source archive; `requirements-lock.txt` remains a direct-pin seed. Production disposition remains `NO_GO_UNATTENDED_LIVE`. See `A61_FINAL_PRODUCTION_AUDIT_AR.md`, `A61_RELEASE_MANIFEST.json`, and `A61_SHA256SUMS.txt`.
+
+---
+
 # A60 — Paper outcome model and Edge-report coherence (2026-11-14)
 
 **Active distribution:** `UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL`. The release is a monitor/Paper/Shadow build only; `MONITOR_ONLY_NO_NEW_BUYS` and every live admission, economic, risk, execution and protection gate remain unchanged.

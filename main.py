@@ -27045,13 +27045,15 @@ async def run_bot(universe: List[str]):
                                         _paper_shadow_key,
                                         STATS.get("v702_builder_return_none_last", {}),
                                     )
+                                    _paper_builder_completed = _paper_builder_status != "builder_returned_none"
                                     _live_eligible = bool(
-                                        int(STATS.get("v534_live_ready", 0) or 0) > _before_live_ready
+                                        _paper_builder_completed
+                                        and int(STATS.get("v534_live_ready", 0) or 0) > _before_live_ready
                                         and int(STATS.get("signals_queued", 0) or 0) > _before_queued
                                     )
                                     await asyncio.to_thread(
                                         KnowledgeOutcomeLedger.annotate_paper_edge,
-                                        _paper_aid, _paper_shadow, builder_completed=True,
+                                        _paper_aid, _paper_shadow, builder_completed=_paper_builder_completed,
                                         live_eligible=_live_eligible,
                                         builder_reason=("builder_returned_none:" + _paper_builder_reason[:150]
                                                        if _paper_builder_status == "builder_returned_none"
@@ -87005,17 +87007,16 @@ def _v702_candidate_wrap(value, snapshot=None, symbol=""):
 
 
 def _v702_a60_resolve_paper_shadow(shadow_store, candidate_key, builder_none_diag=None):
-    """Distinguish an actual Shadow PreSend result from a builder exit before Shadow.
+    """Resolve Shadow evidence only when the exact candidate reached that stage.
 
-    This is display/ledger attribution only. It never creates an eligible result
-    and never changes the builder's return value or any admission decision.
+    The candidate-scoped Builder-returned-None diagnostic deliberately takes
+    precedence over a stored Shadow row. The store is bounded and keyed by the
+    cycle/candidate, so a previous same-key result must never override proof that
+    this Builder invocation terminated before producing a TradeState. This is
+    attribution/Edge-evidence handling only; it never changes admission decisions.
     """
     shadow_store = shadow_store if isinstance(shadow_store, dict) else {}
     key = str(candidate_key or "")
-    shadow = shadow_store.get(key)
-    if isinstance(shadow, dict):
-        return dict(shadow), "shadow_evaluated", str(shadow.get("reason") or "")[:180]
-
     diag = builder_none_diag if isinstance(builder_none_diag, dict) else {}
     if key and str(diag.get("candidate_key") or "") == key:
         rejection = diag.get("candidate_rejection") if isinstance(diag.get("candidate_rejection"), dict) else {}
@@ -87031,6 +87032,10 @@ def _v702_a60_resolve_paper_shadow(shadow_store, candidate_key, builder_none_dia
             "builder_block_stage": stage,
             "builder_block_reason": reason,
         }, "builder_returned_none", display_reason[:220])
+
+    shadow = shadow_store.get(key)
+    if isinstance(shadow, dict):
+        return dict(shadow), "shadow_evaluated", str(shadow.get("reason") or "")[:180]
 
     return ({"eligible": False, "reason": "shadow_result_missing", "not_reached": False},
             "shadow_result_missing", "shadow_result_missing")
@@ -99388,6 +99393,117 @@ def _v702_a60_validate_config():
 
 
 globals()["validate_config"] = _v702_a60_validate_config
+
+
+# =============================================================================
+# V702 A61 — Builder/Shadow/Edge eligibility truth (FAIL CLOSED)
+# A same-candidate Builder return of None must never be labeled completed or
+# become Edge-eligible merely because a Shadow row exists in the bounded store.
+# This closes evidence attribution only; no trading admission gate is changed.
+# =============================================================================
+V702_A61_CANONICAL_REVISION = V702_A60_CANONICAL_REVISION + "-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14"
+V702_A61_RELEASE_REVISION = "A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14"
+V702_A61_RELEASE_TAG = "UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A61_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A61_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A61_RELEASE_TAG
+STATS["v702_a61_release_revision"] = V702_A61_RELEASE_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A61_RELEASE_REVISION,
+    "active_release_tag": V702_A61_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A61_RELEASE_REVISION,
+    "a61_release_revision": V702_A61_RELEASE_REVISION,
+    "builder_edge_evidence_contract": {
+        "builder_return_none_overrides_stored_shadow": True,
+        "builder_completed_requires_non_none_result": True,
+        "edge_eligibility_requires_builder_completed_and_shadow_presend": True,
+        "live_authority": False,
+    },
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a61_self_test():
+    try:
+        _base = _v702_a60_self_test()
+        _source = _v702_read_source_text()
+        _key = "A61-SELFTEST-CANDIDATE"
+        _resolved, _status, _reason = _v702_a60_resolve_paper_shadow(
+            {_key: {"eligible": True, "reason": "stale_or_prior_shadow_result"}},
+            _key,
+            {"candidate_key": _key, "candidate_rejection": {"stage": "scorer", "code": "score_below_threshold"}},
+        )
+        _checks = {
+            "a60_inherited_self_test_passes": bool(_base.get("pass")),
+            "builder_none_overrides_any_stored_shadow": (
+                _status == "builder_returned_none"
+                and _resolved.get("eligible") is False
+                and _resolved.get("not_reached") is True
+                and str(_reason).startswith("not_reached:builder_returned_none")
+            ),
+            "builder_completed_is_derived_from_actual_result": (
+                "_paper_builder_completed = _paper_builder_status != \"builder_returned_none\"" in _source
+                and "builder_completed=_paper_builder_completed" in _source
+            ),
+            "live_eligibility_requires_builder_completion": (
+                "_paper_builder_completed\n                                        and int(STATS.get(\"v534_live_ready\"" in _source
+            ),
+            "runtime_identity_is_a61": (
+                V702_FINAL_CANONICAL_RELEASE == V702_A61_RELEASE_TAG
+                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A61_RELEASE_TAG
+            ),
+            "no_live_authority_or_gate_relaxation": (
+                FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+                and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+                and FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
+            ),
+        }
+        _failed = [name for name, passed in _checks.items() if not bool(passed)]
+        return {
+            "pass": not _failed,
+            "revision": V702_A61_RELEASE_REVISION,
+            "checks": _checks,
+            "failed": _failed,
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+    except Exception as _exc:
+        return {
+            "pass": False,
+            "revision": V702_A61_RELEASE_REVISION,
+            "error": f"{type(_exc).__name__}:{str(_exc)[:160]}",
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+
+
+_V702_A61_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a61_validate_config():
+    # A61 -> A60 -> _V702_A60_PREVIOUS_VALIDATE_CONFIG() preserves the complete
+    # inherited A57/A56/A55/A54/... validator chain without replacing it.
+    _base_ok = bool(_V702_A61_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A61_PREVIOUS_VALIDATE_CONFIG) else False
+    _report = _v702_a61_self_test()
+    STATS["v702_a61_validation"] = _report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a61_validation": _report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+    })
+    return bool(_base_ok and _report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a61_validate_config
 
 
 if _V699_VALIDATE_ONLY_REQUEST:

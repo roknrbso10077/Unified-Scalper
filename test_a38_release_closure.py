@@ -249,8 +249,8 @@ def test_a60_same_bar_tp1_and_new_be_stop_is_marked_ambiguous(monkeypatch):
 
 
 def test_a60_release_identity_and_shadow_only_contract():
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL"
-    report = bot._v702_a60_self_test()
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A61-CANONICAL-FINAL"
+    report = bot._v702_a61_self_test()
     assert report["pass"] is True, report.get("failed")
     assert report["live_authority"] is False
     assert report["hard_gate_bypass"] is False
