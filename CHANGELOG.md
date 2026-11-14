@@ -1,3 +1,20 @@
+# A60 — Paper outcome model and Edge-report coherence (2026-11-14)
+
+**Active distribution:** `UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL`. The release is a monitor/Paper/Shadow build only; `MONITOR_ONLY_NO_NEW_BUYS` and every live admission, economic, risk, execution and protection gate remain unchanged.
+
+- Corrected the selected-route Paper entry state machine so a closed breakout-fill candle is checked for the protective stop; the fill candle does not receive an optimistic target fill.
+- Matched the Paper residual stop after TP1 to the live `ExitManager.move_to_break_even` fee-covered stop formula. The original stop remains the original risk anchor.
+- Where a candle contains both TP1 and the newly established fee-covered BE stop, the outcome is now `AMBIGUOUS_TP1_BE_SAME_BAR` and excluded from realized expectancy rather than assuming an unknowable intrabar order.
+- Modeled `SL_AFTER_TP1/TP2` using the stored virtual stop price and the configured partial exits, with the existing round-trip cost deduction.
+- Split exploratory selected-route Paper outcomes from Edge-eligible rows. Only current-version rows that pass Builder, independent Shadow PreSend and market-economics eligibility contribute to Edge learning. Full-ledger legacy tables remain available for compatibility and diagnostics.
+- Distinguished a true Shadow PreSend decision from a candidate that returned `None` before the Shadow gate; the paper notice now reports `NOT REACHED` with the same-candidate blocker instead of the misleading `shadow_result_missing` label. This is diagnostic-only and never creates an eligible row.
+- Added A60 release identity/self-test and deterministic regression tests. No strategy family, regime allowlist, Score threshold, HTF floor, liquidity ceiling, queue, Telegram authorization, order or protective gate was relaxed.
+- Removed only `HISTORICAL_A53_main.py.baseline` (a non-executable historical source snapshot, expressly not a drop-in rollback) from the distributable archive to meet the hard 99-file ceiling; runtime code, active tests, workflow, environment example and audit history remain.
+
+**Verification boundary:** local compilation/tests and `--validate-only` do not prove exchange fills, Telegram delivery, exchange-native stops, Railway deployment, target Python 3.12/linux/amd64 execution or profitability. Production disposition remains `NO_GO_UNATTENDED_LIVE`. See `A60_FINAL_PRODUCTION_AUDIT_AR.md`, `A60_RELEASE_MANIFEST.json` and `A60_SHA256SUMS.txt`.
+
+---
+
 # A59 — Bearish policy-reject shadow observability and canonical recovery-policy closure (2026-11-13)
 
 **Active distribution:** `UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL`. A59 is additive and keeps `MONITOR_ONLY_NO_NEW_BUYS`; it does not relax any live regime, score, structure, liquidity, fee, exposure, execution, or protection gate.

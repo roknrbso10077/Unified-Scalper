@@ -50,18 +50,18 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(manifest.get("canonical_executable"), "main.py")
         self.assertEqual(manifest.get("canonical_main_sha256"), hashlib.sha256(source).hexdigest())
         self.assertFalse(manifest.get("byte_identical_canonical_copy"), "duplicate runtime must not be packaged")
-        self.assertTrue((ROOT / "HISTORICAL_A53_main.py.baseline").is_file())
+        self.assertFalse((ROOT / "HISTORICAL_A53_main.py.baseline").exists(), "A53 snapshot is intentionally excluded from the <=99-file A60 distribution; it is not a drop-in rollback")
         # The runtime-policy identity remains pinned to A10 for its historical
         # self-test contract; the distribution's active revision is separate.
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("canonical_package_revision"), bot.V702_A10_CANONICAL_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_package_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("package_audit_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
-        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL")
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL")
 
 
     def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A59-CANONICAL-FINAL")
+        self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL")
         self.assertIn("BEARISH_POLICY_REJECT_OBSERVATION", source)
         self.assertIn("CF_SHADOW_POLICY_REJECT enabled=", source)
         self.assertTrue(bot.CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"))

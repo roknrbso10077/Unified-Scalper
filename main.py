@@ -23395,6 +23395,8 @@ class KnowledgeOutcomeLedger:
                   "virtual_notional_usdt":_paper_notional if source == "SELECTED_ROUTE_PAPER" else None,
                   "round_trip_cost_pct":_paper_round_trip_cost_pct if source == "SELECTED_ROUTE_PAPER" else None,
                   "round_trip_cost_r":_paper_cost_r,
+                  "paper_virtual_sl_price":float(sl) if source == "SELECTED_ROUTE_PAPER" else None,
+                  "paper_virtual_sl_reason":"ORIGINAL_PROTECTIVE_STOP",
                   "tp1_exit_pct":float(CONFIG.get("TP1_EXIT_PCT",0.60) or 0.60),
                   "tp2_exit_pct":float(CONFIG.get("TP2_EXIT_PCT",0.30) or 0.30),
                   "tp3_exit_pct":float(CONFIG.get("RUNNER_KEEP_PCT_AT_TP3",0.10) or 0.10) if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) else max(0.0, 1.0-float(CONFIG.get("TP1_EXIT_PCT",0.60))-float(CONFIG.get("TP2_EXIT_PCT",0.30))),
@@ -23491,6 +23493,8 @@ class KnowledgeOutcomeLedger:
                 "round_trip_cost_model": _cost_model,
                 "round_trip_cost_r": cost_r,
                 "paper_final_geometry_source": "BUILDER_SHADOW_PRESEND" if shadow_ok else "ORIGINAL_SELECTED_CANDIDATE",
+                "paper_virtual_sl_price": float(stop),
+                "paper_virtual_sl_reason": "ORIGINAL_PROTECTIVE_STOP",
                 "paper_final_entry": entry, "paper_final_sl": stop,
                 "paper_final_tp1": tp1, "paper_final_tp2": tp2, "paper_final_tp3": tp3,
                 "paper_final_rr1": rr1, "paper_final_rr2": rr2, "paper_final_rr3": rr3,
@@ -23575,7 +23579,13 @@ class KnowledgeOutcomeLedger:
             for row in by_symbol[sym]:
                 try:
                     aid=row["alert_id"]; status=str(row["status"]); alert_ts=float(row["alerted_at"] or 0.0); last_ts=int(row["last_bar_ts"] or 0); entry=float(row["entry"]); sl=float(row["sl"]); risk=float(row["risk_unit"]); tp1=float(row["tp1"]); tp2=float(row["tp2"]); tp3=float(row["tp3"])
-                    horizon=float((json.loads(row["notes"] or "{}") or {}).get("horizon_sec",CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SCALP_SEC",21600.0)))
+                    try:
+                        _row_notes = json.loads(row["notes"] or "{}") or {}
+                    except Exception:
+                        _row_notes = {}
+                    _selected_paper = str(_row_notes.get("record_source", "")).upper() == "SELECTED_ROUTE_PAPER"
+                    _paper_virtual_sl = cls._num(_row_notes.get("paper_virtual_sl_price"), sl) if _selected_paper else sl
+                    horizon=float(_row_notes.get("horizon_sec",CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SCALP_SEC",21600.0)))
                     if now>alert_ts+horizon:
                         if status=="WAITING_ENTRY":
                             await cls._update_async(aid,status="EXPIRED",first_event="ENTRY_NOT_REACHED",final_outcome="ENTRY_NOT_REACHED",expired_at=now)
@@ -23586,15 +23596,25 @@ class KnowledgeOutcomeLedger:
                         continue
                     entry_at=row["entry_triggered_at"]; first=str(row["first_event"] or ""); hit1at=row["tp1_hit_at"]; hit2at=row["tp2_hit_at"]; hit3at=row["tp3_hit_at"]; slat=row["sl_hit_at"]; mfe=cls._num(row["max_mfe_r"]); mae=cls._num(row["max_mae_r"]); seen=int(row["bars_observed"] or 0)
                     tp1_notice=int(row["tp1_notice_sent"] or 0); tp2_notice=int(row["tp2_notice_sent"] or 0); tp3_notice=int(row["tp3_notice_sent"] or 0); sl_notice=int(row["sl_notice_sent"] or 0)
+                    # Live PositionManager moves the remaining stop to fee-covered
+                    # break-even immediately after TP1. Backfill older selected-paper
+                    # rows which recorded TP1 before this field existed.
+                    if _selected_paper and first in {"TP1", "TP2"}:
+                        _fee_pct = max(0.0, cls._num(CONFIG.get("TAKER_FEE_PCT", 0.10), 0.10)) / 100.0
+                        _fee_mult = max(0.0, cls._num(CONFIG.get("ROUNDTRIP_FEE_MULT", 2.0), 2.0))
+                        _fee_be_sl = entry * (1.0 + _fee_pct * _fee_mult)
+                        if _fee_be_sl > _paper_virtual_sl + 1e-12:
+                            _paper_virtual_sl = _fee_be_sl
+                            _row_notes.update({
+                                "paper_virtual_sl_price": float(_paper_virtual_sl),
+                                "paper_virtual_sl_reason": "LIVE_TP1_FEE_COVERED_BREAKEVEN_CONTRACT",
+                                "paper_virtual_sl_set_at": float(hit1at or hit2at or entry_at or now),
+                            })
+                            await cls._update_async(aid, notes=json.dumps(_row_notes, ensure_ascii=False, sort_keys=True))
                     for ts,o,h,l,c,v in bars:
                         if ts<=max(last_ts,int(alert_ts*1000)):continue
                         last_ts=ts
                         if entry_at is None:
-                            try:
-                                _row_notes = json.loads(row["notes"] or "{}") or {}
-                            except Exception:
-                                _row_notes = {}
-                            _selected_paper = str(_row_notes.get("record_source", "")).upper() == "SELECTED_ROUTE_PAPER"
                             if _selected_paper and str(_row_notes.get("fill_model", "")) == "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1":
                                 _trigger = cls._num(_row_notes.get("fill_trigger_price"), 0.0)
                                 _margin = cls._num(_row_notes.get("fill_margin_pct"), 0.0)
@@ -23616,11 +23636,35 @@ class KnowledgeOutcomeLedger:
                                             "fill_margin_pct": float(_margin),
                                             "fill_trigger_price": float(_trigger),
                                             "fill_model": "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1",
+                                            "paper_virtual_sl_price": float(sl),
+                                            "paper_virtual_sl_reason": "ORIGINAL_PROTECTIVE_STOP",
                                             "round_trip_cost_r": (
                                                 float(_fill_price) * cls._num(_row_notes.get("round_trip_cost_pct"), 0.30) / 100.0 / _new_risk
                                             ) if _new_risk > 0 else 0.0,
                                         })
                                         entry_at = ts / 1000.0
+                                        STATS["v702_paper_buffered_breakout_fills"] = int(STATS.get("v702_paper_buffered_breakout_fills", 0) or 0) + 1
+                                        # Entry candles are OHLC-ambiguous: do not award a
+                                        # target on the fill candle, but never ignore a stop
+                                        # touched on that same closed candle. Resolve SL first.
+                                        if l <= sl:
+                                            mae = max(mae, (_fill_price - l) / _new_risk)
+                                            _fill_stop = {
+                                                "status": "SL_FINAL", "entry": float(_fill_price),
+                                                "risk_unit": float(_new_risk), "tp1": float(_new_tp1),
+                                                "tp2": float(_new_tp2), "tp3": float(_new_tp3),
+                                                "first_event": "SL", "final_outcome": "SL",
+                                                "entry_triggered_at": entry_at,
+                                                "sl_hit_at": entry_at, "last_bar_ts": last_ts,
+                                                "max_mfe_r": mfe, "max_mae_r": mae,
+                                                "bars_observed": seen + 1,
+                                                "notes": json.dumps(_row_notes, ensure_ascii=False, sort_keys=True),
+                                            }
+                                            await cls._update_async(aid, **_fill_stop)
+                                            STATS["v702_knowledge_terminal_sl"] = int(STATS.get("v702_knowledge_terminal_sl", 0) or 0) + 1
+                                            if bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE", True)):
+                                                await cls._send_milestone(row, _fill_stop, "SL", None)
+                                            break
                                         await cls._update_async(
                                             aid, status="IN_POSITION", entry=float(_fill_price),
                                             risk_unit=float(_new_risk), tp1=float(_new_tp1),
@@ -23628,15 +23672,55 @@ class KnowledgeOutcomeLedger:
                                             notes=json.dumps(_row_notes, ensure_ascii=False, sort_keys=True),
                                             first_event=None, entry_triggered_at=entry_at,
                                             last_bar_ts=last_ts, max_mfe_r=mfe, max_mae_r=mae,
-                                            bars_observed=seen,
+                                            bars_observed=seen + 1,
                                         )
-                                        STATS["v702_paper_buffered_breakout_fills"] = int(STATS.get("v702_paper_buffered_breakout_fills", 0) or 0) + 1
                             elif not _selected_paper and l <= entry <= h:
                                 entry_at=ts/1000.0
                                 await cls._update_async(aid,status="IN_POSITION",first_event=None,entry_triggered_at=entry_at,last_bar_ts=last_ts,max_mfe_r=mfe,max_mae_r=mae,bars_observed=seen)
                             continue
                         mfe=max(mfe,(h-entry)/risk); mae=max(mae,(entry-l)/risk); seen+=1
-                        h1=h>=tp1; h2=h>=tp2; h3=h>=tp3; hs=l<=sl
+                        h1=h>=tp1; h2=h>=tp2; h3=h>=tp3
+                        _active_sl = _paper_virtual_sl if (_selected_paper and first in {"TP1", "TP2"}) else sl
+                        hs=l<=_active_sl
+                        # If TP1 and its newly-installed fee-covered BE stop both
+                        # lie inside the same OHLC candle, their order is unknowable.
+                        # The original stop was not hit, but we cannot prove whether
+                        # the live system moved to BE before the pullback. Preserve
+                        # the confirmed first target and mark terminal outcome
+                        # ambiguous instead of assuming the runner survived.
+                        if _selected_paper and not first and h1 and l>sl:
+                            _fee_pct = max(0.0, cls._num(CONFIG.get("TAKER_FEE_PCT", 0.10), 0.10)) / 100.0
+                            _fee_mult = max(0.0, cls._num(CONFIG.get("ROUNDTRIP_FEE_MULT", 2.0), 2.0))
+                            _samebar_be = entry * (1.0 + _fee_pct * _fee_mult)
+                            if l <= _samebar_be:
+                                first="TP1"; hit1at=ts/1000.0
+                                _paper_virtual_sl=max(_paper_virtual_sl,_samebar_be)
+                                _row_notes.update({
+                                    "paper_virtual_sl_price":float(_paper_virtual_sl),
+                                    "paper_virtual_sl_reason":"AMBIGUOUS_TP1_AND_FEE_BE_WITHIN_SAME_OHLC_BAR",
+                                    "paper_virtual_sl_set_at":float(ts/1000.0),
+                                    "paper_same_bar_be_ambiguous":True,
+                                })
+                                _ambiguous_fill={
+                                    "status":"AMBIGUOUS_FINAL",
+                                    "first_event":"TP1",
+                                    "final_outcome":"AMBIGUOUS_TP1_BE_SAME_BAR",
+                                    "entry_triggered_at":entry_at,
+                                    "tp1_hit_at":hit1at,
+                                    "tp2_hit_at":None,
+                                    "tp3_hit_at":None,
+                                    "sl_hit_at":None,
+                                    "last_bar_ts":last_ts,
+                                    "max_mfe_r":mfe,
+                                    "max_mae_r":mae,
+                                    "bars_observed":seen,
+                                    "notes":json.dumps(_row_notes,ensure_ascii=False,sort_keys=True),
+                                }
+                                await cls._update_async(aid,**_ambiguous_fill)
+                                STATS["v702_knowledge_ambiguous_tp1_be_same_bar"] = int(STATS.get("v702_knowledge_ambiguous_tp1_be_same_bar",0) or 0)+1
+                                if not tp1_notice:
+                                    await cls._send_milestone(row,_ambiguous_fill,"TP1")
+                                break
                         # A38 aligns the realized knowledge ledger with the
                         # canonical conservative SL-first policy used by both
                         # shadow modules. OHLC cannot prove which level came first
@@ -23666,11 +23750,24 @@ class KnowledgeOutcomeLedger:
                             break
                         if not first:
                             first=cls._first_touch_event(h1,h2,h3,hs,"")
+                        if _selected_paper and first in {"TP1", "TP2"}:
+                            _fee_pct = max(0.0, cls._num(CONFIG.get("TAKER_FEE_PCT", 0.10), 0.10)) / 100.0
+                            _fee_mult = max(0.0, cls._num(CONFIG.get("ROUNDTRIP_FEE_MULT", 2.0), 2.0))
+                            _fee_be_sl = entry * (1.0 + _fee_pct * _fee_mult)
+                            if _fee_be_sl > _paper_virtual_sl + 1e-12:
+                                _paper_virtual_sl = _fee_be_sl
+                                _row_notes.update({
+                                    "paper_virtual_sl_price": float(_paper_virtual_sl),
+                                    "paper_virtual_sl_reason": "LIVE_TP1_FEE_COVERED_BREAKEVEN_CONTRACT",
+                                    "paper_virtual_sl_set_at": float(ts / 1000.0),
+                                })
                         if h1 and hit1at is None:hit1at=ts/1000.0
                         if h2 and hit2at is None:hit2at=ts/1000.0
                         if h3 and hit3at is None:hit3at=ts/1000.0
                         if hs and slat is None:slat=ts/1000.0
                         d={"status":"IN_POSITION","first_event":first or None,"entry_triggered_at":entry_at,"tp1_hit_at":hit1at,"tp2_hit_at":hit2at,"tp3_hit_at":hit3at,"sl_hit_at":slat,"last_bar_ts":last_ts,"max_mfe_r":mfe,"max_mae_r":mae,"bars_observed":seen}
+                        if _selected_paper and first in {"TP1", "TP2"}:
+                            d["notes"] = json.dumps(_row_notes, ensure_ascii=False, sort_keys=True)
                         # Milestone notices are emitted once per reached target/SL.
                         if h1 and not tp1_notice:
                             d["tp1_hit_at"]=hit1at; await cls._send_milestone(row,d,"TP1"); tp1_notice=1
@@ -23862,7 +23959,10 @@ class KnowledgeOutcomeLedger:
                     if final_fo == "SL":
                         modeled -= rem
                     elif final_fo.startswith("SL_AFTER_"):
-                        pass
+                        _virtual_stop = cls._num(_note.get("paper_virtual_sl_price"), cls._num(r["entry"]))
+                        _entry_px = cls._num(r["entry"])
+                        _risk_px = max(1e-12, cls._num(r["risk_unit"], 1e-12))
+                        modeled += rem * ((_virtual_stop - _entry_px) / _risk_px)
                     elif final_fo == "TP3":
                         if rem > 1e-12:
                             modeled += rem * _rr3
@@ -23926,17 +24026,34 @@ class KnowledgeOutcomeLedger:
             groups={}
             for r in rs: groups.setdefault(keyfn(r),[]).append(r)
             return {k:build(v) for k,v in sorted(groups.items(),key=lambda kv:str(kv[0])) if len(v)>=3}
+        def grouped(rs,keyfn):
+            """Return all sample sizes, including n=1-2, for truthful diagnostics."""
+            groups={}
+            for r in rs: groups.setdefault(keyfn(r),[]).append(r)
+            return {k:build(v) for k,v in sorted(groups.items(),key=lambda kv:str(kv[0]))}
+        _family_tf_key = lambda r: "|".join((
+            str(r["family"] or "UNKNOWN").upper(),
+            "STYLE="+str(r["strategy_style"] or "UNKNOWN").upper(),
+            "TF="+str(r["timeframe_profile"] or "UNKNOWN").upper(),
+        ))
+        _combo_key = lambda r: str(r["core_recipe_key"] or cls._recipe_fields(
+            r["family"],r["strategy_style"],r["timeframe_profile"],r["reviewed_score"],
+            r["volume_ratio"],r["htf"],r["rs"],r["chase_atr"],r["tier"])["core_recipe_key"])
         fams=sorted(set(str(r["family"] or "UNKNOWN") for r in rows))
         by_combo=bucketed(rows,lambda r: str(r["core_recipe_key"] or cls._recipe_fields(r["family"],r["strategy_style"],r["timeframe_profile"],r["reviewed_score"],r["volume_ratio"],r["htf"],r["rs"],r["chase_atr"],r["tier"])["core_recipe_key"]))
         by_exact_recipe=bucketed(rows,lambda r: str(r["recipe_key"] or "UNKNOWN"))
         # Diagnostic grouping by family/style/TF for all ledger records. These
         # descriptive tables do not grant live authority; EdgeGate only consumes
         # the separate current-A55 eligible recipe groups computed below.
-        by_family_timeframe=bucketed(rows,lambda r: "|".join((
-            str(r["family"] or "UNKNOWN").upper(),
-            "STYLE="+str(r["strategy_style"] or "UNKNOWN").upper(),
-            "TF="+str(r["timeframe_profile"] or "UNKNOWN").upper(),
-        )))
+        by_family_timeframe=bucketed(rows,_family_tf_key)
+        # Keep diagnostic legacy groupings above, but expose strategy Edge only
+        # from selected-route paper rows and the stricter Builder+Shadow-PreSend
+        # subset. Small n=1/2 groups stay visible instead of silently vanishing.
+        paper_selected_by_family_timeframe=grouped(paper_selected_rows,_family_tf_key)
+        edge_eligible_by_family_timeframe=grouped(edge_evidence_rows,_family_tf_key)
+        edge_eligible_by_family=grouped(edge_evidence_rows,lambda r:str(r["family"] or "UNKNOWN"))
+        edge_eligible_by_combo=grouped(edge_evidence_rows,_combo_key)
+        edge_eligible_by_exact_recipe=grouped(edge_evidence_rows,lambda r:str(r["recipe_key"] or "UNKNOWN"))
         def _modeled_net_r_for_row(r):
             """Rebuild the same partial-exit, terminal and stored-cost R model used above."""
             if r["entry_triggered_at"] is None:
@@ -23963,7 +24080,10 @@ class KnowledgeOutcomeLedger:
                 if _final == "SL":
                     modeled -= rem
                 elif _final.startswith("SL_AFTER_"):
-                    pass
+                    _virtual_stop = cls._num(_note.get("paper_virtual_sl_price"), cls._num(r["entry"]))
+                    _entry_px = cls._num(r["entry"])
+                    _risk_px = max(1e-12, cls._num(r["risk_unit"], 1e-12))
+                    modeled += rem * ((_virtual_stop - _entry_px) / _risk_px)
                 elif _final == "TP3":
                     if rem > 1e-12: modeled += rem * _rr3
                 else:
@@ -24043,7 +24163,13 @@ class KnowledgeOutcomeLedger:
             "discovery_shadow":build(discovery_rows),
             "paper_selected":build(paper_selected_rows),
             "paper_selected_active":paper_selected_active,
+            "edge_eligible_paper":build(edge_evidence_rows),
             "edge_eligible_paper_rows":len(edge_evidence_rows),
+            "paper_selected_by_family_timeframe":paper_selected_by_family_timeframe,
+            "edge_eligible_by_family_timeframe":edge_eligible_by_family_timeframe,
+            "edge_eligible_by_family":edge_eligible_by_family,
+            "edge_eligible_by_combo":edge_eligible_by_combo,
+            "edge_eligible_by_exact_recipe":edge_eligible_by_exact_recipe,
             "paper_simulation_contract":{
                 "mode":"SELECTED_ROUTE_PAPER_SHADOW_WITH_POST_BUILDER_SHADOW_PRESEND",
                 "entry":"wait for a future closed-1m candle to touch the planned entry; no assumed fill",
@@ -24054,8 +24180,10 @@ class KnowledgeOutcomeLedger:
                 "cost_included_in_modeled_realized_r":True,
                 "cost_source":"measured orderbook spread+VWAP market friction+venue taker fees; conservative 0.30% floor",
                 "exchange_orders_submitted":False,
-                "edge_sample_source":"A55 current-version Paper rows annotated after Builder and independent Shadow PreSend pass only",
+                "edge_sample_source":"A55 current-version selected-route Paper rows only when Builder completed AND independent Shadow PreSend returned eligible=true AND market_live_eligible=true",
+                "edge_eligible_paper_rows":len(edge_evidence_rows),
                 "edge_evidence_basis":"market/economic qualification only; independent of real wallet balance so learning continues at zero USDT",
+                "exploratory_paper_outcomes_are_not_edge_evidence":True,
                 "account_execution_eligibility":"stored separately as account_execution_eligible/live_eligible; not inferred from Paper evidence",
                 "live_execution_authority":"none; live PreSend, balance, exposure, protection, operator arms and final OrderExecutor guards are rechecked independently",
             },
@@ -24183,9 +24311,11 @@ class KnowledgeOutcomeLedger:
                     if bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TERMINAL_ALERT_ENABLE",True)) and o["alerts"]:
                         exp="N/A" if o["first_touch_expectancy_r"] is None else f"{o['first_touch_expectancy_r']:.2f}R"
                         min_s=int(rep.get("min_samples",30))
-                        ready_f=[(f,d) for f,d in rep.get("by_family",{}).items() if d.get("sample_sufficient")]
+                        ready_f=[(f,d) for f,d in rep.get("edge_eligible_by_family",{}).items() if d.get("sample_sufficient")]
                         ready_f=sorted(ready_f,key=lambda x:(x[1].get("first_touch_expectancy_r") is None, -(x[1].get("first_touch_expectancy_r") or -9999.0)))[:5]
-                        ready_c=[(k,d) for k,d in rep.get("by_combo",{}).items() if d.get("edge_status")=="READY_POSITIVE"]
+                        ready_c=[(k,d) for k,d in rep.get("edge_eligible_by_combo",{}).items()
+                                 if d.get("sample_sufficient") and d.get("modeled_realized_expectancy_r") is not None
+                                 and float(d.get("modeled_realized_expectancy_r") or 0.0)>0.0]
                         ready_c=sorted(ready_c,key=lambda x:(-(x[1].get("entries") or 0), -(x[1].get("first_touch_expectancy_r") or -9999.0), str(x[0])))[:5]
                         obs_p=rep.get("positive_observed_recipes",[])[:5]
                         obs_n=rep.get("negative_observed_recipes",[])[:5]
@@ -24194,9 +24324,9 @@ class KnowledgeOutcomeLedger:
                             for f,d in ready_f if d.get("first_touch_expectancy_r") is not None
                         ) or f"Sample threshold: <b>{min_s}</b> entries per family before it is sample-sufficient.")
                         combo_line=("\n".join(
-                            f"• {k}: n={d['entries']} exp={d['first_touch_expectancy_r']:.2f}R tp1={d['tp1_hit']} tp2={d['tp2_hit']} tp3={d['tp3_hit']} sl={d['sl_hit']}"
-                            for k,d in ready_c if d.get("first_touch_expectancy_r") is not None
-                        ) or "No sample-qualified positive multi-factor combination yet.")
+                            f"• {k}: n={d['entries']} modeled_exp={d['modeled_realized_expectancy_r']:.2f}R status=REQUIRES_FDR_VALIDATION"
+                            for k,d in ready_c
+                        ) or "No sample-qualified positive multi-factor combination in eligible Paper rows yet.")
                         observed_win_line=("\n".join(
                             f"• {d['key']}: n={d['entries']} W={d['wins']} L={d['losses']} WR={d['win_rate']:.1%} exp={d['expectancy_r']:.2f}R status={d['status']}"
                             for d in obs_p
@@ -24214,7 +24344,7 @@ class KnowledgeOutcomeLedger:
                         # shadow telemetry and never changes entry policy or execution.
                         _tf_rows = []
                         for _tf_key, _tf_data in sorted(
-                            (rep.get("by_family_timeframe", {}) or {}).items(),
+                            (rep.get("paper_selected_by_family_timeframe", {}) or {}).items(),
                             key=lambda kv: (-int((kv[1] or {}).get("entries", 0) or 0), str(kv[0])),
                         )[:8]:
                             _td = _tf_data or {}
@@ -24226,24 +24356,44 @@ class KnowledgeOutcomeLedger:
                                 f"exp={'NA' if _te is None else f'{float(_te):+.2f}R'} "
                                 f"TP1/TP2/TP3/SL={int(_td.get('tp1_hit',0) or 0)}/{int(_td.get('tp2_hit',0) or 0)}/"
                                 f"{int(_td.get('tp3_hit',0) or 0)}/{int(_td.get('sl_hit',0) or 0)} "
-                                f"quality={'READY' if _td.get('sample_sufficient') else 'SMALL_SAMPLE'}"
+                                f"quality={'SAMPLE_SUFFICIENT' if _td.get('sample_sufficient') else 'SMALL_SAMPLE'}"
                             )
-                        _tf_section = "\n".join(_tf_rows) if _tf_rows else "No strategy/timeframe groups with enough recorded outcomes yet."
+                        _tf_section = "\n".join(_tf_rows) if _tf_rows else "No finalized selected-route Paper outcomes by strategy/timeframe yet."
+                        _eligible_tf_rows = []
+                        for _tf_key, _tf_data in sorted(
+                            (rep.get("edge_eligible_by_family_timeframe", {}) or {}).items(),
+                            key=lambda kv: (-int((kv[1] or {}).get("entries", 0) or 0), str(kv[0])),
+                        )[:8]:
+                            _ed = _tf_data or {}
+                            _ee = _ed.get("modeled_realized_expectancy_r")
+                            _eligible_tf_rows.append(
+                                f"• <code>{str(_tf_key)[:72]}</code> n={int(_ed.get('entries',0) or 0)} "
+                                f"modeled_exp={'NA' if _ee is None else f'{float(_ee):+.2f}R'} "
+                                f"TP1/TP2/TP3/SL={int(_ed.get('tp1_hit',0) or 0)}/{int(_ed.get('tp2_hit',0) or 0)}/"
+                                f"{int(_ed.get('tp3_hit',0) or 0)}/{int(_ed.get('sl_hit',0) or 0)}"
+                            )
+                        _eligible_tf_section = "\n".join(_eligible_tf_rows) if _eligible_tf_rows else "No eligible strategy/timeframe group yet; groups below 3 samples are still counted in the eligible total."
+                        _paper_stats = rep.get("paper_selected", {}) or {}
+                        _eligible_stats = rep.get("edge_eligible_paper", {}) or {}
                         _db_path_for_tg = str(rep.get("database_path", _db_display))[:220]
                         msg=(
                             "📊 <b>STRATEGY × TIMEFRAME EDGE — SHADOW ONLY</b>\n"
                             +f"<i>DB: <code>{_db_path_for_tg}</code></i>\n"
                             +f"<i>As-of: {datetime.fromtimestamp(float(rep.get('generated_at_ts', now) or now), tz=timezone.utc).isoformat()}</i>\n\n"
-                            +"<b>Strategy / timeframe</b>\n"+_tf_section+"\n\n"
-                            +"<b>Overall shadow outcomes</b>\n"
-                            +f"Alerts: <b>{o['alerts']}</b> | Entries: <b>{o['entries']}</b> | Entry rate: <b>{o['entry_rate']:.1%}</b>\n"
-                            +f"TP1 hit: <b>{o['tp1_hit']}</b> | TP2: <b>{o['tp2_hit']}</b> | TP3: <b>{o['tp3_hit']}</b> | SL hit: <b>{o['sl_hit']}</b> | Ambiguous: <b>{o['ambiguous']}</b>\n"
-                            +f"First-target: <b>{o['first_target_rate']:.1%}</b> | First-SL: <b>{o['first_sl_rate']:.1%}</b> | Terminal stop: <b>{o['terminal_stop_rate']:.1%}</b> | Unrecovered first-loss: <b>{o['unrecovered_loss_rate']:.1%}</b> | Stop after target: <b>{o['sl_after_target']}</b>\n"
-                            +f"First-touch expectancy: <b>{exp}</b>\n"
-                            +f"Modeled realized expectancy: <b>{_mr_exp}</b> | Realized sample: <b>{o.get('modeled_realized_count',0)}</b>\n\n<b>Sample-qualified families</b>\n"+family_line
-                            +"\n\n<b>Observed winning recipes</b>\n"+observed_win_line
-                            +"\n\n<b>Observed losing recipes</b>\n"+observed_loss_line
-                            +"\n\n<b>Sample-qualified positive multi-factor combinations</b>\n"+combo_line
+                            +"<b>Selected-route Paper outcomes (exploratory)</b>\n"+_tf_section+"\n"
+                            +f"Paper alerts: <b>{_paper_stats.get('alerts',0)}</b> | Entries: <b>{_paper_stats.get('entries',0)}</b> | Entry rate: <b>{_paper_stats.get('entry_rate',0.0):.1%}</b>\n"
+                            +f"TP1/TP2/TP3/SL hits: <b>{_paper_stats.get('tp1_hit',0)}/{_paper_stats.get('tp2_hit',0)}/{_paper_stats.get('tp3_hit',0)}/{_paper_stats.get('sl_hit',0)}</b> | Stop after target: <b>{_paper_stats.get('sl_after_target',0)}</b>\n"
+                            +f"First-touch expectancy: <b>{'N/A' if _paper_stats.get('first_touch_expectancy_r') is None else f'{_paper_stats.get('first_touch_expectancy_r'):+.2f}R'}</b> | Modeled realized: <b>{'N/A' if _paper_stats.get('modeled_realized_expectancy_r') is None else f'{_paper_stats.get('modeled_realized_expectancy_r'):+.2f}R'}</b>\n\n"
+                            +f"<b>Edge-eligible finalized rows: {int(rep.get('edge_eligible_paper_rows',0) or 0)}</b> / Paper finalized {int(_paper_stats.get('alerts',0) or 0)}\n"
+                            +"Eligibility requires Builder completion + Shadow PreSend eligible + current schema/version. Exploratory Paper outcomes do NOT train Edge.\n"
+                            +"<b>Eligible strategy/timeframe only</b>\n"+_eligible_tf_section+"\n"
+                            +f"Eligible entries: <b>{_eligible_stats.get('entries',0)}</b> | TP1/TP2/TP3/SL: <b>{_eligible_stats.get('tp1_hit',0)}/{_eligible_stats.get('tp2_hit',0)}/{_eligible_stats.get('tp3_hit',0)}/{_eligible_stats.get('sl_hit',0)}</b> | Modeled expectancy: <b>{'N/A' if _eligible_stats.get('modeled_realized_expectancy_r') is None else f'{_eligible_stats.get('modeled_realized_expectancy_r'):+.2f}R'}</b>\n\n"
+                            +"<b>All-ledger context (discovery + paper; descriptive only)</b>\n"
+                            +f"Alerts: <b>{o['alerts']}</b> | Entries: <b>{o['entries']}</b> | TP1/TP2/TP3/SL: <b>{o['tp1_hit']}/{o['tp2_hit']}/{o['tp3_hit']}/{o['sl_hit']}</b> | First-touch expectancy: <b>{exp}</b> | Modeled realized: <b>{_mr_exp}</b>\n\n"
+                            +"<b>Sample-qualified eligible families</b>\n"+family_line
+                            +"\n\n<b>Observed winning eligible recipes</b>\n"+observed_win_line
+                            +"\n\n<b>Observed losing eligible recipes</b>\n"+observed_loss_line
+                            +"\n\n<b>Eligible positive multi-factor combinations (pre-FDR)</b>\n"+combo_line
                             +"\n\nNo live policy is auto-changed by this telemetry."
                         )
                         # Keep within Telegram's message limit even with long strategy keys.
@@ -26890,7 +27040,11 @@ async def run_bot(universe: List[str]):
                                 raise
                             else:
                                 if _paper_aid:
-                                    _paper_shadow = STATS.get("v702_shadow_presend_by_candidate", {}).get(_paper_shadow_key)
+                                    _paper_shadow, _paper_builder_status, _paper_builder_reason = _v702_a60_resolve_paper_shadow(
+                                        STATS.get("v702_shadow_presend_by_candidate", {}),
+                                        _paper_shadow_key,
+                                        STATS.get("v702_builder_return_none_last", {}),
+                                    )
                                     _live_eligible = bool(
                                         int(STATS.get("v534_live_ready", 0) or 0) > _before_live_ready
                                         and int(STATS.get("signals_queued", 0) or 0) > _before_queued
@@ -26899,12 +27053,23 @@ async def run_bot(universe: List[str]):
                                         KnowledgeOutcomeLedger.annotate_paper_edge,
                                         _paper_aid, _paper_shadow, builder_completed=True,
                                         live_eligible=_live_eligible,
-                                        builder_reason="builder_completed",
+                                        builder_reason=("builder_returned_none:" + _paper_builder_reason[:150]
+                                                       if _paper_builder_status == "builder_returned_none"
+                                                       else "builder_completed"),
                                     )
                                     if _paper_msg:
-                                        _shadow_label = "PASS" if bool((_paper_shadow or {}).get("eligible")) else "BLOCKED: " + str((_paper_shadow or {}).get("reason", "shadow_result_missing"))
-                                        _paper_msg += "\n\nBuilder: completed | Shadow PreSend: " + OpportunityTelegramNotifier._escape(_shadow_label[:180])
-                                        _paper_msg += "\nPaper entry waits for price touch; only eligible rows inform Edge learning."
+                                        _shadow_label = "PASS" if bool((_paper_shadow or {}).get("eligible")) else (
+                                            "NOT REACHED: " + str((_paper_shadow or {}).get("reason", "builder_returned_none"))
+                                            if bool((_paper_shadow or {}).get("not_reached"))
+                                            else "BLOCKED: " + str((_paper_shadow or {}).get("reason", "shadow_result_missing"))
+                                        )
+                                        _builder_label = (
+                                            "Builder invocation: completed; returned no trade state"
+                                            if _paper_builder_status == "builder_returned_none"
+                                            else "Builder invocation: completed"
+                                        )
+                                        _paper_msg += "\n\n" + _builder_label + " | Shadow PreSend: " + OpportunityTelegramNotifier._escape(_shadow_label[:220])
+                                        _paper_msg += "\nPaper entry waits for price touch; only rows with an actual eligible Shadow PreSend result inform Edge learning."
                                         asyncio.create_task(TelegramDispatcher.enqueue(_paper_msg))
                         finally:
                             _V702_SELECTED_PREFLIGHT_CTX.reset(_v702_pf_token)
@@ -86839,6 +87004,38 @@ def _v702_candidate_wrap(value, snapshot=None, symbol=""):
     return V702PipelineMetrics.candidate_key(candidate,snapshot,symbol)
 
 
+def _v702_a60_resolve_paper_shadow(shadow_store, candidate_key, builder_none_diag=None):
+    """Distinguish an actual Shadow PreSend result from a builder exit before Shadow.
+
+    This is display/ledger attribution only. It never creates an eligible result
+    and never changes the builder's return value or any admission decision.
+    """
+    shadow_store = shadow_store if isinstance(shadow_store, dict) else {}
+    key = str(candidate_key or "")
+    shadow = shadow_store.get(key)
+    if isinstance(shadow, dict):
+        return dict(shadow), "shadow_evaluated", str(shadow.get("reason") or "")[:180]
+
+    diag = builder_none_diag if isinstance(builder_none_diag, dict) else {}
+    if key and str(diag.get("candidate_key") or "") == key:
+        rejection = diag.get("candidate_rejection") if isinstance(diag.get("candidate_rejection"), dict) else {}
+        stage = str(rejection.get("stage") or "")[:80]
+        reason = str(rejection.get("code") or rejection.get("reason") or diag.get("reason") or "unattributed")[:140]
+        display_reason = "not_reached:builder_returned_none"
+        if stage or reason:
+            display_reason += f":{stage or 'builder'}:{reason}"
+        return ({
+            "eligible": False,
+            "reason": display_reason[:220],
+            "not_reached": True,
+            "builder_block_stage": stage,
+            "builder_block_reason": reason,
+        }, "builder_returned_none", display_reason[:220])
+
+    return ({"eligible": False, "reason": "shadow_result_missing", "not_reached": False},
+            "shadow_result_missing", "shadow_result_missing")
+
+
 def _v702_prequal_policy_evidence(ranked, snap_by_symbol):
     """Return bounded, read-only evidence explaining a family/macro policy reject.
 
@@ -99060,6 +99257,139 @@ def _v702_a59_validate_config():
 globals()["validate_config"] = _v702_a59_validate_config
 
 
+# =============================================================================
+# V702 A60 — Paper outcome/Edge contract coherence (SHADOW ONLY)
+# Aligns the selected-route Paper ledger with the already-existing live
+# fee-covered TP1 protection contract, classifies OHLC-ambiguous BE exits
+# honestly, and separates exploratory Paper outcomes from Edge-eligible rows.
+# It does not admit rejected candidates or change live authority.
+# =============================================================================
+V702_A60_CANONICAL_REVISION = V702_PACKAGE_AUDIT_REVISION + "-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14"
+V702_A60_RELEASE_REVISION = "A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14"
+V702_A60_RELEASE_TAG = "UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A60_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A60_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A60_RELEASE_TAG
+STATS["v702_a60_release_revision"] = V702_A60_RELEASE_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A60_RELEASE_REVISION,
+    "active_release_tag": V702_A60_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A60_RELEASE_REVISION,
+    "a60_release_revision": V702_A60_RELEASE_REVISION,
+    "paper_outcome_model_closure": {
+        "entry_fill_bar_stop_checked": True,
+        "entry_fill_bar_target_not_awarded": True,
+        "tp1_remaining_stop": "FEE_COVERED_BREAKEVEN_MATCHING_LIVE_EXIT_MANAGER",
+        "same_bar_tp1_and_new_be_stop": "AMBIGUOUS_EXCLUDED_FROM_REALIZED_EXPECTANCY",
+        "sl_after_target_r": "STORED_VIRTUAL_STOP_PRICE_NOT_ASSUMED_ZERO_R",
+        "live_authority": False,
+    },
+    "edge_evidence_reporting": {
+        "exploratory_selected_route_paper_separated": True,
+        "eligible_requires_builder_and_shadow_presend_and_current_version": True,
+        "legacy_all_ledger_groups_retained_for_compatibility": True,
+        "live_authority": False,
+    },
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a60_self_test():
+    try:
+        _source = _v702_read_source_text()
+        _process = _source.split("async def process(cls,exchange):", 1)[-1].split("def _message(row,d):", 1)[0]
+        _process_compact = " ".join(_process.split())
+        _checks = {
+            "paper_fill_candle_stop_is_checked": "if l <= sl:" in _process and "Entry candles are OHLC-ambiguous" in _process,
+            "paper_fill_candle_target_is_not_assumed": "target on the fill candle" in _process_compact,
+            "tp1_fee_covered_be_matches_live_contract": (
+                "entry * (1.0 + _fee_pct * _fee_mult)" in _process
+                and "LIVE_TP1_FEE_COVERED_BREAKEVEN_CONTRACT" in _process
+            ),
+            "tp1_be_same_bar_is_marked_ambiguous": "AMBIGUOUS_TP1_BE_SAME_BAR" in _process,
+            "paper_sl_after_target_uses_recorded_virtual_stop": (
+                'final_fo.startswith("SL_AFTER_")' in _source
+                and '"paper_virtual_sl_price"' in _source
+            ),
+            "exploratory_paper_rows_are_separate": "paper_selected_by_family_timeframe" in _source,
+            "edge_eligibility_requires_builder_and_shadow_presend": (
+                'bool(_edge_notes.get("paper_edge_eligible"))' in _source
+                and 'bool(_edge_notes.get("shadow_presend_eligible"))' in _source
+                and 'bool(_edge_notes.get("market_live_eligible"))' in _source
+            ),
+            "eligible_rows_have_separate_strategy_timeframe_views": (
+                "edge_eligible_by_family_timeframe" in _source
+                and "edge_eligible_paper_rows" in _source
+            ),
+            "missing_shadow_is_distinguished_from_builder_pre_shadow_exit": (
+                callable(globals().get("_v702_a60_resolve_paper_shadow"))
+                and "not_reached:builder_returned_none" in _source
+                and "returned no trade state" in _source
+            ),
+            "live_score_floor_preserved": float(CONFIG.get("MIN_LIVE_SCORE", 70.0)) >= 70.0,
+            "spot_long_only_preserved": (
+                bool(CONFIG.get("LONG_ONLY", True))
+                and not bool(CONFIG.get("ALLOW_SHORTS", False))
+                and str(CONFIG.get("MARKET_TYPE", "SPOT")).upper() == "SPOT"
+                and not bool(CONFIG.get("ENABLE_FUTURES", False))
+                and not bool(CONFIG.get("FUTURES_ENABLED", False))
+            ),
+            "operator_entry_hold_preserved": (
+                FINAL_CANONICAL_RUNTIME.get("entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                or FINAL_CANONICAL_RUNTIME.get("operator_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                or "MONITOR_ONLY_NO_NEW_BUYS" in _source
+            ),
+            "no_gate_bypass_or_relaxation": (
+                FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+                and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+            ),
+        }
+        _failed = [key for key, value in _checks.items() if not bool(value)]
+        return {
+            "pass": not _failed,
+            "revision": V702_A60_RELEASE_REVISION,
+            "checks": _checks,
+            "failed": _failed,
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+    except Exception as _exc:
+        return {
+            "pass": False,
+            "revision": V702_A60_RELEASE_REVISION,
+            "error": f"{type(_exc).__name__}:{str(_exc)[:160]}",
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+
+
+_V702_A60_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a60_validate_config():
+    _base_ok = bool(_V702_A60_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A60_PREVIOUS_VALIDATE_CONFIG) else False
+    _report = _v702_a60_self_test()
+    STATS["v702_a60_validation"] = _report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a60_validation": _report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+    })
+    return bool(_base_ok and _report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a60_validate_config
+
+
 if _V699_VALIDATE_ONLY_REQUEST:
 
     _v702_r39_guardrails_installed = bool(globals().get("_V702_R39_GUARDRAILS_INSTALLED", False))
@@ -99292,6 +99622,8 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "v702_a57_release_revision": V702_A57_RELEASE_REVISION,
         "v702_a59_validation": STATS.get("v702_a59_validation", {}),
         "v702_a59_release_revision": V702_A59_RELEASE_REVISION,
+        "v702_a60_validation": STATS.get("v702_a60_validation", {}),
+        "v702_a60_release_revision": V702_A60_RELEASE_REVISION,
         "active_release_tag": V702_FINAL_CANONICAL_RELEASE,
         "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
         "active_package_revision": V702_PACKAGE_AUDIT_REVISION,

@@ -141,3 +141,140 @@ def test_a38_knowledge_ledger_process_uses_sl_first_for_same_closed_bar():
     prior = asyncio.run(run_case("TP1", 1750.0))
     assert prior["first_event"] == "TP1" and prior["final_outcome"] == "SL_AFTER_TP1"
     assert prior["tp1_hit_at"] == 1750.0, "target proven on prior bar must be preserved"
+
+
+def _a60_run_ledger_bar(row, bar, monkeypatch, *, fee_pct=0.10, fee_mult=2.0):
+    """Run one deterministic closed OHLC bar through the persistent outcome ledger."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    symbol = row["symbol"]
+    updates = []
+
+    async def fake_safe_api(*args, **kwargs):
+        return [bar]
+
+    old_last = bot.KnowledgeOutcomeLedger._last_fetch_by_symbol.get(symbol)
+    had_last = symbol in bot.KnowledgeOutcomeLedger._last_fetch_by_symbol
+    bot.KnowledgeOutcomeLedger._last_fetch_by_symbol[symbol] = 1000.0
+    monkeypatch.setitem(bot.CONFIG, "TAKER_FEE_PCT", fee_pct)
+    monkeypatch.setitem(bot.CONFIG, "ROUNDTRIP_FEE_MULT", fee_mult)
+    try:
+        with patch.object(bot.KnowledgeOutcomeLedger, "_active", return_value=[row]), \
+             patch.object(bot.KnowledgeOutcomeLedger, "_update", side_effect=lambda aid, **fields: updates.append((aid, fields))), \
+             patch.object(bot.KnowledgeOutcomeLedger, "_send_milestone", new=AsyncMock(return_value=True)), \
+             patch.object(bot, "WALL_NOW", return_value=2000.0), \
+             patch.object(bot, "safe_api_call", side_effect=fake_safe_api):
+            asyncio.run(bot.KnowledgeOutcomeLedger.process(SimpleNamespace(fetch_ohlcv=lambda *a, **k: [])))
+    finally:
+        if had_last:
+            bot.KnowledgeOutcomeLedger._last_fetch_by_symbol[symbol] = old_last
+        else:
+            bot.KnowledgeOutcomeLedger._last_fetch_by_symbol.pop(symbol, None)
+    assert updates, "ledger did not persist the synthetic closed bar"
+    return updates
+
+
+def test_a60_paper_fill_bar_cannot_skip_a_same_candle_stop(monkeypatch):
+    row = {
+        "alert_id": "A60-FILL-STOP", "symbol": "A60FILL/USDT", "status": "WAITING_ENTRY",
+        "alerted_at": 1000.0, "last_bar_ts": 0, "entry": 100.0, "sl": 95.0,
+        "risk_unit": 5.0, "tp1": 105.0, "tp2": 110.0, "tp3": 115.0,
+        "tp1_rr": 1.0, "tp2_rr": 2.0, "tp3_rr": 3.0,
+        "notes": json.dumps({
+            "horizon_sec": 20000, "record_source": "SELECTED_ROUTE_PAPER",
+            "fill_model": "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1",
+            "fill_trigger_price": 100.02, "fill_margin_pct": 0.02,
+            "round_trip_cost_pct": 0.30,
+        }),
+        "entry_triggered_at": None, "first_event": None,
+        "tp1_hit_at": None, "tp2_hit_at": None, "tp3_hit_at": None, "sl_hit_at": None,
+        "max_mfe_r": 0.0, "max_mae_r": 0.0, "bars_observed": 0,
+        "tp1_notice_sent": 0, "tp2_notice_sent": 0, "tp3_notice_sent": 0, "sl_notice_sent": 0,
+    }
+    updates = _a60_run_ledger_bar(row, [1900000, 100.0, 106.0, 94.0, 100.0, 1000.0], monkeypatch)
+    final = updates[-1][1]
+    assert final["status"] == "SL_FINAL"
+    assert final["final_outcome"] == "SL"
+    assert final["first_event"] == "SL"
+    assert final.get("tp1_hit_at") is None
+    assert final["entry"] == 100.02
+    assert final["sl_hit_at"] == 1900.0
+    assert final["max_mae_r"] >= 1.0
+
+
+def test_a60_paper_tp1_installs_fee_covered_virtual_stop(monkeypatch):
+    row = {
+        "alert_id": "A60-BE-STOP", "symbol": "A60BE/USDT", "status": "IN_POSITION",
+        "alerted_at": 1000.0, "last_bar_ts": 1800000, "entry": 100.0, "sl": 95.0,
+        "risk_unit": 5.0, "tp1": 105.0, "tp2": 110.0, "tp3": 115.0,
+        "tp1_rr": 1.0, "tp2_rr": 2.0, "tp3_rr": 3.0,
+        "notes": json.dumps({"horizon_sec": 20000, "record_source": "SELECTED_ROUTE_PAPER"}),
+        "entry_triggered_at": 1700.0, "first_event": "TP1", "tp1_hit_at": 1750.0,
+        "tp2_hit_at": None, "tp3_hit_at": None, "sl_hit_at": None,
+        "max_mfe_r": 1.0, "max_mae_r": 0.1, "bars_observed": 1,
+        "tp1_notice_sent": 1, "tp2_notice_sent": 0, "tp3_notice_sent": 0, "sl_notice_sent": 0,
+    }
+    updates = _a60_run_ledger_bar(row, [1900000, 100.3, 104.0, 100.1, 100.4, 1000.0], monkeypatch)
+    final = updates[-1][1]
+    notes = json.loads(final["notes"])
+    assert final["status"] == "SL_FINAL"
+    assert final["first_event"] == "TP1"
+    assert final["final_outcome"] == "SL_AFTER_TP1"
+    assert final["sl_hit_at"] == 1900.0
+    assert notes["paper_virtual_sl_price"] == 100.2
+    assert notes["paper_virtual_sl_reason"] == "LIVE_TP1_FEE_COVERED_BREAKEVEN_CONTRACT"
+    assert final.get("sl", row["sl"]) == 95.0, "original stop must remain available as the original risk anchor"
+
+
+def test_a60_same_bar_tp1_and_new_be_stop_is_marked_ambiguous(monkeypatch):
+    row = {
+        "alert_id": "A60-BE-AMBIG", "symbol": "A60AMBIG/USDT", "status": "IN_POSITION",
+        "alerted_at": 1000.0, "last_bar_ts": 1800000, "entry": 100.0, "sl": 95.0,
+        "risk_unit": 5.0, "tp1": 105.0, "tp2": 110.0, "tp3": 115.0,
+        "tp1_rr": 1.0, "tp2_rr": 2.0, "tp3_rr": 3.0,
+        "notes": json.dumps({"horizon_sec": 20000, "record_source": "SELECTED_ROUTE_PAPER", "paper_virtual_sl_price": 95.0}),
+        "entry_triggered_at": 1700.0, "first_event": None, "tp1_hit_at": None,
+        "tp2_hit_at": None, "tp3_hit_at": None, "sl_hit_at": None,
+        "max_mfe_r": 0.0, "max_mae_r": 0.0, "bars_observed": 0,
+        "tp1_notice_sent": 0, "tp2_notice_sent": 0, "tp3_notice_sent": 0, "sl_notice_sent": 0,
+    }
+    updates = _a60_run_ledger_bar(row, [1900000, 100.0, 106.0, 100.1, 101.0, 1000.0], monkeypatch)
+    final = updates[-1][1]
+    assert final["status"] == "AMBIGUOUS_FINAL"
+    assert final["first_event"] == "TP1"
+    assert final["final_outcome"] == "AMBIGUOUS_TP1_BE_SAME_BAR"
+    assert final["tp1_hit_at"] == 1900.0
+    assert final["sl_hit_at"] is None
+
+
+def test_a60_release_identity_and_shadow_only_contract():
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A60-CANONICAL-FINAL"
+    report = bot._v702_a60_self_test()
+    assert report["pass"] is True, report.get("failed")
+    assert report["live_authority"] is False
+    assert report["hard_gate_bypass"] is False
+    assert report["live_gates_relaxed"] is False
+    assert report["production_decision"] == "NO_GO_UNATTENDED_LIVE"
+
+
+def test_a60_shadow_missing_is_not_misreported_as_a_shadow_block():
+    key = "A60-CANDIDATE-KEY"
+    shadow, status, reason = bot._v702_a60_resolve_paper_shadow(
+        {}, key,
+        {
+            "candidate_key": key,
+            "candidate_rejection": {"stage": "scorer", "code": "score_below_threshold:60.9<70.0"},
+        },
+    )
+    assert status == "builder_returned_none"
+    assert shadow["eligible"] is False
+    assert shadow["not_reached"] is True
+    assert "not_reached:builder_returned_none:scorer:score_below_threshold" in reason
+
+    actual_block, status, _ = bot._v702_a60_resolve_paper_shadow(
+        {key: {"eligible": False, "reason": "liquidity.spread=0.36%"}}, key, {}
+    )
+    assert status == "shadow_evaluated"
+    assert actual_block.get("not_reached") is not True
+    assert actual_block["reason"] == "liquidity.spread=0.36%"

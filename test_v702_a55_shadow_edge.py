@@ -213,3 +213,41 @@ def test_a55_shadow_presend_excludes_forbidden_assets(monkeypatch):
     assert result["eligible"] is False
     assert result["reason"] == "forbidden_asset:test_blacklist"
     assert result["exchange_order_submitted"] is False
+
+
+def test_a60_edge_report_separates_exploratory_paper_from_eligible_edge(tmp_path, monkeypatch):
+    db = tmp_path / "a60-edge-separation.sqlite3"
+    monkeypatch.setitem(bot.CONFIG, "DB_PATH", str(db))
+    bot.KnowledgeOutcomeLedger.ensure_schema()
+    conn = sqlite3.connect(str(db))
+    for i in range(1, 7):
+        is_selected = i <= 3
+        eligible = i == 1
+        notes = {
+            "record_source": "SELECTED_ROUTE_PAPER" if is_selected else "DISCOVERY",
+            "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
+            "paper_edge_eligible": eligible,
+            "shadow_presend_eligible": eligible,
+            "market_live_eligible": eligible,
+            "round_trip_cost_r": 0.10,
+            "paper_virtual_sl_price": 100.02,
+        }
+        conn.execute("""INSERT INTO knowledge_outcomes
+            (alert_id,alerted_at,symbol,family,strategy_mode,strategy_style,timeframe_profile,
+             entry,sl,risk_unit,tp1,tp2,tp3,tp1_rr,tp2_rr,tp3_rr,status,first_event,final_outcome,
+             entry_triggered_at,created_at,updated_at,notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (f"a60-{i}", 1000.0+i, "A60TEST/USDT", "PULLBACK", "PULLBACK", "SCALP", "15M_5M",
+             100.0, 99.0, 1.0, 101.0, 102.0, 103.0, 1.0, 2.0, 3.0, "SL_FINAL", "SL", "SL",
+             1001.0+i, 1000.0+i, 1000.0+i, json.dumps(notes)))
+    conn.commit()
+    conn.close()
+
+    report = bot.KnowledgeOutcomeLedger._edge_report()
+    key = "PULLBACK|STYLE=SCALP|TF=15M_5M"
+    assert report["by_family_timeframe"][key]["alerts"] == 6  # legacy diagnostic includes all sources
+    assert report["paper_selected"]["alerts"] == 3
+    assert report["paper_selected_by_family_timeframe"][key]["alerts"] == 3
+    assert report["edge_eligible_paper_rows"] == 1
+    assert report["edge_eligible_paper"]["alerts"] == 1
+    assert report["edge_eligible_by_family_timeframe"][key]["alerts"] == 1

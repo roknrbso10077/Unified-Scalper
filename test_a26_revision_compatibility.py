@@ -31,7 +31,16 @@ def test_final_validator_integrates_historical_a49_chain_through_additive_a57_an
     # A57 is additive and must preserve the complete A56 -> A55/A54 -> A49/A48 chain.
     assert callable(bot.validate_config)
     source = inspect.getsource(bot.validate_config)
-    assert "_V702_A57_PREVIOUS_VALIDATE_CONFIG()" in source
+    assert "_V702_A60_PREVIOUS_VALIDATE_CONFIG()" in source
+    assert callable(bot._V702_A60_PREVIOUS_VALIDATE_CONFIG)
+    a59_source = inspect.getsource(bot._V702_A60_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A59_PREVIOUS_VALIDATE_CONFIG()" in a59_source
+    assert callable(bot._V702_A59_PREVIOUS_VALIDATE_CONFIG)
+    a58_source = inspect.getsource(bot._V702_A59_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A58_PREVIOUS_VALIDATE_CONFIG()" in a58_source
+    assert callable(bot._V702_A58_PREVIOUS_VALIDATE_CONFIG)
+    a57_source = inspect.getsource(bot._V702_A58_PREVIOUS_VALIDATE_CONFIG)
+    assert "_V702_A57_PREVIOUS_VALIDATE_CONFIG()" in a57_source
     assert callable(bot._V702_A57_PREVIOUS_VALIDATE_CONFIG)
     a56_source = inspect.getsource(bot._V702_A57_PREVIOUS_VALIDATE_CONFIG)
     assert "_V702_A56_PREVIOUS_VALIDATE_CONFIG()" in a56_source
