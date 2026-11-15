@@ -2393,3 +2393,15 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Default bounds: 240 symbols/cycle, 6 pattern alerts/scan, 10 alerts/minute, ranking floor 55/100, 3,600-second TTL and 1,200 active records. Ranking score is not a probability or profitability claim.
 - Added regression coverage for monotonic states, closed-bar-only triggers, invalid OHLC/duplicate timestamps, persistence/expiry, terminal-state handling, technical-to-canonical Prequal upgrade, synchronous Telegram ACK ordering, and alert reference/target disclosure.
 - Final local offline verification: `pytest -q` **505 passed, 1 skipped, 0 failed**; Hunter-focused regressions **8/8 PASS**; `py_compile`/`compileall` PASS on Python 3.13.5; `--validate-only` exit 0 with 23/23 A66/A67 source checks and no bot startup. The clean-source skip is the historical A51 log fixture not packaged. Live MEXC/Telegram delivery, Docker/Python 3.12 Linux image, Native Stop, live protection, and profitability remain unverified. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain in force.
+
+
+# V702 A68 — Closed-candle TP/SL outcome follow-up (2026-11-15)
+
+- Added restart-safe SQLite outcome state/event columns to the existing A67 Hunter table using additive migrations.
+- Follow persisted opportunities against the already-fetched, fully closed 5m candles; previously tracked symbols outside the discovery slice remain monitored when their current snapshot is present.
+- Record TP1/TP2/TP3 touches, stop hits including stops after prior targets, and expiry after partial targets. Same-candle target/stop ambiguity is conservatively classified stop-first.
+- Freeze each candidate's original Entry/SL/TP geometry and use stable per-signal keys to prevent duplicate merging or retroactive level changes.
+- Mark TP3-complete shadow ideas `COMPLETED` and remove them from active monitoring without deleting their outcome history.
+- Added focused regressions for event order, ambiguous candles, signal-candle exclusion, expiry, SQLite migration, geometry immutability, candidate identity and full scan integration.
+- Shadow outcome touches are not order fills, realized P&L or proof of profitability. Actual executed positions remain under the separate PositionManager; live MEXC/Telegram integration remains unverified.
+- No BUY authority, execution gates, strategy thresholds, risk limits or live-policy settings were relaxed. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain in force.

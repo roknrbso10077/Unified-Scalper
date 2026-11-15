@@ -653,6 +653,167 @@ def _make_hunter_frame(interval_sec: int, *, closed_count: int = 80, incomplete_
     return frame
 
 
+
+
+def _outcome_test_frame(now, *, bars=None):
+    period = 300
+    current_open = int(float(now) // period) * period
+    # Sixty completed bars plus the currently forming bar, which the canonical
+    # closed-frame validator must discard.
+    stamps = [current_open - (60 - i) * period for i in range(60)] + [current_open]
+    values = []
+    for _ in stamps:
+        values.append({"open": 100.0, "high": 100.2, "low": 99.5,
+                       "close": 100.0, "volume": 100.0})
+    for offset, candle in (bars or {}).items():
+        values[offset] = {**values[offset], **candle}
+    return pd.DataFrame(values, index=pd.to_datetime(stamps, unit="s", utc=True))
+
+
+def _outcome_test_row(created_at, *, expires_at=None):
+    return {
+        "opportunity_id": "outcome-test", "symbol": "AAA/USDT", "family": "TEST",
+        "pattern": "TEST_PATTERN", "status": "WATCH", "created_at": float(created_at),
+        "expires_at": float(expires_at if expires_at is not None else time.time() + 3600),
+        "entry_ref": 100.0, "sl_price": 99.0, "tp1": 101.0, "tp2": 102.0,
+        "tp3": 103.0, "outcome_status": "PENDING", "outcome_events": [],
+        "outcome_last_candle_ts": 0, "outcome_final": 0, "outcome_reason": "",
+    }
+
+
+def test_shadow_outcome_tracks_sequential_tp_targets_and_completes_at_tp3():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={
+        -4: {"high": 101.2, "close": 100.8},
+        -3: {"high": 102.2, "close": 101.8},
+        -2: {"high": 103.2, "close": 102.8},
+    })
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    assert closed is not None
+    first_target_open = int(pd.Timestamp(closed.index[-3]).timestamp())
+    row = _outcome_test_row(first_target_open - 1, expires_at=now + 600)
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    kinds = [e["kind"] for e in events]
+    assert kinds == ["SHADOW_TP1_TOUCHED", "SHADOW_TP2_TOUCHED", "SHADOW_TP3_TOUCHED"]
+    assert updates["outcome_status"] == "SHADOW_TP3_TOUCHED"
+    assert updates["outcome_final"] == 1
+    assert updates["outcome_last_candle_ts"] == int(pd.Timestamp(closed.index[-1]).timestamp())
+
+
+def test_shadow_outcome_uses_stop_first_when_one_closed_candle_touches_target_and_stop():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={-2: {"high": 101.5, "low": 98.5, "close": 100.2}})
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    first_target_open = int(pd.Timestamp(closed.index[-2]).timestamp())
+    row = _outcome_test_row(first_target_open - 1, expires_at=now + 600)
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert len(events) == 1
+    assert events[0]["kind"] == "SHADOW_STOP_AMBIGUOUS_STOP_FIRST"
+    assert events[0]["targets_also_touched"] == [1]
+    assert updates["outcome_status"] == "SHADOW_STOP_HIT"
+    assert updates["outcome_final"] == 1
+
+
+def test_shadow_outcome_skips_signal_candle_but_records_later_target_before_expiry():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={-3: {"high": 101.5, "close": 100.5}})
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    signal_open = int(pd.Timestamp(closed.index[-2]).timestamp())
+    # Candidate appeared during the signal candle: its own high is excluded.
+    row = _outcome_test_row(signal_open + 60, expires_at=now + 600)
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert events == []
+    assert updates["outcome_status"] == "SHADOW_OPEN"
+    assert updates["outcome_last_candle_ts"] == int(pd.Timestamp(closed.index[-1]).timestamp())
+
+    # A separate candidate whose first eligible closed candle touched TP1 is
+    # expired in the same evaluation; both its partial target and expiry stay.
+    target_open = int(pd.Timestamp(closed.index[-2]).timestamp())
+    expiring = _outcome_test_row(target_open - 1, expires_at=now - 1)
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(expiring, closed, now=now)
+    assert [e["kind"] for e in events] == ["SHADOW_TP1_TOUCHED", "SHADOW_EXPIRED_AFTER_TP1"]
+    assert updates["outcome_status"] == "SHADOW_EXPIRED_AFTER_TP1"
+    assert updates["outcome_final"] == 1
+
+
+def test_opportunity_upsert_keeps_candidate_geometry_immutable_and_separates_candidate_keys(tmp_path):
+    db_path = tmp_path / "hunter_geometry.sqlite3"
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db_path), "TELEGRAM_ENABLED": False}, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        first = {"candidate_key": "A|AAA/USDT|PULLBACK|1", "symbol": "AAA/USDT",
+                 "family": "PULLBACK", "pattern": "PULLBACK_RECLAIM", "status": "WATCH",
+                 "entry_ref": 100.0, "sl_price": 99.0, "tp1": 101.0, "tp2": 102.0, "tp3": 103.0}
+        row, created = bot.OpportunityHunter._upsert(first, notify=False)
+        assert created
+        changed = {**first, "entry_ref": 110.0, "sl_price": 108.0,
+                   "tp1": 112.0, "tp2": 114.0, "tp3": 116.0, "last_price": 111.0}
+        same, created_again = bot.OpportunityHunter._upsert(changed, notify=False)
+        assert not created_again
+        assert (same["entry_ref"], same["sl_price"], same["tp1"], same["tp2"], same["tp3"]) == (100.0, 99.0, 101.0, 102.0, 103.0)
+        other, other_created = bot.OpportunityHunter._upsert({**first, "candidate_key": "A|AAA/USDT|PULLBACK|2"}, notify=False)
+        assert other_created and other["opportunity_id"] != row["opportunity_id"]
+        assert len(bot.OpportunityHunter._active_rows(20)) >= 2
+
+
+def test_opportunity_scan_persists_tp3_completion_and_monitors_tracked_symbol_outside_discovery_cap(tmp_path, monkeypatch):
+    db_path = tmp_path / "hunter_tp3_scan.sqlite3"
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={
+        -4: {"high": 101.2, "close": 100.8},
+        -3: {"high": 102.2, "close": 101.8},
+        -2: {"high": 103.2, "close": 102.8},
+    })
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    first_open = int(pd.Timestamp(closed.index[-3]).timestamp())
+    monkeypatch.setattr(bot.OpportunityHunter, "_evaluate_snapshot", classmethod(lambda cls, *args, **kwargs: []))
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": False,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": False,
+        "V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE": 1,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        row, created = bot.OpportunityHunter._upsert({
+            "candidate_key": "scan-tp3|AAA/USDT|1", "symbol": "AAA/USDT",
+            "family": "TEST", "pattern": "TEST_PATTERN", "status": "WATCH",
+            "entry_ref": 100.0, "sl_price": 99.0, "tp1": 101.0, "tp2": 102.0,
+            "tp3": 103.0, "invalidation_price": 99.0, "last_price": 100.0,
+            "expires_at": now + 900,
+        }, notify=False)
+        assert created
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE opportunity_hunter SET created_at=? WHERE opportunity_id=?", (first_open - 1, row["opportunity_id"]))
+        conn.commit(); conn.close()
+        # AAA is after the one-symbol discovery slice, but is a persisted watch
+        # and must still get its closed-candle outcome follow-up.
+        summary = asyncio.run(bot.OpportunityHunter.scan_market_map({
+            "OTHER/USDT": {}, "AAA/USDT": {"df_5m": raw},
+        }))
+        saved = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert summary["scanned"] == 1
+        assert saved["status"] == "COMPLETED"
+        assert saved["outcome_status"] == "SHADOW_TP3_TOUCHED"
+        assert saved["outcome_final"] == 1
+        assert bot.OpportunityHunter._active_rows(50) == []
+        assert bot.OpportunityHunter.outcome_summary().get("SHADOW_TP3_TOUCHED") == 1
+
+
+def test_opportunity_outcome_schema_migrates_existing_database_in_place(tmp_path):
+    db_path = tmp_path / "hunter_legacy.sqlite3"
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE opportunity_hunter (opportunity_id TEXT PRIMARY KEY, candidate_key TEXT NOT NULL DEFAULT '', symbol TEXT NOT NULL, family TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL)")
+    conn.commit(); conn.close()
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db_path)}, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        bot.OpportunityHunter._ensure_schema()
+        conn = sqlite3.connect(db_path)
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunity_hunter)")}
+        conn.close()
+    assert {"outcome_status", "outcome_events_json", "outcome_last_candle_ts",
+            "outcome_final", "outcome_updated_at", "outcome_reason"}.issubset(columns)
+
+
 def test_opportunity_hunter_pipeline_states_are_monotonic_and_read_only(tmp_path):
     db_path = tmp_path / "hunter_states.sqlite3"
     with patch.dict(bot.CONFIG, {

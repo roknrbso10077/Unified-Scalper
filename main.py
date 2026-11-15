@@ -101624,6 +101624,7 @@ FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] = False
 # It has NO order-execution authority and never relaxes a gate.
 # =============================================================================
 V702_A67_HUNTER_REVISION = "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15"
+V702_A68_OUTCOME_REVISION = "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15"
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_ENABLE", True)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE", 240)
@@ -101656,7 +101657,7 @@ class OpportunityHunter:
     _schema_ready_paths = set()
     _ACTIVE = ("WATCH", "CONFIRMED", "TRADEABLE")
     _RANK = {"WATCH": 1, "CONFIRMED": 2, "TRADEABLE": 3,
-             "INVALIDATED": 4, "EXPIRED": 4}
+             "INVALIDATED": 4, "EXPIRED": 4, "COMPLETED": 4}
     execution_authority = False
     source_mode = "READ_ONLY_MARKET_SNAPSHOTS"
 
@@ -101714,9 +101715,25 @@ class OpportunityHunter:
                     updated_at REAL NOT NULL,
                     expires_at REAL NOT NULL
                 )""")
+                # A68: additive, restart-safe outcome tracking for A67 shadow
+                # opportunities. Migrate existing databases in place; never
+                # drop or rewrite historical rows.
+                _columns = {str(r[1]) for r in conn.execute("PRAGMA table_info(opportunity_hunter)").fetchall()}
+                _migrations = {
+                    "outcome_status": "TEXT NOT NULL DEFAULT 'PENDING'",
+                    "outcome_events_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "outcome_last_candle_ts": "INTEGER NOT NULL DEFAULT 0",
+                    "outcome_final": "INTEGER NOT NULL DEFAULT 0",
+                    "outcome_updated_at": "REAL NOT NULL DEFAULT 0",
+                    "outcome_reason": "TEXT NOT NULL DEFAULT ''",
+                }
+                for _column, _definition in _migrations.items():
+                    if _column not in _columns:
+                        conn.execute(f"ALTER TABLE opportunity_hunter ADD COLUMN {_column} {_definition}")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_active ON opportunity_hunter(status, updated_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_symbol_family ON opportunity_hunter(symbol, family, status)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_candidate_key ON opportunity_hunter(candidate_key)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_outcome ON opportunity_hunter(outcome_final, outcome_updated_at)")
                 conn.commit()
                 cls._schema_ready_paths.add(path)
             finally:
@@ -101764,6 +101781,12 @@ class OpportunityHunter:
         row["missing_conditions"] = cls._loads(row.pop("missing_json", "[]"), [])
         row["blockers"] = cls._loads(row.pop("blockers_json", "[]"), [])
         row["alerted_states"] = cls._loads(row.pop("alerted_states_json", "[]"), [])
+        row["outcome_events"] = cls._loads(row.pop("outcome_events_json", "[]"), [])
+        row.setdefault("outcome_status", "PENDING")
+        row.setdefault("outcome_last_candle_ts", 0)
+        row.setdefault("outcome_final", 0)
+        row.setdefault("outcome_updated_at", 0.0)
+        row.setdefault("outcome_reason", "")
         return row
 
     @classmethod
@@ -101798,7 +101821,7 @@ class OpportunityHunter:
                         "SELECT * FROM opportunity_hunter WHERE candidate_key=? ORDER BY updated_at DESC LIMIT 1",
                         (candidate_key,),
                     ).fetchone()
-                if raw is None:
+                else:
                     raw = cls._find_active(conn, symbol, family, pattern)
                 old = cls._row(raw)
                 if old:
@@ -101806,7 +101829,7 @@ class OpportunityHunter:
                     old_status = str(old.get("status") or "WATCH")
                     # Status may advance, but can never move backwards. Terminal
                     # states are never resurrected by stale discovery events.
-                    if old_status in ("INVALIDATED", "EXPIRED"):
+                    if old_status in ("INVALIDATED", "EXPIRED", "COMPLETED"):
                         conn.rollback()
                         return old, False
                     status = requested_status if cls._RANK.get(requested_status, 0) >= cls._RANK.get(old_status, 0) else old_status
@@ -101832,11 +101855,13 @@ class OpportunityHunter:
                         "score": max(float(old.get("score") or 0), float(item.get("score") or 0)),
                         "timeframe": str(item.get("timeframe") or old.get("timeframe") or "")[:32],
                         "candle_ts": max(int(old.get("candle_ts") or 0), int(item.get("candle_ts") or 0)),
-                        "entry_ref": item.get("entry_ref") if item.get("entry_ref") is not None else old.get("entry_ref"),
-                        "sl_price": item.get("sl_price") if item.get("sl_price") is not None else old.get("sl_price"),
-                        "tp1": item.get("tp1") if item.get("tp1") is not None else old.get("tp1"),
-                        "tp2": item.get("tp2") if item.get("tp2") is not None else old.get("tp2"),
-                        "tp3": item.get("tp3") if item.get("tp3") is not None else old.get("tp3"),
+                        # Keep each candidate's original geometry immutable;
+                        # otherwise repeated scans silently rewrite TP/SL history.
+                        "entry_ref": old.get("entry_ref") if old.get("entry_ref") is not None else item.get("entry_ref"),
+                        "sl_price": old.get("sl_price") if old.get("sl_price") is not None else item.get("sl_price"),
+                        "tp1": old.get("tp1") if old.get("tp1") is not None else item.get("tp1"),
+                        "tp2": old.get("tp2") if old.get("tp2") is not None else item.get("tp2"),
+                        "tp3": old.get("tp3") if old.get("tp3") is not None else item.get("tp3"),
                         "last_price": item.get("last_price") if item.get("last_price") is not None else old.get("last_price"),
                         "invalidation_price": item.get("invalidation_price") if item.get("invalidation_price") is not None else old.get("invalidation_price"),
                         "reason": reason, "confirmation_type": confirmation_type,
@@ -101847,6 +101872,12 @@ class OpportunityHunter:
                         "last_alert_delivery": old.get("last_alert_delivery") or "",
                         "last_alert_reason": old.get("last_alert_reason") or "",
                         "created_at": created_at, "updated_at": now, "expires_at": expires_at,
+                        "outcome_status": str(old.get("outcome_status") or "PENDING"),
+                        "outcome_events_json": json.dumps(cls._json_value(old.get("outcome_events") or []), ensure_ascii=False, separators=(",", ":")),
+                        "outcome_last_candle_ts": int(old.get("outcome_last_candle_ts") or 0),
+                        "outcome_final": int(bool(old.get("outcome_final", 0))),
+                        "outcome_updated_at": float(old.get("outcome_updated_at") or 0.0),
+                        "outcome_reason": str(old.get("outcome_reason") or "")[:300],
                     }
                 else:
                     seed = candidate_key or f"{symbol}|{family}|{pattern}|{int(item.get('candle_ts') or now)}"
@@ -101878,13 +101909,17 @@ class OpportunityHunter:
                         "blockers_json": json.dumps(cls._json_value(blockers), ensure_ascii=False),
                         "alerted_states_json": "[]", "last_alert_delivery": "", "last_alert_reason": "",
                         "created_at": now, "updated_at": now, "expires_at": expires_at,
+                        "outcome_status": "PENDING", "outcome_events_json": "[]",
+                        "outcome_last_candle_ts": 0, "outcome_final": 0,
+                        "outcome_updated_at": 0.0, "outcome_reason": "",
                     }
                 conn.execute("""INSERT INTO opportunity_hunter (
                     opportunity_id,candidate_key,symbol,family,pattern,engine_id,source,status,score,timeframe,candle_ts,
                     entry_ref,sl_price,tp1,tp2,tp3,last_price,invalidation_price,reason,confirmation_type,
                     evidence_json,missing_json,blockers_json,alerted_states_json,last_alert_delivery,last_alert_reason,
-                    created_at,updated_at,expires_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    created_at,updated_at,expires_at,outcome_status,outcome_events_json,outcome_last_candle_ts,
+                    outcome_final,outcome_updated_at,outcome_reason
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(opportunity_id) DO UPDATE SET
                     candidate_key=excluded.candidate_key,engine_id=excluded.engine_id,source=excluded.source,
                     status=excluded.status,score=excluded.score,timeframe=excluded.timeframe,candle_ts=excluded.candle_ts,
@@ -101893,13 +101928,18 @@ class OpportunityHunter:
                     confirmation_type=excluded.confirmation_type,evidence_json=excluded.evidence_json,missing_json=excluded.missing_json,
                     blockers_json=excluded.blockers_json,alerted_states_json=excluded.alerted_states_json,
                     last_alert_delivery=excluded.last_alert_delivery,last_alert_reason=excluded.last_alert_reason,
+                    outcome_status=excluded.outcome_status,outcome_events_json=excluded.outcome_events_json,
+                    outcome_last_candle_ts=excluded.outcome_last_candle_ts,outcome_final=excluded.outcome_final,
+                    outcome_updated_at=excluded.outcome_updated_at,outcome_reason=excluded.outcome_reason,
                     updated_at=excluded.updated_at,expires_at=excluded.expires_at""",
                     (opp_id, candidate_key, symbol, family, pattern, vals["engine_id"], vals["source"], vals["status"],
                      vals["score"], vals["timeframe"], vals["candle_ts"], vals["entry_ref"], vals["sl_price"],
                      vals["tp1"], vals["tp2"], vals["tp3"], vals["last_price"], vals["invalidation_price"],
                      vals["reason"], vals["confirmation_type"], vals["evidence_json"], vals["missing_json"],
                      vals["blockers_json"], vals["alerted_states_json"], vals["last_alert_delivery"],
-                     vals["last_alert_reason"], vals["created_at"], vals["updated_at"], vals["expires_at"]))
+                     vals["last_alert_reason"], vals["created_at"], vals["updated_at"], vals["expires_at"],
+                     vals["outcome_status"], vals["outcome_events_json"], vals["outcome_last_candle_ts"],
+                     vals["outcome_final"], vals["outcome_updated_at"], vals["outcome_reason"]))
                 raw2 = conn.execute("SELECT * FROM opportunity_hunter WHERE opportunity_id=?", (opp_id,)).fetchone()
                 conn.commit()
                 result = cls._row(raw2)
@@ -101944,7 +101984,9 @@ class OpportunityHunter:
             return None
         allowed = {"status", "score", "last_price", "invalidation_price", "reason", "confirmation_type",
                    "evidence_json", "missing_json", "blockers_json", "alerted_states_json",
-                   "last_alert_delivery", "last_alert_reason", "updated_at", "expires_at"}
+                   "last_alert_delivery", "last_alert_reason", "updated_at", "expires_at",
+                   "outcome_status", "outcome_events_json", "outcome_last_candle_ts", "outcome_final",
+                   "outcome_updated_at", "outcome_reason"}
         values = {k: v for k, v in updates.items() if k in allowed}
         values["updated_at"] = float(WALL_NOW())
         if not values:
@@ -102260,8 +102302,12 @@ class OpportunityHunter:
         safe_invalidation = min(float(invalidation), float(price) * 0.999)
         safe_invalidation = max(0.00000001, safe_invalidation)
         risk = max(float(price) - safe_invalidation, float(price) * 0.001)
+        _symbol = str(symbol).upper()
+        _pattern = str(pattern).upper()
+        _candidate_key = f"A67|{_symbol}|{_pattern}|{int(candle_ts)}"
         return {
-            "symbol": str(symbol).upper(), "family": str(family).upper(), "pattern": str(pattern).upper(),
+            "candidate_key": _candidate_key,
+            "symbol": _symbol, "family": str(family).upper(), "pattern": _pattern,
             "source": "READ_ONLY_MARKET_PATTERN", "status": str(status), "score": max(0.0, min(100.0, float(score))),
             "timeframe": str(timeframe), "candle_ts": int(candle_ts), "entry_ref": float(price),
             "sl_price": safe_invalidation, "tp1": float(price) + risk,
@@ -102286,9 +102332,146 @@ class OpportunityHunter:
                 conn.close()
 
     @classmethod
+    def _advance_shadow_outcome(cls, row, frame, *, now=None):
+        """Advance hypothetical TP/SL using closed 5m OHLC; never asserts fills.
+
+        If one candle touches both a stop and a target, the stop wins because
+        OHLC cannot prove the intrabar ordering (conservative ambiguity rule).
+        """
+        if not isinstance(row, dict) or not isinstance(frame, pd.DataFrame) or frame.empty:
+            return {}, []
+        if bool(row.get("outcome_final", 0)):
+            return {}, []
+        entry = cls._safe_float(row.get("entry_ref"))
+        stop = cls._safe_float(row.get("sl_price"))
+        targets = [cls._safe_float(row.get(k)) for k in ("tp1", "tp2", "tp3")]
+        if (entry is None or stop is None or entry <= 0 or stop <= 0 or stop >= entry
+                or any(x is None or x <= entry for x in targets)
+                or not (targets[0] < targets[1] < targets[2])):
+            STATS["v702_opportunity_hunter_outcome_invalid_geometry"] = int(
+                STATS.get("v702_opportunity_hunter_outcome_invalid_geometry", 0) or 0) + 1
+            return {}, []
+        try:
+            now_s = float(WALL_NOW() if now is None else now)
+            created_at = float(row.get("created_at") or row.get("candle_ts") or now_s)
+            # Skip the signal candle and any candle already in progress when
+            # the setup was observed, avoiding retroactive outcome claims.
+            first_open = int(math.ceil(created_at / 300.0) * 300)
+            last_open = int(row.get("outcome_last_candle_ts") or 0)
+        except Exception:
+            return {}, []
+        events = list(row.get("outcome_events") or [])[-50:]
+        already_hit = {str(e.get("kind", "")).upper() for e in events if isinstance(e, dict)}
+        prior_target = max((n for n in (1, 2, 3) if f"SHADOW_TP{n}_TOUCHED" in already_hit), default=0)
+        outcome_status = str(row.get("outcome_status") or "PENDING")
+        outcome_reason = str(row.get("outcome_reason") or "")
+        new_events = []
+        new_last_open = last_open
+        try:
+            for idx, bar in frame.iterrows():
+                open_ts = int(pd.Timestamp(idx).timestamp())
+                if open_ts < first_open or open_ts <= new_last_open:
+                    continue
+                try:
+                    high = float(bar["high"]); low = float(bar["low"])
+                    close = float(bar["close"]); opn = float(bar["open"])
+                    if (not all(math.isfinite(x) and x > 0 for x in (high, low, close, opn))
+                            or high < max(opn, close) or low > min(opn, close) or low > high):
+                        STATS["v702_opportunity_hunter_outcome_bad_bars"] = int(
+                            STATS.get("v702_opportunity_hunter_outcome_bad_bars", 0) or 0) + 1
+                        continue
+                except Exception:
+                    continue
+                new_last_open = open_ts
+                stop_touched = low <= stop
+                next_targets = [n for n, target in enumerate(targets, start=1)
+                                if n > prior_target and high >= float(target)]
+                if stop_touched:
+                    ambiguous = bool(next_targets)
+                    if prior_target >= 2:
+                        final_status = "SHADOW_STOP_AFTER_TP2"
+                    elif prior_target == 1:
+                        final_status = "SHADOW_STOP_AFTER_TP1"
+                    else:
+                        final_status = "SHADOW_STOP_HIT"
+                    kind = "SHADOW_STOP_AMBIGUOUS_STOP_FIRST" if ambiguous else final_status
+                    event = {"kind": kind, "candle_open_ts": open_ts,
+                             "candle_close_ts": open_ts + 300, "reference_price": float(stop),
+                             "ambiguous_same_candle_target": bool(ambiguous),
+                             "targets_also_touched": next_targets}
+                    events.append(event); new_events.append(event)
+                    outcome_status = final_status
+                    outcome_reason = ("شمعة 5m لمست الوقف والهدف معًا؛ تم اعتماد الوقف أولًا تحفظيًا." if ambiguous
+                                      else "شمعة 5m مغلقة لمست مستوى وقف السيناريو المرجعي.")
+                    break
+                for n in next_targets:
+                    kind = f"SHADOW_TP{n}_TOUCHED"
+                    event = {"kind": kind, "candle_open_ts": open_ts,
+                             "candle_close_ts": open_ts + 300,
+                             "reference_price": float(targets[n - 1]),
+                             "ambiguous_same_candle_target": False}
+                    if kind not in already_hit:
+                        events.append(event); new_events.append(event); already_hit.add(kind)
+                    prior_target = max(prior_target, n)
+                    outcome_status = kind
+                    outcome_reason = f"شمعة 5m مغلقة لمست الهدف المرجعي TP{n}؛ لا يعني ذلك تعبئة فعلية أو صافي ربح."
+                    if n == 3:
+                        break
+                if prior_target >= 3:
+                    break
+        except Exception as exc:
+            STATS["v702_opportunity_hunter_outcome_errors"] = int(
+                STATS.get("v702_opportunity_hunter_outcome_errors", 0) or 0) + 1
+            logger.debug("[OPPORTUNITY-HUNTER] outcome evaluation suppressed: %s:%s",
+                         type(exc).__name__, str(exc)[:120])
+            return {}, []
+        final = outcome_status in ("SHADOW_STOP_HIT", "SHADOW_STOP_AFTER_TP1",
+                                   "SHADOW_STOP_AFTER_TP2", "SHADOW_TP3_TOUCHED")
+        if not final and now_s >= float(row.get("expires_at") or 0.0):
+            suffix = f"_AFTER_TP{prior_target}" if prior_target else "_WITHOUT_TARGET"
+            outcome_status = "SHADOW_EXPIRED" + suffix
+            outcome_reason = "انتهت مدة متابعة الفرضية دون هدف نهائي؛ النتائج السابقة محفوظة كما هي."
+            final = True
+            event = {"kind": outcome_status, "candle_open_ts": int(now_s // 300) * 300,
+                     "candle_close_ts": int(now_s), "reference_price": None,
+                     "ambiguous_same_candle_target": False}
+            events.append(event); new_events.append(event)
+        if new_last_open == last_open and not new_events:
+            return {}, []
+        updates = {
+            "outcome_status": outcome_status if outcome_status != "PENDING" else "SHADOW_OPEN",
+            "outcome_events_json": json.dumps(cls._json_value(events[-50:]), ensure_ascii=False, separators=(",", ":")),
+            "outcome_last_candle_ts": int(new_last_open),
+            "outcome_final": int(bool(final)),
+            "outcome_updated_at": float(now_s),
+            "outcome_reason": str(outcome_reason or "")[:300],
+        }
+        return updates, new_events
+
+    @classmethod
+    def outcome_summary(cls):
+        """Return durable counts for observed shadow-reference TP/SL outcomes."""
+        try:
+            with cls._DB_LOCK:
+                cls._ensure_schema()
+                conn = cls._connect()
+                try:
+                    rows = conn.execute(
+                        "SELECT outcome_status, COUNT(*) AS n FROM opportunity_hunter "
+                        "GROUP BY outcome_status ORDER BY outcome_status"
+                    ).fetchall()
+                    return {str(r[0] or "PENDING"): int(r[1] or 0) for r in rows}
+                finally:
+                    conn.close()
+        except Exception:
+            STATS["v702_opportunity_hunter_outcome_summary_errors"] = int(
+                STATS.get("v702_opportunity_hunter_outcome_summary_errors", 0) or 0) + 1
+            return {}
+
+    @classmethod
     def _queue_alert(cls, row, state, variant=""):
         state = str(state or "").upper()
-        if state not in ("WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"):
+        if state not in ("WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED", "OUTCOME"):
             return False
         if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)) or not bool(CONFIG.get("TELEGRAM_ENABLED", True)):
             return False
@@ -102382,6 +102565,17 @@ class OpportunityHunter:
             lines += ["<b>عوائق مرصودة</b>"] + [f"• {esc(x)}" for x in blockers]
         if state in ("INVALIDATED", "EXPIRED"):
             lines.append("تم إغلاق متابعة هذه الفرصة؛ لا تستخدم التنبيه القديم كإشارة دخول.")
+        outcome_status = str(row.get("outcome_status") or "PENDING")
+        if outcome_status not in ("", "PENDING", "SHADOW_OPEN"):
+            lines += [f"<b>نتيجة المتابعة المرجعية: {esc(outcome_status)}</b>"]
+            if row.get("outcome_reason"):
+                lines.append(esc(row.get("outcome_reason")))
+            lines.append("هذه ملامسة سعرية على شموع مغلقة لفرصة مراقبة؛ ليست صفقة منفذة ولا تأكيد تعبئة أو ربح صافٍ.")
+            _outcome_events = list(row.get("outcome_events") or [])[-4:]
+            if _outcome_events:
+                _event_labels = [str(e.get("kind") or "") for e in _outcome_events if isinstance(e, dict)]
+                if _event_labels:
+                    lines.append("تسلسل الأحداث: " + " → ".join(esc(x) for x in _event_labels))
         lines += ["", "<b>MONITOR ONLY — لا يوجد BUY آلي.</b>", f"ID: <code>{opp_id}</code>"]
         return "\n".join(lines)
 
@@ -102461,24 +102655,63 @@ class OpportunityHunter:
                 errors += 1
                 STATS["v702_opportunity_hunter_symbol_errors"] = int(STATS.get("v702_opportunity_hunter_symbol_errors", 0) or 0) + 1
                 logger.debug("[OPPORTUNITY-HUNTER] symbol=%s suppressed: %s:%s", symbol, type(exc).__name__, str(exc)[:120])
-        # Monitor persisted active ideas even when their symbol did not generate
-        # a fresh setup in this cycle. No extra API call is made.
+        # Monitor persisted ideas from the existing snapshots. Cache each
+        # validated 5m frame once per symbol; no additional exchange requests.
+        # Discovery remains capped, but an already-tracked symbol outside the
+        # discovery slice still receives follow-up whenever its snapshot exists.
+        _monitor_rows = cls._active_rows(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200))
+        _monitor_symbols = {str(r.get("symbol") or "").upper() for r in _monitor_rows}
         latest_prices = {}
-        for symbol, md in list(market_data_map.items())[:max_symbols]:
+        closed_frames = {}
+        for _idx, (symbol, md) in enumerate(market_data_map.items()):
+            _sym = str(symbol).upper()
+            if _idx >= max_symbols and _sym not in _monitor_symbols:
+                continue
             f5, _ts = cls._closed_frame((md or {}).get("df_5m") if isinstance(md, dict) else None, 300, now=now)
             if f5 is not None and len(f5):
-                latest_prices[str(symbol).upper()] = float(f5["close"].iloc[-1])
-        for row in cls._active_rows(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200)):
+                closed_frames[_sym] = f5
+                latest_prices[_sym] = float(f5["close"].iloc[-1])
+        outcome_events_count = 0
+        outcome_updated_count = 0
+        for row in _monitor_rows:
             try:
                 symbol = str(row.get("symbol") or "").upper()
                 price = latest_prices.get(symbol)
-                updates = {}
-                if price is not None:
-                    updates["last_price"] = price
+                updates = {"last_price": price} if price is not None else {}
+                frame = closed_frames.get(symbol)
+                _outcome_updates, _new_outcome_events = cls._advance_shadow_outcome(row, frame, now=now) if frame is not None else ({}, [])
+                if _outcome_updates:
+                    updates.update(_outcome_updates)
+                    outcome_updated_count += 1
+                    outcome_events_count += len(_new_outcome_events)
+                    _new_kinds = {str(e.get("kind") or "") for e in _new_outcome_events}
+                    if any(kind.startswith("SHADOW_STOP") for kind in _new_kinds):
+                        updates["status"] = "INVALIDATED"
+                        updates["reason"] = "لامست شمعة 5m مغلقة وقف السيناريو المرجعي؛ لا يعني ذلك تنفيذ أمر وقف فعلي."
+                    elif "SHADOW_TP3_TOUCHED" in _new_kinds:
+                        # TP3 completes a shadow scenario; remove it from the
+                        # active monitoring queue while retaining its outcome.
+                        updates["status"] = "COMPLETED"
+                        updates["reason"] = "اكتملت متابعة السيناريو المرجعي بوصول شمعة 5m مغلقة إلى TP3؛ ليست تعبئة أو ربحًا فعليًا."
                 if now >= float(row.get("expires_at") or 0):
-                    updates["status"] = "EXPIRED"
-                    updates["reason"] = "انتهت نافذة صلاحية setup دون تحقق شرط استمرار صالح."
-                elif price is not None:
+                    if not bool(updates.get("outcome_final", row.get("outcome_final", 0))):
+                        _events = list(row.get("outcome_events") or [])[-49:]
+                        _prior = max((n for n in (1, 2) if any(
+                            isinstance(e, dict) and e.get("kind") == f"SHADOW_TP{n}_TOUCHED" for e in _events)), default=0)
+                        _suffix = f"_AFTER_TP{_prior}" if _prior else "_WITHOUT_TARGET"
+                        _expiry_kind = "SHADOW_EXPIRED" + _suffix
+                        _events.append({"kind": _expiry_kind, "candle_open_ts": int(now // 300) * 300,
+                                        "candle_close_ts": int(now), "reference_price": None,
+                                        "ambiguous_same_candle_target": False})
+                        updates.update({"outcome_status": _expiry_kind,
+                                        "outcome_events_json": json.dumps(cls._json_value(_events), ensure_ascii=False, separators=(",", ":")),
+                                        "outcome_final": 1, "outcome_updated_at": now,
+                                        "outcome_reason": "انتهت مدة المتابعة دون هدف نهائي؛ النتائج السابقة محفوظة كما هي."})
+                        outcome_events_count += 1
+                    if updates.get("status") not in ("INVALIDATED", "COMPLETED"):
+                        updates["status"] = "EXPIRED"
+                        updates["reason"] = "انتهت نافذة صلاحية setup دون تحقق استمرار صالح."
+                elif price is not None and updates.get("status") != "INVALIDATED":
                     invalid = cls._safe_float(row.get("invalidation_price"))
                     if invalid is not None and price <= invalid:
                         updates["status"] = "INVALIDATED"
@@ -102487,15 +102720,21 @@ class OpportunityHunter:
                     updated = cls._update_row(row.get("opportunity_id"), updates)
                     if updated and updated.get("status") in ("INVALIDATED", "EXPIRED") and updated.get("status") != row.get("status"):
                         cls._queue_alert(updated, updated.get("status"))
-                    elif updated and updated.get("status") in cls._ACTIVE:
-                        # Refreshing last_price is not a new opportunity event.
-                        pass
-            except Exception:
+                    elif updated and _new_outcome_events:
+                        _last_event = _new_outcome_events[-1]
+                        if not str(_last_event.get("kind") or "").startswith("SHADOW_STOP"):
+                            cls._queue_alert(updated, "OUTCOME", str(_last_event.get("kind") or "UPDATE"))
+            except Exception as exc:
                 errors += 1
+                STATS["v702_opportunity_hunter_monitor_errors"] = int(STATS.get("v702_opportunity_hunter_monitor_errors", 0) or 0) + 1
+                logger.debug("[OPPORTUNITY-HUNTER] monitor row suppressed: %s:%s", type(exc).__name__, str(exc)[:120])
         active = cls._active_rows(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200))
         counts = {state: sum(1 for r in active if r.get("status") == state) for state in cls._ACTIVE}
         summary = {"status": "OK", "scanned": scanned, "created": created, "confirmed_seen": confirmed,
-                   "active": counts, "alerts_queued_this_scan": queued_this_scan, "errors": errors, "elapsed_sec": round(float(MONO_NOW()) - started, 3),
+                   "active": counts, "alerts_queued_this_scan": queued_this_scan, "errors": errors,
+                   "outcome_rows_updated": outcome_updated_count, "outcome_events": outcome_events_count,
+                   "outcome_summary": cls.outcome_summary(),
+                   "elapsed_sec": round(float(MONO_NOW()) - started, 3),
                    "ts": now, "source": "EXISTING_MARKET_DATA_MAP_ONLY", "execution_authority": False}
         STATS["v702_opportunity_hunter_last_scan"] = summary
         STATS["v702_opportunity_hunter_active"] = counts
@@ -102508,8 +102747,9 @@ class OpportunityHunter:
     def snapshot(cls, limit=50):
         rows = cls._active_rows(max(1, min(int(limit), 500)))
         return [{k: r.get(k) for k in ("opportunity_id", "symbol", "family", "pattern", "source", "status", "score",
-                "timeframe", "candle_ts", "entry_ref", "last_price", "invalidation_price", "reason",
-                "confirmation_type", "missing_conditions", "blockers", "last_alert_delivery", "created_at", "expires_at")}
+                "timeframe", "candle_ts", "entry_ref", "sl_price", "tp1", "tp2", "tp3", "last_price", "invalidation_price", "reason",
+                "confirmation_type", "missing_conditions", "blockers", "last_alert_delivery", "created_at", "expires_at",
+                "outcome_status", "outcome_events", "outcome_last_candle_ts", "outcome_final", "outcome_reason")}
                 for r in rows]
 
     @classmethod
@@ -102518,9 +102758,11 @@ class OpportunityHunter:
         return {
             "execution_authority_disabled": cls.execution_authority is False,
             "states_are_monotonic": cls._RANK["WATCH"] < cls._RANK["CONFIRMED"] < cls._RANK["TRADEABLE"],
-            "terminal_states_rank_last": cls._RANK["INVALIDATED"] > cls._RANK["TRADEABLE"] and cls._RANK["EXPIRED"] > cls._RANK["TRADEABLE"],
+            "terminal_states_rank_last": all(cls._RANK[state] > cls._RANK["TRADEABLE"] for state in ("INVALIDATED", "EXPIRED", "COMPLETED")),
             "closed_candle_contract_present": callable(cls._closed_frame) and callable(cls._evaluate_snapshot),
             "sqlite_persistence_present": callable(cls._ensure_schema) and callable(cls._upsert),
+            "shadow_tp_sl_outcome_tracking_present": callable(cls._advance_shadow_outcome) and callable(cls.outcome_summary),
+            "same_candle_stop_first_contract": "intrabar ordering" in getattr(cls._advance_shadow_outcome, "__doc__", ""),
             "no_live_policy_relaxation": str(CONFIG.get("LIVE_ENTRY_POLICY", "MONITOR_ONLY_NO_NEW_BUYS")) == "MONITOR_ONLY_NO_NEW_BUYS"
                 or str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")) == "MONITOR_ONLY_NO_NEW_BUYS",
         }
@@ -102560,20 +102802,25 @@ def _v702_hunter_pipeline_record(cls, stage, candidate_key, symbol="", family=""
 V702PipelineMetrics.record = classmethod(_v702_hunter_pipeline_record)
 
 FINAL_CANONICAL_RUNTIME.update({
+    "opportunity_outcome_tracking_revision": V702_A68_OUTCOME_REVISION,
+    "opportunity_outcome_tracking_enabled": True,
+    "opportunity_outcome_mode": "SHADOW_REFERENCE_CLOSED_5M_OHLC",
+    "opportunity_outcome_same_candle_policy": "STOP_FIRST_CONSERVATIVE",
     "opportunity_hunter_enabled": True,
     "opportunity_hunter_revision": V702_A67_HUNTER_REVISION,
     "opportunity_hunter_mode": "READ_ONLY_OPPORTUNITY_DISCOVERY",
-    "opportunity_hunter_states": ["WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"],
+    "opportunity_hunter_states": ["WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED", "COMPLETED"],
     "opportunity_hunter_execution_authority": False,
     "opportunity_hunter_uses_existing_market_snapshots_only": True,
     "opportunity_hunter_tradeable_semantics": "PRESEND_PASS_ONLY_NOT_ORDER_OR_FILL",
 })
-V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A67_HUNTER_REVISION
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A67_HUNTER_REVISION + "-" + V702_A68_OUTCOME_REVISION
 FINAL_CANONICAL_RUNTIME["package_audit_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["package_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["active_package_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["canonical_runtime_revision"] = V702_PACKAGE_AUDIT_REVISION
 STATS["v702_opportunity_hunter_revision"] = V702_A67_HUNTER_REVISION
+STATS["v702_opportunity_outcome_revision"] = V702_A68_OUTCOME_REVISION
 
 
 def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
@@ -102699,7 +102946,7 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
             and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
             and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
             and set(FINAL_CANONICAL_RUNTIME.get("opportunity_hunter_states", [])) ==
-                {"WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"}
+                {"WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED", "COMPLETED"}
         )
         failed = [k for k, v in checks.items() if not bool(v)]
         return {"pass": not failed, "checks": checks, "failed": failed,

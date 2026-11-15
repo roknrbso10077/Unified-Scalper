@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 OPPORTUNITY HUNTER
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only feature closure)  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up)  
 **Release date:** 2026-11-15  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
@@ -29,6 +29,7 @@ A67 adds an independent opportunity-discovery and follow-up layer without changi
 - **CONFIRMED:** either a named technical trigger from closed candles (explicitly labelled *technical-only*, not Prequal) or a canonical `PREQUAL_PASS` / `SCORE_PASS` event.
 - **TRADEABLE:** emitted only after canonical `PRESEND_PASS`. This means the candidate passed the existing pre-send checks; it does **not** mean an order was sent, accepted, or filled.
 - **INVALIDATED / EXPIRED:** the stored thesis is closed when a closed price crosses its invalidation level or its bounded lifetime expires.
+- **COMPLETED:** A68 has recorded a final TP3 touch in the shadow-reference ledger; this is not an executed trade or realized profit.
 
 States move forward only. Terminal rows are not resurrected by stale candidate events. Records persist in the SQLite `opportunity_hunter` table. Telegram state alerts are rate-limited and include analytical entry reference, invalidation level and scenario TP1/TP2/TP3 levels (not executable orders or guaranteed targets), with delivery status callbacks; they never grant execution authority.
 
@@ -39,6 +40,25 @@ The bounded closed-candle scanner evaluates **BREAKOUT_CONTINUATION**, **PULLBAC
 Default resource limits: 240 symbols per cycle, 6 new pattern alerts per scan, 10 alerts per minute, 55/100 internal ranking floor, 3,600-second opportunity TTL, and 1,200 active records. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
 
 The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
+
+## A68 — Closed-candle TP/SL outcome follow-up
+
+A68 closes the missing outcome leg in A67. Every persisted active Hunter idea is now re-evaluated against the **already available closed 5-minute OHLC candles** for its symbol. Discovery remains capped at 240 symbols by default, but previously tracked symbols outside that discovery slice are still followed whenever their market snapshot is present in the current `market_data_map`. No extra exchange request is made for the outcome monitor.
+
+### Recorded shadow outcomes
+
+- `SHADOW_TP1_TOUCHED`, `SHADOW_TP2_TOUCHED`, `SHADOW_TP3_TOUCHED`: a fully closed 5m candle's high reached the fixed reference target.
+- `SHADOW_STOP_HIT`, `SHADOW_STOP_AFTER_TP1`, `SHADOW_STOP_AFTER_TP2`: a fully closed 5m candle's low reached the fixed reference stop after the indicated target history.
+- `SHADOW_EXPIRED_WITHOUT_TARGET`, `SHADOW_EXPIRED_AFTER_TP1`, `SHADOW_EXPIRED_AFTER_TP2`: the idea expired before the next terminal event.
+- `COMPLETED`: terminal lifecycle state when TP3 is reached. `INVALIDATED` remains the terminal state for the reference stop; `EXPIRED` remains time-based expiry.
+
+Only candles that opened after the opportunity was recorded are eligible. The signal candle and any candle already in progress at observation time are skipped. If one 5m candle touches both stop and a target, the event is labelled ambiguous and the stop is counted first; OHLC data cannot prove which level traded first. Target/stop geometry is frozen when a candidate is first persisted so later scans cannot silently rewrite its historical levels. Schema changes are additive SQLite migrations; existing opportunity rows are retained.
+
+The SQLite `opportunity_hunter` row stores outcome state, bounded event history, last processed closed candle, finality and reason. The scan summary exposes `outcome_summary`, update counts and event counts, and Telegram outcome alerts show the event sequence. The message explicitly says a shadow price touch is **not** a real exchange fill, an order execution or net profit.
+
+### Executed positions are a separate ledger
+
+Actual positions already inside the canonical execution path continue to be handled by `PositionManager` and its protection/reconciliation paths, including TP1/TP2 exit handling and SL/exit finalization. A68 does not replace or mutate that order manager. The A68 shadow result must never be substituted for a real position's fill, fee, realized P&L or stop order state. Live MEXC protection and Telegram delivery remain unverified until tested on the target account/service.
 
 ## A66 startup-safety closure
 
