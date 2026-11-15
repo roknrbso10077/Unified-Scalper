@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up)  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures)  
 **Release date:** 2026-11-15  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
@@ -37,13 +37,13 @@ States move forward only. Terminal rows are not resurrected by stale candidate e
 
 The bounded closed-candle scanner evaluates **BREAKOUT_CONTINUATION**, **PULLBACK_RECLAIM**, **MEAN_REVERSION**, and **RELATIVE_STRENGTH_LEADER**. It uses closed 5m/15m bars, validates OHLC relationships, rejects duplicate timestamps and stale/short history, and compares relative strength with BTC when the BTC 15m snapshot is present. The layer also observes genuine long Spot USDT candidates emitted by the existing strategy engines; it does not fabricate engine invocations or change their scoring.
 
-Default resource limits: 240 symbols per cycle, 6 new pattern alerts per scan, 10 alerts per minute, 55/100 internal ranking floor, 3,600-second opportunity TTL, and 1,200 active records. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
+Default resource limits: a configured ceiling of 240 symbols per cycle, 6 new pattern alerts per scan, and a hard maximum of 3 alerts per minute; the internal ranking floor remains 55/100, opportunity TTL 3,600 seconds, and active-record cap 1,200. **240 is not the actual scan count:** the Hunter reads only keys already present in `market_data_map`. That map is bounded upstream by the existing deep-scan selection (V699 targets normal=130, elevated=150, starving=170 when that arbiter is active; actual coverage can be lower when snapshots fail validation). No additional exchange request is made for Hunter discovery. Delivery callbacks are preserved on the direct dispatcher path, so the 3/minute hard cap is enforced locally rather than sacrificing ACK/failure handling. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
 
 The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
 
 ## A68 — Closed-candle TP/SL outcome follow-up
 
-A68 closes the missing outcome leg in A67. Every persisted active Hunter idea is now re-evaluated against the **already available closed 5-minute OHLC candles** for its symbol. Discovery remains capped at 240 symbols by default, but previously tracked symbols outside that discovery slice are still followed whenever their market snapshot is present in the current `market_data_map`. No extra exchange request is made for the outcome monitor.
+A68 closes the missing outcome leg in A67. Every persisted active Hunter idea is now re-evaluated against the **already available closed 5-minute OHLC candles** for its symbol. The configured discovery ceiling is 240, but actual discovery remains bounded by the already-populated `market_data_map` and its upstream deep-scan target. Previously tracked symbols outside the discovery slice are still followed whenever their market snapshot is present in the current `market_data_map`. No extra exchange request is made for the outcome monitor.
 
 ### Recorded shadow outcomes
 
@@ -155,3 +155,14 @@ sha256sum -c A66_SHA256SUMS.txt
 ## Production decision
 
 **NO_GO_UNATTENDED_LIVE** remains the only supported decision. A65's Adaptive RS results remain Shadow observations, not an edge certification. A66 audit closure additionally separates full-close TP1 economics from the actually sold TP1 fraction, binds Edge evidence to the current economic-model fingerprint and Benjamini–Hochberg FDR result, and rejects unverified candle gaps rather than assigning invented outcomes. Before considering a supervised pilot, correct and verify the deployed MEXC API credentials, collect real timestamped costs and execution observations, run a production-parity historical replay with walk-forward/holdout periods across market regimes, prove stop behavior and restart recovery on the target exchange/account, test Telegram delivery durability, and complete Python 3.12/Linux amd64 CI plus the Docker build.
+
+
+## A69 — merged production-audit closures (2026-11-15)
+
+- `V702ExpansionShadow` remains in the package and remains directly testable, but its independent 1m polling task is **disabled by default** to avoid duplicating the active 5m counterfactual research stream. Explicit opt-in remains available.
+- When enabled, its OHLCV reads use the central `safe_api_call` wrapper under a `knowledge_ohlcv_expansion_*` research label. Forbidden bases are excluded before a sample is queued; unknown spread is stored as SQL `NULL`, not a fictitious zero.
+- The 1m tracker marks a gap greater than 90 seconds as `AMBIGUOUS_DATA_GAP` and does not publish net R for that path. Non-ambiguous outcomes use `unified_round_trip_cost_model`; the residual after TP1 uses the same configured fee-covered break-even formula as the live exit manager.
+- Hunter Telegram delivery callbacks remain intact. Because callback-bearing messages use the direct queue to preserve ACK/failure semantics, the Hunter now hard-caps all its own alerts at 3 per minute, even if a larger configuration value is supplied.
+- The cumulative package-audit revision includes `A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15`. The stable A66 release tag and R40 runtime identity remain compatibility identifiers; neither is a claim that the package contains only A66 code.
+
+The package remains `NO_GO_UNATTENDED_LIVE` and `MONITOR_ONLY_NO_NEW_BUYS`. A real MEXC connection, native stop verification, real Telegram delivery, target-platform Docker/CI, a complete transitive hash lock, and profitability from real fills are not established by offline tests.

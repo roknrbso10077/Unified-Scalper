@@ -2415,3 +2415,13 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Added focused regressions for event order, ambiguous candles, signal-candle exclusion, expiry, SQLite migration, geometry immutability, candidate identity and full scan integration.
 - Shadow outcome touches are not order fills, realized P&L or proof of profitability. Actual executed positions remain under the separate PositionManager; live MEXC/Telegram integration remains unverified.
 - No BUY authority, execution gates, strategy thresholds, risk limits or live-policy settings were relaxed. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain in force.
+
+
+# A69 — merged production audit corrections (2026-11-15)
+
+- ExpansionShadow excludes hard-forbidden assets; unknown spread is persisted as NULL, and 1m OHLCV polling uses the central safe API wrapper with the research priority label.
+- ExpansionShadow's optional 1m stream is disabled by default to avoid overlapping the active 5m counterfactual tracker.
+- ExpansionShadow now detects missing 1m candles as `AMBIGUOUS_DATA_GAP`, uses the canonical unified round-trip cost model, and matches the configured fee-covered break-even formula after TP1. Ambiguous data gaps do not receive a net-R estimate.
+- Opportunity Hunter alert rate is hard-limited to 3/minute while preserving Telegram success/failure callbacks. Its 240-symbol configuration is documented as an upper ceiling only; actual coverage is the bounded existing `market_data_map`.
+- Cumulative package-audit revision now includes `A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15`. A66 release tag and R40 runtime identity are intentionally retained as compatibility identifiers.
+- Live execution authority and risk gates were not relaxed. Decision remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.

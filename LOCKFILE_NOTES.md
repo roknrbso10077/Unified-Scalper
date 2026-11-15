@@ -1,4 +1,4 @@
-# Dependency lock policy — A65
+# Dependency lock policy — A69
 
 `requirements.in` is the source of direct runtime dependency pins. `requirements.txt` is a compatibility entry point that includes it. The checked-in `requirements-lock.txt` is a direct-pin seed only: it is **not** a complete transitive lock and contains no fabricated hashes. Do not pass it to `pip --require-hashes`.
 
@@ -14,4 +14,4 @@ The workflow `.github/workflows/a65-production-audit.yml` is configured to resol
 - Docker pins pip separately; this does not make transitive dependencies reproducible.
 - CI/build configuration is not proof of a successful remote build, exchange authentication, Telegram delivery, stop protection, or profitable trading.
 
-No package hashes are inferred or invented in A65.
+No package hashes are inferred or invented in this A69 merged package. The Python 3.12/Linux amd64 CI resolution and Docker build remain unverified until the workflow actually runs.

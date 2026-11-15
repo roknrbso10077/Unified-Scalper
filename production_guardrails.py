@@ -18,7 +18,8 @@ import time
 from collections import deque
 from typing import Any, Dict, Optional, Tuple
 
-from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
+from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES, is_hard_forbidden
+from v702_core__execution__cost_model import unified_round_trip_cost_model
 from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
 
 LIVE_OPT_IN_ENV = "UNIFIED_ALLOW_LIVE_TRADING"
@@ -439,7 +440,7 @@ class V702ExpansionShadow:
             if cand is None:
                 return
             symbol = str(getattr(cand, "symbol", "") or "").strip().upper()
-            if not symbol:
+            if not symbol or is_hard_forbidden(symbol):
                 return
             snap_raw = snap_map.get(symbol) or snap_map.get(symbol.replace("/", "")) or {}
             snap = self._dict(snap_raw)
@@ -490,7 +491,9 @@ class V702ExpansionShadow:
             htf_floor = self._get_num((feat, snap), ("htf_floor", "min_htf_score", "required_htf_score"), 0.0)
             score = self._get_num((self._dict(ranked), feat, snap), ("score", "final_score", "reviewed_score", "strategy_score"), _num(getattr(cand, "engine_score", 0.0)) * 100.0)
             volume = self._get_num((feat, snap), ("quote_volume_usdt", "quote_volume", "volume_usdt_24h", "notional_volume", "quoteVolume"), 0.0)
-            spread = self._get_num((feat, snap), ("spread_pct", "spread_percent", "spread_pct_estimate"), 0.0)
+            spread_value = self._get_num((feat, snap), ("spread_pct", "spread_percent", "spread_pct_estimate"), -1.0)
+            # A missing or zero spread is not a measured zero-cost market.
+            spread = spread_value if spread_value > 0.0 else None
             row = (sample_id, now, symbol, family, lane, reason, htf, htf_floor, score, tier,
                    volume, spread, entry, sl, tp1, tp2, tp3, risk, "OPEN", None,
                    None, 0, 0, 0, 0, int(now // 60 * 60000), 0, 0.0, 0.0, None, None,
@@ -559,9 +562,11 @@ class V702ExpansionShadow:
                 mfe = _num(row["max_mfe_r"]); mae = _num(row["max_mae_r"])
                 terminal = None
                 terminal_price = None
-                fee_rate = max(0.0, _num(self.ns.get("CONFIG", {}).get("TAKER_FEE_PCT", 0.10))) / 100.0
-                slip_rate = max(0.0, _num(self.ns.get("CONFIG", {}).get("V702_CF_SHADOW_SLIPPAGE_PCT", 0.10))) / 100.0
-                runner = bool(self.ns.get("CONFIG", {}).get("ENABLE_RUNNER_MODE", True))
+                config = self.ns.get("CONFIG", {}) if isinstance(self.ns.get("CONFIG", {}), dict) else {}
+                fee_side_pct = max(0.0, _num(config.get("TAKER_FEE_PCT", 0.10)))
+                fee_mult = max(0.0, _num(config.get("ROUNDTRIP_FEE_MULT", 2.0), 2.0))
+                be_px = entry * (1.0 + (fee_side_pct / 100.0) * fee_mult)
+                runner = bool(config.get("ENABLE_RUNNER_MODE", True))
                 w1 = max(0.0, min(1.0, _num(self.ns.get("CONFIG", {}).get("TP1_EXIT_PCT", 0.5), 0.5)))
                 w2 = max(0.0, min(1.0, _num(self.ns.get("CONFIG", {}).get("TP2_EXIT_PCT", 0.3), 0.3)))
                 w3 = max(0.0, min(1.0, _num(self.ns.get("CONFIG", {}).get("RUNNER_KEEP_PCT_AT_TP3", 0.2), 0.2))) if runner else 0.0
@@ -572,6 +577,16 @@ class V702ExpansionShadow:
                     # A closed 1m candle must have ended before wall-clock now.
                     if bar["ts"] + 60000 > int(now * 1000):
                         continue
+                    # Missing one-minute candles make the path-dependent TP/SL
+                    # sequence unknowable. Never bridge the gap or invent an R.
+                    if last_bar_ts > 0 and bar["ts"] - last_bar_ts > 90000:
+                        terminal = "AMBIGUOUS_DATA_GAP"
+                        terminal_price = None
+                        _stats = self.ns.get("STATS", {})
+                        _stats["v702_expansion_shadow_data_gaps"] = int(
+                            _stats.get("v702_expansion_shadow_data_gaps", 0) or 0
+                        ) + 1
+                        break
                     last_bar_ts = bar["ts"]
                     bars_observed += 1
                     mfe = max(mfe, (bar["high"] - entry) / risk)
@@ -637,9 +652,10 @@ class V702ExpansionShadow:
                         weighted_exit += remaining * sl
                         remaining = 0.0
                     elif terminal == "SL_AFTER_TARGET":
-                        # The live policy moves the residual stop to fee-covered BE
-                        # after TP1; model residual at entry, not as another -1R.
-                        weighted_exit += remaining * entry
+                        # Match ExitManager.move_to_break_even: residual protection
+                        # is moved to entry plus the configured round-trip fee cover.
+                        gross += remaining * (be_px - entry) / risk_r
+                        weighted_exit += remaining * be_px
                         remaining = 0.0
                     elif terminal == "TIMEOUT":
                         px = _num(terminal_price, entry)
@@ -656,8 +672,25 @@ class V702ExpansionShadow:
                         weighted_exit += remaining * tp3
                         gross += remaining * (tp3-entry)/risk_r
                     avg_exit = weighted_exit if weighted_exit > 0 else _num(terminal_price, entry)
-                    cost_r = ((fee_rate + slip_rate) * (entry + avg_exit)) / risk_r
-                    net_r = gross - cost_r
+                    try:
+                        observed_spread = _num(row["spread_pct"], -1.0)
+                        cost_result = unified_round_trip_cost_model(
+                            config, spread_pct=observed_spread if observed_spread > 0.0 else None
+                        )
+                        cost_pct = float(cost_result["round_trip_cost_pct"])
+                        if not math.isfinite(cost_pct) or cost_pct < 0.0:
+                            raise ValueError("invalid_round_trip_cost")
+                        # The canonical round-trip percentage is already an
+                        # all-in cost on one position notional (buy + sell fees,
+                        # spread and two-sided slippage). Convert it to R using
+                        # entry notional exactly like the other V702 ledgers;
+                        # adding avg_exit here would double the notional basis.
+                        cost_r = (entry * (cost_pct / 100.0)) / risk_r
+                        net_r = gross - cost_r
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        # Economic estimate unavailable: preserve the outcome,
+                        # but do not publish an optimistic or fabricated net R.
+                        net_r = None
                 conn.execute(f"""UPDATE {self.TABLE} SET status='CLOSED',tp1_hit=?,tp2_hit=?,tp3_hit=?,sl_hit=?,
                     first_event=?,final_outcome=?,last_bar_ts=?,bars_observed=?,max_mfe_r=?,max_mae_r=?,net_r=?,
                     finished_ts=?,updated_ts=? WHERE sample_id=?""",
@@ -693,8 +726,17 @@ class V702ExpansionShadow:
                     continue
                 since = max(int(row["last_bar_ts"] or 0) + 60000, int(_num(row["created_ts"]) // 60 * 60000) + 60000)
                 try:
-                    value = fetch(str(row["symbol"]), timeframe="1m", since=since, limit=120)
-                    bars = await value if asyncio.iscoroutine(value) else value
+                    _symbol = str(row["symbol"])
+                    safe_call = self.ns.get("safe_api_call")
+                    if callable(safe_call):
+                        value = safe_call(
+                            f"knowledge_ohlcv_expansion_{_symbol}",
+                            lambda s=_symbol, si=since: fetch(s, timeframe="1m", since=si, limit=120),
+                            retry_safe=True,
+                        )
+                    else:
+                        value = fetch(_symbol, timeframe="1m", since=since, limit=120)
+                    bars = await value if (asyncio.iscoroutine(value) or hasattr(value, "__await__")) else value
                     if isinstance(bars, list) and bars:
                         await asyncio.to_thread(self._track_sync_rows, [(row, bars)])
                 except asyncio.CancelledError:
@@ -738,7 +780,7 @@ class V702ExpansionShadow:
                      "ambiguous": int(r["ambiguous"] or 0), "avg_net_r": r["avg_net_r"]} for r in rows}
             total = conn.execute(f"SELECT COUNT(*) FROM {self.TABLE}").fetchone()[0]
             return {"scope": "PREQUAL_ONLY_COUNTERFACTUAL_NOT_FULL_BUILDER_ACCEPTANCE",
-                    "method": "closed_1m_reference_entry_assumed_fee_and_slippage_modeled",
+                    "method": "closed_1m_reference_entry_unified_round_trip_cost_model",
                     "total_samples": int(total or 0), "lanes": lanes,
                     "live_policy_changed": False, "hard_gate_bypass": False,
                     "last_error": self._last_error}
@@ -752,7 +794,7 @@ def install(ns: Dict[str, Any]) -> None:
         return
     cfg = ns["CONFIG"]
     stats = ns["STATS"]
-    cfg.setdefault("V702_EXPANSION_SHADOW_ENABLE", True)
+    cfg.setdefault("V702_EXPANSION_SHADOW_ENABLE", False)
     cfg.setdefault("V702_CF_SHADOW_INTERVAL_SEC", 30.0)
     cfg.setdefault("V702_CF_SHADOW_MAX_ROWS_PER_POLL", 8)
     cfg.setdefault("V702_CF_SHADOW_MAX_HOLD_SEC", 14400.0)
@@ -908,7 +950,7 @@ def install(ns: Dict[str, Any]) -> None:
                         log.warning("[V702-R39-SHADOW] existing knowledge task failed: %s:%s", type(exc).__name__, str(exc)[:120])
             async def _expansion():
                 try:
-                    if bool(cfg.get("V702_EXPANSION_SHADOW_ENABLE", True)):
+                    if bool(cfg.get("V702_EXPANSION_SHADOW_ENABLE", False)):
                         await shadow.task(exchange)
                 except asyncio.CancelledError:
                     raise

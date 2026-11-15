@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Unified Scalper V702 A65 canonical production distribution (A64 base runtime).
+"""Unified Scalper A66 canonical production distribution (A64 runtime base; A67/A68/A69 supplemental closures).
 
 Historical patch/version notes are preserved in CHANGELOG.md. The active
 strategy, risk, pre-send, queue, Telegram and execution authorities remain in
@@ -101673,7 +101673,7 @@ V702_A68_OUTCOME_REVISION = "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_ENABLE", True)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE", 240)
-CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 10)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 3)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_SCAN", 6)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_SCORE_FLOOR", 55.0)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)
@@ -102534,7 +102534,15 @@ class OpportunityHunter:
             if now - cls._alert_window_start >= 60.0:
                 cls._alert_window_start = now
                 cls._alert_window_count = 0
-            if cls._alert_window_count >= max(1, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 10))):
+            # Hunter notifications carry delivery callbacks. The central digest
+            # intentionally leaves callback-bearing messages on the direct queue
+            # so ACK/failure semantics survive; enforce a hard local ceiling here.
+            configured_limit = CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 3)
+            try:
+                alert_limit = max(1, min(3, int(configured_limit)))
+            except (TypeError, ValueError, OverflowError):
+                alert_limit = 3
+            if cls._alert_window_count >= alert_limit:
                 STATS["v702_opportunity_hunter_alert_rate_limited"] = int(STATS.get("v702_opportunity_hunter_alert_rate_limited", 0) or 0) + 1
                 return False
             cls._alert_window_count += 1
@@ -102872,6 +102880,13 @@ STATS["v702_opportunity_outcome_revision"] = V702_A68_OUTCOME_REVISION
 V702_A69_DOTENV_CONFIG_REVISION = "A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15"
 FINAL_CANONICAL_RUNTIME["supplemental_config_closure"] = V702_A69_DOTENV_CONFIG_REVISION
 FINAL_CANONICAL_RUNTIME["dotenv_config_applied_after_load"] = True
+# Include A69 in the single effective package-audit revision. The stable runtime
+# identity and A66 release tag remain compatibility contracts, not audit counters.
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A69_DOTENV_CONFIG_REVISION
+FINAL_CANONICAL_RUNTIME["package_audit_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["package_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["active_package_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["canonical_runtime_revision"] = V702_PACKAGE_AUDIT_REVISION
 STATS["v702_a69_dotenv_config_closure"] = {
     "revision": V702_A69_DOTENV_CONFIG_REVISION,
     "db_path_applied_after_dotenv": True,
@@ -103530,7 +103545,8 @@ if _V699_VALIDATE_ONLY_REQUEST:
             "live_pilot_configured": bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", False)),
             "hard_environment_off_switch": "UNIFIED_LIVE_PILOT_ENABLE=0",
             "portfolio_drawdown_guard_enabled": bool(CONFIG.get("V702_PORTFOLIO_DRAWDOWN_GUARD_ENABLE", False)),
-            "expansion_shadow_enabled": bool(_v702_cf_shadow_installed),
+            "expansion_shadow_enabled": bool(CONFIG.get("V702_EXPANSION_SHADOW_ENABLE", False)),
+            "expansion_shadow_code_available": bool(_v702_r39_guardrails_installed),
         },
         "v702_counterfactual_shadow": {
             "installed": _v702_cf_shadow_installed,
@@ -103553,7 +103569,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
             "scope": "TELEGRAM_DIGEST_SYMBOL_DISPLAY_ONLY",
             "execution_policy_changed": False,
         },
-        "expansion_shadow": {"enabled": bool(_v702_cf_shadow_installed), "component": "V702-CF-SHADOW", "scope": "PREQUAL_ONLY_COUNTERFACTUAL_AND_CLOSED_5M_OUTCOMES", "live_policy_changed": False},
+        "expansion_shadow": {"enabled": bool(CONFIG.get("V702_EXPANSION_SHADOW_ENABLE", False)), "code_available": bool(_v702_r39_guardrails_installed), "component": "V702ExpansionShadow", "scope": "PREQUAL_ONLY_COUNTERFACTUAL_AND_CLOSED_1M_OUTCOMES", "default_reason": "DISABLED_TO_AVOID_DUPLICATE_RESEARCH_FETCHES; EXPLICIT_OPT_IN_ONLY", "live_policy_changed": False},
         "legacy_validation_identity": V699_FINAL_IDENTITY,
         "checks": V699_SELF_TEST_RESULT.get("checks", {}),
         "self_test": V699_SELF_TEST_RESULT,

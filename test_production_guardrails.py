@@ -283,6 +283,165 @@ class ProductionGuardrailTests(unittest.TestCase):
             self.assertIsNotNone(final[2])
             self.assertLess(final[2], 0.0)
 
+    def test_expansion_shadow_rejects_forbidden_assets_and_preserves_unknown_spread(self):
+        shadow = bot.V702ExpansionShadow(bot.__dict__)
+        forbidden = SimpleNamespace(
+            symbol="BNB/USDT", family="BREAKOUT", strategy_mode="BREAKOUT",
+            generated_at_ms=1700000000001, entry_ref=100.0, sl_price=98.0,
+            tp1_rr=1.0, tp2_rr=2.0, tp3_rr=3.0, engine_score=.8,
+            features_snapshot={"liquidity_tier": "LARGE"},
+        )
+        missing_spread = SimpleNamespace(
+            symbol="SAFE/USDT", family="BREAKOUT", strategy_mode="BREAKOUT",
+            generated_at_ms=1700000000002, entry_ref=100.0, sl_price=98.0,
+            tp1_rr=1.0, tp2_rr=2.0, tp3_rr=3.0, engine_score=.8,
+            features_snapshot={"liquidity_tier": "LARGE"},
+        )
+        measured_spread = SimpleNamespace(
+            symbol="MEASURED/USDT", family="BREAKOUT", strategy_mode="BREAKOUT",
+            generated_at_ms=1700000000003, entry_ref=100.0, sl_price=98.0,
+            tp1_rr=1.0, tp2_rr=2.0, tp3_rr=3.0, engine_score=.8,
+            features_snapshot={"liquidity_tier": "LARGE", "spread_pct": 0.12},
+        )
+        shadow.record_prequal(forbidden, {}, (True, "ok"))
+        shadow.record_prequal(missing_spread, {}, (True, "ok"))
+        shadow.record_prequal(measured_spread, {}, (True, "ok"))
+        queued = list(shadow._pending)
+        self.assertEqual(len(queued), 2)
+        self.assertEqual(queued[0][2], "SAFE/USDT")
+        self.assertIsNone(queued[0][11], "unmeasured spread must remain NULL, not zero")
+        self.assertEqual(queued[1][2], "MEASURED/USDT")
+        self.assertAlmostEqual(queued[1][11], 0.12)
+
+    def test_expansion_shadow_gap_is_ambiguous_and_has_no_net_r(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "shadow-gap.db")
+            shadow = bot.V702ExpansionShadow(bot.__dict__)
+            now = time.time()
+            created = now - 240
+            last_bar = int(created // 60) * 60000
+            with patch.dict(bot.CONFIG, {"DB_PATH": db}):
+                conn = shadow._connect()
+                conn.execute(f"""INSERT INTO {shadow.TABLE}
+                    (sample_id,created_ts,symbol,family,lane,source_reason,entry,sl,tp1,tp2,tp3,risk,status,last_bar_ts,updated_ts)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("gap-test", created, "SAFE/USDT", "BREAKOUT", "BASELINE_PASS", "ok",
+                     100.0, 98.0, 102.0, 104.0, 106.0, 2.0, "OPEN", last_bar, now))
+                conn.commit()
+                row = conn.execute(f"SELECT * FROM {shadow.TABLE} WHERE sample_id=?", ("gap-test",)).fetchone()
+                conn.close()
+                # A two-minute jump skips at least one closed 1m candle.
+                gap_bar = [last_bar + 120000, 100.0, 101.0, 99.0, 100.5, 1000.0]
+                shadow._track_sync_rows([(row, [gap_bar])])
+                with closing(sqlite3.connect(db)) as conn:
+                    result = conn.execute(
+                        f"SELECT final_outcome,net_r FROM {shadow.TABLE} WHERE sample_id=?", ("gap-test",)
+                    ).fetchone()
+            self.assertEqual(result[0], "AMBIGUOUS_DATA_GAP")
+            self.assertIsNone(result[1])
+
+    def test_expansion_shadow_be_and_cost_model_match_live_fee_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "shadow-be.db")
+            shadow = bot.V702ExpansionShadow(bot.__dict__)
+            now = time.time()
+            created = now - 180
+            last_bar = int(created // 60) * 60000
+            config_patch = {"DB_PATH": db, "TAKER_FEE_PCT": 0.10, "ROUNDTRIP_FEE_MULT": 2.0,
+                            "V702_SMALL_NET_SPREAD_FALLBACK_PCT": 0.15,
+                            "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT": 0.05,
+                            "TP1_EXIT_PCT": 0.5, "ENABLE_RUNNER_MODE": True}
+            with patch.dict(bot.CONFIG, config_patch):
+                conn = shadow._connect()
+                conn.execute(f"""INSERT INTO {shadow.TABLE}
+                    (sample_id,created_ts,symbol,family,lane,source_reason,entry,sl,tp1,tp2,tp3,risk,status,tp1_hit,last_bar_ts,updated_ts)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("be-test", created, "SAFE/USDT", "BREAKOUT", "BASELINE_PASS", "ok",
+                     100.0, 98.0, 102.0, 104.0, 106.0, 2.0, "OPEN", 1, last_bar, now))
+                conn.commit()
+                row = conn.execute(f"SELECT * FROM {shadow.TABLE} WHERE sample_id=?", ("be-test",)).fetchone()
+                conn.close()
+                # Existing TP1 is already booked; this closed candle then tags SL.
+                sl_bar = [last_bar + 60000, 100.0, 101.0, 97.0, 99.0, 1000.0]
+                shadow._track_sync_rows([(row, [sl_bar])])
+                with closing(sqlite3.connect(db)) as conn:
+                    outcome = conn.execute(
+                        f"SELECT final_outcome,net_r FROM {shadow.TABLE} WHERE sample_id=?", ("be-test",)
+                    ).fetchone()
+            self.assertEqual(outcome[0], "SL_AFTER_TARGET")
+            self.assertIsNotNone(outcome[1])
+            # 0.45% all-in friction is charged once against entry notional:
+            # gross 0.55R - (0.45% * 100 / 2) = 0.325R.
+            self.assertGreater(outcome[1], 0.32)
+            self.assertLess(outcome[1], 0.33)
+
+    def test_expansion_shadow_ohlcv_uses_safe_research_api_wrapper(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as td:
+                db = str(Path(td) / "shadow-safe-api.db")
+                shadow = bot.V702ExpansionShadow(bot.__dict__)
+                now = time.time()
+                created = now - 120
+                last_bar = int(now // 60) * 60000 - 60000
+                with patch.dict(bot.CONFIG, {"DB_PATH": db}):
+                    conn = shadow._connect()
+                    conn.execute(f"""INSERT INTO {shadow.TABLE}
+                        (sample_id,created_ts,symbol,family,lane,source_reason,entry,sl,tp1,tp2,tp3,risk,status,last_bar_ts,updated_ts)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ("safe-api-test", created, "SAFE/USDT", "BREAKOUT", "BASELINE_PASS", "ok",
+                         100.0, 98.0, 102.0, 104.0, 106.0, 2.0, "OPEN", last_bar, now))
+                    conn.commit(); conn.close()
+                    row = shadow._fetch_open_rows_sync(1)[0]
+                    calls = []
+                    class FakeExchange:
+                        async def fetch_ohlcv(self, symbol, timeframe="1m", since=None, limit=120):
+                            calls.append(("fetch", symbol, timeframe, since, limit))
+                            return []
+                    async def safe_api_call(label, factory, *, retry_safe=False):
+                        calls.append(("safe", label, retry_safe))
+                        return await factory()
+                    shadow.ns["safe_api_call"] = safe_api_call
+                    shadow._fetch_open_rows_sync = lambda limit: [row]
+                    await shadow._poll_once(FakeExchange())
+                    return calls
+        calls = asyncio.run(run())
+        self.assertEqual(calls[0][0], "safe")
+        self.assertTrue(calls[0][1].startswith("knowledge_ohlcv_expansion_"))
+        self.assertTrue(calls[0][2])
+        self.assertEqual(calls[1][0], "fetch")
+
+    def test_expansion_shadow_is_disabled_by_default_but_code_is_available(self):
+        self.assertFalse(bool(bot.CONFIG.get("V702_EXPANSION_SHADOW_ENABLE", False)))
+        self.assertTrue(callable(bot.__dict__.get("V702ExpansionShadow")))
+        self.assertTrue(bool(bot.__dict__.get("_V702_R39_GUARDRAILS_INSTALLED")))
+
+    def test_hunter_alert_limit_is_hard_capped_at_three_per_minute(self):
+        hunter = bot.OpportunityHunter
+        old_window_start, old_count, old_pending = hunter._alert_window_start, hunter._alert_window_count, set(hunter._alert_pending)
+        async def no_delivery(cls, row, state, alert_token=""):
+            return None
+        try:
+            hunter._alert_window_start = bot.WALL_NOW()
+            hunter._alert_window_count = 0
+            hunter._alert_pending.clear()
+            with patch.dict(bot.CONFIG, {
+                "V702_OPPORTUNITY_HUNTER_ENABLE": True,
+                "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": True,
+                "TELEGRAM_ENABLED": True,
+                "V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE": 999,
+            }), patch.object(hunter, "_deliver_alert", new=classmethod(no_delivery)):
+                async def submit():
+                    accepted = [hunter._queue_alert({"opportunity_id": f"cap-{i}"}, "WATCH") for i in range(4)]
+                    await asyncio.sleep(0)
+                    return accepted
+                accepted = asyncio.run(submit())
+            self.assertEqual(accepted, [True, True, True, False])
+        finally:
+            hunter._alert_window_start = old_window_start
+            hunter._alert_window_count = old_count
+            hunter._alert_pending.clear()
+            hunter._alert_pending.update(old_pending)
+
     def test_complete_async_builder_reaches_monitor_only_submit_barrier_without_order_wire(self):
         """Exercise Builder→score→target lock→queue→entry guard with synthetic inputs.
 
