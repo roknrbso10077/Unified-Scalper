@@ -165,16 +165,35 @@ def test_a55_edge_gate_requires_exact_recipe_and_fdr_validation(monkeypatch):
     ctx = {"family": "PULLBACK", "strategy_mode": "PULLBACK", "strategy_style": "SCALP",
            "timeframe_profile": "15M_5M", "htf_strength": 90.0}
     key = bot.EdgeGate.recipe_key(ctx)
-    recipe = {"entries": 100, "status": "VALIDATED_POSITIVE", "expectancy_r": 0.15,
+    _fingerprint = bot._v702_economic_model_fingerprint()
+    recipe = {"entries": 100, "training_entries": 60, "effective_sample_size": 100,
+              "train_samples": 60, "validation_samples": 20, "holdout_samples": 20,
+              "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+              "economic_model_fingerprint": _fingerprint,
+              "fdr_method": "BENJAMINI_HOCHBERG", "fdr_q": 0.10,
+              "fdr_family_size": 1, "fdr_rank": 1, "fdr_adjusted_p": 0.01,
+              "fdr_significant": True,
+              "status": "VALIDATED_POSITIVE", "expectancy_r": 0.15,
               "lower_bound_90_r": 0.02, "first_half_expectancy_r": 0.12,
-              "second_half_expectancy_r": 0.18}
+              "second_half_expectancy_r": 0.18, "validation_expectancy_r": 0.14,
+              "holdout_expectancy_r": 0.13, "p_value_one_sided": 0.01,
+              "purged_walk_forward": True, "sample_sufficient": True,
+              "independent_cluster_model": "SYMBOL_FAMILY_TF_30M_WORST_CASE_V1"}
     monkeypatch.setattr(bot.KnowledgeOutcomeLedger, "_edge_report", classmethod(lambda cls: {
         "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
-        "generated_at": time.time(), "learned_recipes": {key: recipe}
+        "generated_at": time.time(),
+        "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+        "economic_model_fingerprint": _fingerprint,
+        "fdr_contract": {"method": "BENJAMINI_HOCHBERG", "q": 0.10, "family_size": 1},
+        "learned_recipes": {key: recipe}
     }))
     bot.STATS["v702_knowledge_edge_report"] = {
         "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
-        "generated_at": time.time(), "learned_recipes": {key: recipe}
+        "generated_at": time.time(),
+        "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+        "economic_model_fingerprint": _fingerprint,
+        "fdr_contract": {"method": "BENJAMINI_HOCHBERG", "q": 0.10, "family_size": 1},
+        "learned_recipes": {key: recipe}
     }
     assert bot._v702_live_buy_possible(ctx) is True
     recipe["status"] = "REQUIRES_FDR_VALIDATION"
@@ -241,6 +260,8 @@ def test_a60_edge_report_separates_exploratory_paper_from_eligible_edge(tmp_path
         notes = {
             "record_source": "SELECTED_ROUTE_PAPER" if is_selected else "DISCOVERY",
             "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
+            "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+            "economic_model_fingerprint": bot._v702_economic_model_fingerprint(),
             "paper_edge_eligible": eligible,
             "shadow_presend_eligible": eligible,
             "market_live_eligible": eligible,

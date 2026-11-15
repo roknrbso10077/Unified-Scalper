@@ -116,23 +116,36 @@ def _closed_rows(df: Any, timeframe_ms: int) -> List[Dict[str, float]]:
         as_of_ms = time.time() * 1000.0
         grace_ms = 1_000.0
     rows: List[Dict[str, float]] = []
+    previous_ts = None
     for i in range(len(df)):
         row = df.iloc[i]
         ts = _ts_ms(df.index[i])
-        if ts is None or float(ts + timeframe_ms) > float(as_of_ms) - grace_ms:
+        if ts is None:
+            return []
+        if float(ts + timeframe_ms) > float(as_of_ms) - grace_ms:
             continue
         try:
+            o = float(row["open"]); h = float(row["high"]); l = float(row["low"])
+            c = float(row["close"]); v = float(row["volume"])
+            values = (o, h, l, c, v)
+            if not all(math.isfinite(x) for x in values):
+                return []
+            # OHLC must describe a possible candle. Invalid bars invalidate the
+            # source frame; silently skipping them could bridge an unknown event.
+            if l <= 0 or v < 0 or h < l or l > min(o, c) or h < max(o, c):
+                return []
+            if previous_ts is not None and int(ts) <= int(previous_ts):
+                return []
+            gap_before = bool(previous_ts is not None and int(ts) - int(previous_ts) > int(timeframe_ms * 1.5))
             item = {
-                "ts": float(ts),
-                "open": float(row["open"]), "high": float(row["high"]),
-                "low": float(row["low"]), "close": float(row["close"]),
-                "volume": max(0.0, float(row["volume"])),
-                "close_ts": float(ts + timeframe_ms),
+                "ts": float(ts), "open": o, "high": h, "low": l,
+                "close": c, "volume": v, "close_ts": float(ts + timeframe_ms),
+                "gap_before": gap_before,
             }
-            if all(math.isfinite(item[k]) for k in ("open", "high", "low", "close", "volume")) and item["low"] > 0 and item["high"] >= item["low"]:
-                rows.append(item)
+            rows.append(item)
+            previous_ts = int(ts)
         except Exception:
-            continue
+            return []
     return rows
 
 
@@ -807,6 +820,15 @@ class V702IntradayShadow:
                         bar_ts = int(bar["ts"])
                         if bar_ts < int(signal_ts) or bar_ts <= last_seen:
                             continue
+                        # Do not resolve a simulated trade across an unobserved
+                        # 1m interval: the missing candle could have touched SL.
+                        _expected_from = max(int(last_seen or 0), int(signal_ts or 0))
+                        if bool(bar.get("gap_before")) or (_expected_from > 0 and bar_ts - _expected_from > 90_000):
+                            state = "AMBIGUOUS_DATA_GAP"
+                            exit_price = None
+                            gross_r = net_r = net_pct = None
+                            last_seen = bar_ts
+                            break
                         last_seen = bar_ts
                         count += 1
                         # Only a swing low confirmed before this 1m bar can protect it.
@@ -847,16 +869,27 @@ class V702IntradayShadow:
                             state, exit_price = "TIMEOUT", float(bar["close"])
                             gross_r = (exit_price - float(entry)) / max(float(risk), 1e-12)
                             break
+                        if adaptive and count >= max_bars:
+                            state, exit_price = "TIMEOUT", float(bar["close"])
+                            if has_partial:
+                                gross_r = partial_r + 0.5 * ((exit_price - float(entry)) / max(float(risk), 1e-12))
+                            else:
+                                gross_r = (exit_price - float(entry)) / max(float(risk), 1e-12)
+                            break
                     if state:
-                        cost_r = float(cost_pct) / max(float(risk_pct), 1e-12)
-                        net_r = float(gross_r) - cost_r
-                        net_pct = net_r * float(risk_pct)
+                        if str(state).startswith("AMBIGUOUS"):
+                            net_r = net_pct = None
+                        else:
+                            cost_r = float(cost_pct) / max(float(risk_pct), 1e-12)
+                            net_r = float(gross_r) - cost_r
+                            net_pct = net_r * float(risk_pct)
                         conn.execute("""UPDATE v702_intraday_shadow_samples
                             SET last_candle_ts_ms=?,bars_seen=?,status=?,exit_price=?,gross_r=?,net_r=?,net_pct=?,
                                 resolved_ts=?,note=?,tp1_hit=?,partial_realized_r=?,trailing_stop=?
                             WHERE sample_id=? AND status='PENDING'""",
                             (last_seen,count,state,exit_price,gross_r,net_r,net_pct,time.time(),
-                             "SL_FIRST_IF_AMBIGUOUS;UNIFIED_ROUNDTRIP_COST_DEDUCTED" + (";50PCT_TP1_1_5R_TRAIL_15M" if adaptive and has_partial else ""),
+                             ("DATA_GAP_OUTCOME_UNRESOLVED_NO_EDGE_CREDIT" if str(state).startswith("AMBIGUOUS") else
+                              "SL_FIRST_IF_AMBIGUOUS;UNIFIED_ROUNDTRIP_COST_DEDUCTED" + (";50PCT_TP1_1_5R_TRAIL_15M" if adaptive and has_partial else "")),
                              1 if has_partial else 0,partial_r,current_trail,sid))
                         updated += 1
                     else:

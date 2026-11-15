@@ -266,23 +266,29 @@ class IntradayShadowTests(unittest.TestCase):
               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (sample_id,"LEADER/USDT","ADAPTIVE_RS_PULLBACK_15M","5m",signal_ts,time.time(),
                100.0,98.0,103.0,2.0,2.0,signal_ts-60_000,0,"PENDING",0.40,"{}"))
-        # Include a very high pre-entry pivot: it must never become this trade's trail.
+        # The old pivot is confirmed exactly at entry and must not be used.
+        # The new pivot is confirmed 45 minutes after entry and can then trail.
+        self.cfg["V702_INTRADAY_SHADOW_MAX_HOLD_BARS"] = 120
         rows15 = []
         for i in range(18):
-            low = 99.5 if i != 16 else 98.5
+            low = 99.5
+            if i == 13: low = 97.0
+            if i == 14: low = 98.0
+            if i == 16: low = 98.5
             if i == 17: low = 98.8
-            bar_ts = signal_ts - 1_800_000 + i * 900_000
-            rows15.append({"ts":float(bar_ts),
-                           "open":100.0,"high":100.5,"low":low,"close":100.1,
-                           "volume":100.0,"close_ts":float(bar_ts + 900_000)})
-        # Ensure pivot #16 is confirmed after entry, with a trail above the original stop.
-        rows15[-2]["low"] = 98.5
-        rows15[-1]["low"] = 98.8
-        rows15[-3]["low"] = 99.0
-        bars = [
-            {"ts":float(signal_ts),"open":100.0,"high":103.2,"low":99.8,"close":103.0,"volume":100.0,"close_ts":signal_ts+60_000},
-            {"ts":float(signal_ts + 16 * 900_000),"open":103.0,"high":103.1,"low":98.2,"close":99.0,"volume":100.0,"close_ts":signal_ts+16*900_000+60_000},
-        ]
+            bar_ts = signal_ts - 15 * 900_000 + i * 900_000
+            rows15.append({"ts":float(bar_ts), "open":100.0, "high":100.5,
+                           "low":low, "close":100.1, "volume":100.0,
+                           "close_ts":float(bar_ts + 900_000)})
+        # Keep the 1m outcome series continuous through the new pivot's confirm time.
+        bars = [{"ts":float(signal_ts),"open":100.0,"high":103.2,"low":99.8,"close":103.0,
+                 "volume":100.0,"close_ts":signal_ts+60_000}]
+        end_ts = signal_ts + 45 * 60_000
+        for ts in range(signal_ts + 60_000, end_ts, 60_000):
+            bars.append({"ts":float(ts),"open":103.0,"high":103.1,"low":102.9,"close":103.0,
+                         "volume":100.0,"close_ts":ts+60_000})
+        bars.append({"ts":float(end_ts),"open":103.0,"high":103.1,"low":98.2,"close":99.0,
+                     "volume":100.0,"close_ts":end_ts+60_000})
         self.study._update_pending("LEADER/USDT", bars, rows15)
         with self.connect() as conn:
             status, gross_r, tp1_hit, trailing_stop, exit_price = conn.execute(
@@ -304,3 +310,34 @@ class IntradayShadowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_closed_rows_rejects_impossible_ohlc_and_duplicate_timestamps():
+    from v702_intraday_shadow import _closed_rows
+    idx = pd.to_datetime([1_800_000_000_000, 1_800_000_060_000], unit="ms", utc=True)
+    good = pd.DataFrame({"open": [100.0, 100.0], "high": [101.0, 101.0],
+                         "low": [99.0, 99.0], "close": [100.5, 100.5],
+                         "volume": [10.0, 10.0]}, index=idx)
+    good.attrs["as_of_ms"] = 1_800_000_300_000
+    assert len(_closed_rows(good, 60_000)) == 2
+    impossible = good.copy()
+    impossible.iloc[0, impossible.columns.get_loc("high")] = 99.5
+    impossible.attrs["as_of_ms"] = 1_800_000_300_000
+    assert _closed_rows(impossible, 60_000) == []
+    duplicated = good.copy()
+    duplicated.index = pd.to_datetime([1_800_000_000_000, 1_800_000_000_000], unit="ms", utc=True)
+    duplicated.attrs["as_of_ms"] = 1_800_000_300_000
+    assert _closed_rows(duplicated, 60_000) == []
+
+
+def test_closed_rows_marks_unobserved_interval_as_data_gap():
+    from v702_intraday_shadow import _closed_rows
+    idx = pd.to_datetime([1_800_000_000_000, 1_800_000_180_000], unit="ms", utc=True)
+    frame = pd.DataFrame({"open": [100.0, 100.0], "high": [101.0, 101.0],
+                          "low": [99.0, 99.0], "close": [100.5, 100.5],
+                          "volume": [10.0, 10.0]}, index=idx)
+    frame.attrs["as_of_ms"] = 1_800_000_300_000
+    rows = _closed_rows(frame, 60_000)
+    assert len(rows) == 2
+    assert rows[0]["gap_before"] is False
+    assert rows[1]["gap_before"] is True

@@ -22,12 +22,26 @@ def _valid_edge_context():
 def _valid_edge_report():
     ctx = _valid_edge_context()
     key = bot.EdgeGate.recipe_key(ctx)
+    _fingerprint = bot._v702_economic_model_fingerprint()
     return {
         "version": bot.V702_KNOWLEDGE_EDGE_VERSION,
         "generated_at": bot.WALL_NOW(),
+        "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+        "economic_model_fingerprint": _fingerprint,
+        "fdr_contract": {"method": "BENJAMINI_HOCHBERG", "q": 0.10, "family_size": 1},
         "learned_recipes": {
             key: {
-                "entries": 100, "status": "VALIDATED_POSITIVE",
+                "entries": 100, "training_entries": 60, "effective_sample_size": 100,
+                "train_samples": 60, "validation_samples": 20, "holdout_samples": 20,
+                "purged_walk_forward": True, "sample_sufficient": True,
+                "independent_cluster_model": "SYMBOL_FAMILY_TF_30M_WORST_CASE_V1",
+                "validation_expectancy_r": 0.15, "holdout_expectancy_r": 0.12,
+                "p_value_one_sided": 0.01, "status": "VALIDATED_POSITIVE",
+                "economic_model_version": bot.V702_ECONOMIC_MODEL_VERSION,
+                "economic_model_fingerprint": _fingerprint,
+                "fdr_method": "BENJAMINI_HOCHBERG", "fdr_q": 0.10,
+                "fdr_family_size": 1, "fdr_rank": 1, "fdr_adjusted_p": 0.01,
+                "fdr_significant": True,
                 "expectancy_r": 0.20, "lower_bound_90_r": 0.03,
                 "first_half_expectancy_r": 0.12, "second_half_expectancy_r": 0.18,
             }
@@ -228,7 +242,7 @@ async def test_a63_digest_snapshot_swap_keeps_events_arriving_during_await(monke
     digest = _seed_digest(monkeypatch, structured)
     injected = False
 
-    async def enqueue(_message):
+    async def enqueue(_message, **_callbacks):
         nonlocal injected
         if not injected:
             injected = True
@@ -251,7 +265,7 @@ async def test_a63_digest_failed_enqueue_merges_old_and_new_generations(monkeypa
     digest = _seed_digest(monkeypatch, structured)
     injected = False
 
-    async def enqueue(_message):
+    async def enqueue(_message, **_callbacks):
         nonlocal injected
         if not injected:
             injected = True

@@ -41,12 +41,28 @@ def test_operator_floor_remains_a_hard_floor():
     assert result["round_trip_cost_pct"] == 0.55
 
 
-def test_invalid_measured_cost_fails_back_to_conservative_estimate():
+def test_invalid_measured_cost_fails_closed_instead_of_becoming_zero_cost():
+    import pytest
+    with pytest.raises(ValueError, match="measured_all_in_cost_missing_or_non_finite"):
+        unified_round_trip_cost_model(
+            {"V702_SHADOW_MIN_ROUND_TRIP_COST_PCT": 0.0, "V702_SMALL_NET_SPREAD_FALLBACK_PCT": 0.15,
+             "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT": 0.05, "TAKER_FEE_PCT": 0.10,
+             "ROUNDTRIP_FEE_MULT": 2.0},
+            measured_cost_pct=float("nan"),
+        )
+
+def test_large_measured_cost_and_spread_are_never_clipped_downward():
     result = unified_round_trip_cost_model(
-        {"V702_SHADOW_MIN_ROUND_TRIP_COST_PCT": 0.0, "V702_SMALL_NET_SPREAD_FALLBACK_PCT": 0.15,
-         "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT": 0.05, "TAKER_FEE_PCT": 0.10,
-         "ROUNDTRIP_FEE_MULT": 2.0},
-        measured_cost_pct=float("nan"),
+        {"V702_SHADOW_MIN_ROUND_TRIP_COST_PCT": 0.0, "V702_MEASURED_COST_BUFFER_PCT": 0.05,
+         "V702_SMALL_NET_SPREAD_FALLBACK_PCT": 0.15, "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT": 0.05,
+         "TAKER_FEE_PCT": 0.10, "ROUNDTRIP_FEE_MULT": 2.0},
+        measured_cost_pct=25.0, spread_pct=12.0, fee_cost_pct=0.2,
     )
-    assert result["used_measured_cost"] == 0.0
-    assert result["round_trip_cost_pct"] == 0.45
+    assert result["measured_cost_pct"] == 25.0
+    assert result["spread_pct_used"] == 12.0
+    assert result["round_trip_cost_pct"] == 25.05
+
+def test_non_finite_explicit_fee_fails_closed():
+    import pytest
+    with pytest.raises(ValueError, match="measured_fee_cost_missing_or_non_finite"):
+        unified_round_trip_cost_model({}, fee_cost_pct=float("nan"))

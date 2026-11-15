@@ -100,6 +100,7 @@ def test_a51_crash_guard_and_live_regime_policy_contracts_remain_unchanged():
     assert bot.FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] is False
     assert bot.FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] is False
     assert bot.FINAL_CANONICAL_RUNTIME["active_post_audit_patch_revision"].startswith("V702-A51-")
+    assert bot.FINAL_CANONICAL_RUNTIME["active_post_audit_patch_revision_current"] == "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15"
     assert "OPERATOR-DIGEST-TELEMETRY-CLOSURE" in bot.FINAL_CANONICAL_RUNTIME["active_post_audit_patch_revision"]
     source = Path(bot.__file__).read_text(encoding="utf-8")
     assert "Post-audit patch:" in source and "post_audit_patch_revision={_post_audit_patch_revision}" in source

@@ -16,6 +16,7 @@ from unittest.mock import patch, AsyncMock
 import pandas as pd
 import pytest
 import main as bot
+from v702_core__execution__cost_model import unified_round_trip_cost_model
 
 
 def test_operator_off_blocks_direct_final_order_executor_before_exchange_calls():
@@ -539,3 +540,95 @@ def test_a53_execution_boundary_uses_swing_contract_not_stale_scalp_metadata():
     assert source.count("_v701_3_resolve_strategy_identity(") >= 2  # definition + live Builder use
     assert "The position exists despite protection failure" in source
     assert "# A fill is not a no-execution outcome" in source
+
+
+def test_a66_final_validator_cannot_override_failed_inherited_validator(monkeypatch):
+    monkeypatch.setattr(bot, "_V702_A66_PREVIOUS_VALIDATE_CONFIG", lambda: False)
+    monkeypatch.setattr(bot, "_v702_a66_startup_recovery_source_check",
+                        lambda: {"pass": True, "checks": {"a66": True}, "failed": []})
+    assert bot._v702_a66_validate_config() is False
+    report = bot.STATS["v702_a66_final_validation"]
+    assert report["pass"] is False
+    assert report["base_previous"] is False
+    assert "previous_validator_failed" in report["failed"]
+
+
+def test_break_even_or_profit_lock_is_valid_active_protection():
+    trade = SimpleNamespace(
+        remaining_position=1.0, entry=100.0, current_sl=100.15, original_sl=98.0,
+        sl_order_id=None, sl_health_state="SOFTWARE_SL_ACTIVE", software_sl_active=True,
+    )
+    assert bot._v563_trade_protection_healthy(trade) is True
+
+
+def test_protection_ticker_has_priority_over_scanner_ticker():
+    assert bot.V702PlatformRateLimiter.priority("protected_fetch_ticker_BTC/USDT")[1] == "PROTECTION"
+    assert bot.V702PlatformRateLimiter.priority("fetch_ticker_BTC/USDT")[1] == "SCAN"
+
+
+def test_telegram_outbox_is_durable_and_terminal_ack_removes_pending(tmp_path, monkeypatch):
+    db_path = tmp_path / "telegram-outbox.sqlite3"
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db_path)}):
+        bot.DBManager.init_schema()
+        outbox_id = bot.DBManager.enqueue_telegram_outbox("critical operator alert")
+        pending = bot.DBManager.list_pending_telegram_outbox()
+        assert any(row["outbox_id"] == outbox_id and row["status"] == "QUEUED" for row in pending)
+        assert bot.DBManager.update_telegram_outbox(outbox_id, "DELIVERED", 1, None)
+        pending_after_ack = bot.DBManager.list_pending_telegram_outbox()
+        assert all(row["outbox_id"] != outbox_id for row in pending_after_ack)
+
+
+@pytest.mark.asyncio
+async def test_pm_task_does_not_renew_health_lease_after_incomplete_cycle(monkeypatch, tmp_path):
+    shutdown = asyncio.Event()
+    monkeypatch.setattr(bot, "_SHUTDOWN", shutdown)
+    monkeypatch.setattr(bot, "ACTIVE_TRADES", {"ABC/USDT": object()})
+    monkeypatch.setitem(bot.CONFIG, "POSITION_MANAGER_INTERVAL_SEC", 0.20)
+    heartbeat_writes = []
+    monkeypatch.setattr(bot, "_v702_atomic_heartbeat_write", lambda *args, **kwargs: heartbeat_writes.append(args))
+
+    async def _failed_tick(cls, exchange):
+        shutdown.set()
+        return {"healthy": False, "failed_by_symbol": {"ABC/USDT": "ERROR:fetch_ticker"}}
+
+    monkeypatch.setattr(bot.PositionManager, "tick", classmethod(_failed_tick))
+    await asyncio.wait_for(bot._position_manager_task(object()), timeout=2.0)
+    assert bot.STATS["v702_pm_last_healthy_ts"] == 0.0
+    assert bot.STATS["v702_pm_healthy_ticks"] == 0
+    assert not heartbeat_writes
+    assert "position_protection_cycle_incomplete" in bot.STATS["v702_pm_last_error"]
+
+
+def test_tp1_reports_full_close_and_partial_realized_net_separately(monkeypatch):
+    monkeypatch.setitem(bot.CONFIG, "TP1_EXIT_PCT", 0.60)
+    monkeypatch.setitem(bot.CONFIG, "TP2_EXIT_PCT", 0.30)
+    monkeypatch.setitem(bot.CONFIG, "RUNNER_KEEP_PCT_AT_TP3", 0.10)
+    monkeypatch.setitem(bot.CONFIG, "ENABLE_RUNNER_MODE", True)
+    monkeypatch.setitem(bot.CONFIG, "TAKER_FEE_PCT", 0.10)
+    monkeypatch.setitem(bot.CONFIG, "ROUNDTRIP_FEE_MULT", 2.0)
+    monkeypatch.setitem(bot.CONFIG, "V702_SMALL_NET_MIN_NET_PROFIT_PCT", 0.10)
+    monkeypatch.setitem(bot.CONFIG, "V702_SMALL_NET_MIN_NET_RR_TP1", 0.25)
+    monkeypatch.setitem(bot.CONFIG, "V702_SMALL_NET_MIN_NET_RR_OVERALL", 0.50)
+    result = bot.SizingEngine.fee_viability_detail(
+        100.0, 99.0, 101.0, 102.0, 1000.0, small_net_mode=True,
+    )
+    assert result["ok"] is True, result
+    assert result["TP1_PARTIAL_EXIT_FRACTION"] == pytest.approx(0.60)
+    assert result["TP1_FULL_CLOSE_NET_USDT"] == pytest.approx(result["net_profit_tp1_usdt"])
+    assert result["TP1_PARTIAL_REALIZED_NET_USDT"] == pytest.approx(
+        result["TP1_FULL_CLOSE_NET_USDT"] * 0.60
+    )
+    assert result["TP1_PARTIAL_REALIZED_NET_PCT_OF_ORIGINAL"] == pytest.approx(
+        result["TP1_FULL_CLOSE_NET_PCT"] * 0.60
+    )
+
+
+def test_cost_model_never_clips_high_measured_cost_and_rejects_nan_fee():
+    model = unified_round_trip_cost_model(
+        {"V702_MEASURED_COST_BUFFER_PCT": 0.05}, measured_cost_pct=25.0,
+        spread_pct=12.0, fee_cost_pct=0.20,
+    )
+    assert model["round_trip_cost_pct"] == pytest.approx(25.05)
+    assert model["measured_cost_pct"] == pytest.approx(25.0)
+    with pytest.raises(ValueError):
+        unified_round_trip_cost_model({}, spread_pct=0.2, fee_cost_pct=float("nan"))

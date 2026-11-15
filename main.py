@@ -2821,18 +2821,19 @@ class V702PlatformRateLimiter:
     @staticmethod
     def priority(op_label: str) -> Tuple[int, str]:
         label = str(op_label or "").lower()
-        # Order-book reads are scanner inputs, not execution operations.
-        if any(x in label for x in ("fetch_order_book", "order_book", "orderbook", "ticker", "ohlcv", "universe", "load_markets", "scan")):
-            return 2, "SCAN"
-        # Fills, protective stops, TP partial exits, cancel and reconciliation
-        # must pre-empt both scanning and research traffic.
+        # Protection reads must be classified before the broad ticker/ohlcv
+        # scanner matcher; otherwise protected_fetch_ticker_* is starved as SCAN.
         if any(x in label for x in (
-            "position_manager", "stop_loss", "stoploss", "create_sl", "sl_",
-            "tp1_sell", "tp2_sell", "tp3_sell", "take_profit", "cancel",
-            "protection", "reconcile", "fetch_order", "fetch_open_orders",
-            "fetch_closed_orders", "fetch_my_trades", "emergency_exit", "exit_order",
+            "protected_fetch_ticker", "position_manager", "stop_loss", "stoploss",
+            "create_sl", "sl_", "tp1_sell", "tp2_sell", "tp3_sell",
+            "take_profit", "cancel", "protection", "reconcile", "fetch_order",
+            "fetch_open_orders", "fetch_closed_orders", "fetch_my_trades",
+            "emergency_exit", "exit_order",
         )):
             return 0, "PROTECTION"
+        # Ordinary market-data reads are scanner inputs, not execution operations.
+        if any(x in label for x in ("fetch_order_book", "order_book", "orderbook", "ticker", "ohlcv", "universe", "load_markets", "scan")):
+            return 2, "SCAN"
         if any(x in label for x in ("create_", "submit", "market_buy", "market_sell", "limit_buy", "order", "balance", "truthseal", "preflight")):
             return 1, "EXECUTION"
         if any(x in label for x in ("knowledge", "shadow", "counterfactual", "intraday", "research")):
@@ -6119,6 +6120,17 @@ class SizingEngine:
             net_profit_tp1 = gross_tp1 - total_costs
             net_profit_pct_tp1 = 100.0 * net_profit_tp1 / n
             net_rr_tp1 = net_profit_tp1 / risk_usdt
+            _exit_w1 = max(0.0, float(CONFIG.get("TP1_EXIT_PCT", 0.60)))
+            _exit_w2 = max(0.0, float(CONFIG.get("TP2_EXIT_PCT", 0.30)))
+            _exit_wr = (max(0.0, float(CONFIG.get("RUNNER_KEEP_PCT_AT_TP3", 0.10)))
+                        if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) else 0.0)
+            _exit_weight_total = _exit_w1 + _exit_w2 + _exit_wr
+            _tp1_partial_fraction = (_exit_w1 / _exit_weight_total) if _exit_weight_total > 0 else 0.0
+            _tp1_partial_net_usdt = net_profit_tp1 * _tp1_partial_fraction
+            _tp1_partial_cost_usdt = total_costs * _tp1_partial_fraction
+            _tp1_partial_net_pct_of_original = 100.0 * _tp1_partial_net_usdt / n
+            _tp1_partial_net_pct_of_sold = (100.0 * _tp1_partial_net_usdt / (n * _tp1_partial_fraction)
+                                             if _tp1_partial_fraction > 0 else 0.0)
             req_tp1 = (max(0.0, float(CONFIG.get("V702_SMALL_NET_MIN_NET_RR_TP1", 0.25)))
                        if small_net_mode else float(CONFIG["MIN_NET_RR_TP1"]))
             fee_ratio = (float(fee_ratio_override) if fee_ratio_override is not None
@@ -6127,6 +6139,13 @@ class SizingEngine:
             base = {"fees":fees, "extra_costs_usdt":float(extra["extra_cost_usdt"]),
                     "total_costs_usdt":total_costs, "risk_usdt":risk_usdt,
                     "gross_tp1":gross_tp1, "net_profit_tp1_usdt":net_profit_tp1,
+                    "TP1_FULL_CLOSE_NET_USDT":net_profit_tp1,
+                    "TP1_FULL_CLOSE_NET_PCT":net_profit_pct_tp1,
+                    "TP1_PARTIAL_EXIT_FRACTION":_tp1_partial_fraction,
+                    "TP1_PARTIAL_REALIZED_NET_USDT":_tp1_partial_net_usdt,
+                    "TP1_PARTIAL_REALIZED_COST_USDT":_tp1_partial_cost_usdt,
+                    "TP1_PARTIAL_REALIZED_NET_PCT_OF_ORIGINAL":_tp1_partial_net_pct_of_original,
+                    "TP1_PARTIAL_REALIZED_NET_PCT_OF_SOLD":_tp1_partial_net_pct_of_sold,
                     "net_profit_pct_tp1":net_profit_pct_tp1, "net_rr_tp1":net_rr_tp1,
                     "spread_pct_used":float(extra["spread_pct_used"]),
                     "slippage_per_side_pct":float(extra["slippage_per_side_pct"])}
@@ -7680,7 +7699,10 @@ def _v563_trade_protection_healthy(trade: Any) -> bool:
         qty = float(getattr(trade, "remaining_position", 0.0) or 0.0)
         entry = float(getattr(trade, "entry", 0.0) or 0.0)
         sl = float(getattr(trade, "current_sl", 0.0) or getattr(trade, "original_sl", 0.0) or 0.0)
-        if qty <= 0 or entry <= 0 or sl <= 0 or sl >= entry:
+        # A live protective stop may legitimately be at/above entry after
+        # breakeven or profit-lock. Geometry is checked separately at entry;
+        # protection health must validate the active stop, not require a loss stop.
+        if qty <= 0 or entry <= 0 or sl <= 0:
             return False
         native = bool(getattr(trade, "sl_order_id", None)) and str(
             getattr(trade, "sl_health_state", "") or ""
@@ -11758,6 +11780,13 @@ class DBManager:
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_status ON execution_intents(status)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_symbol ON execution_intents(symbol)")
+            c.execute("""CREATE TABLE IF NOT EXISTS telegram_outbox (
+                outbox_id TEXT PRIMARY KEY, message_key TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+            )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_telegram_outbox_status ON telegram_outbox(status, created_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_telegram_outbox_key ON telegram_outbox(message_key)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_ts ON rejection_events(ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_symbol ON rejection_events(symbol)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_execevt_ts ON execution_events(ts)")
@@ -12056,6 +12085,87 @@ class DBManager:
                 except Exception: pass
         return out
 
+    @staticmethod
+    def enqueue_telegram_outbox(message: str) -> str:
+        """Persist an operator message before admitting it to the volatile queue."""
+        raw = str(message or "")
+        if not raw.strip():
+            raise ValueError("telegram_outbox_message_empty")
+        key = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+        outbox_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        conn = None
+        try:
+            path = str(CONFIG.get("DB_PATH") or "./unified_scalper.db")
+            conn = sqlite3.connect(path, timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("""CREATE TABLE IF NOT EXISTS telegram_outbox (
+                outbox_id TEXT PRIMARY KEY, message_key TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+            )""")
+            conn.execute("INSERT INTO telegram_outbox(outbox_id,message_key,message,status,attempts,created_at,updated_at,last_error) VALUES(?,?,?,?,?,?,?,?)",
+                         (outbox_id, key, raw, "QUEUED", 0, now, now, None))
+            conn.commit()
+            STATS["v702_a66_telegram_outbox_enqueued"] = int(STATS.get("v702_a66_telegram_outbox_enqueued", 0) or 0) + 1
+            return outbox_id
+        except Exception as exc:
+            STATS["v702_a66_telegram_outbox_errors"] = int(STATS.get("v702_a66_telegram_outbox_errors", 0) or 0) + 1
+            raise RuntimeError(f"telegram_outbox_persist_failed:{type(exc).__name__}") from exc
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
+    @staticmethod
+    def list_pending_telegram_outbox(limit: int = 500) -> List[Dict[str, Any]]:
+        conn = None
+        try:
+            path = str(CONFIG.get("DB_PATH") or "./unified_scalper.db")
+            conn = sqlite3.connect(path, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("""CREATE TABLE IF NOT EXISTS telegram_outbox (
+                outbox_id TEXT PRIMARY KEY, message_key TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+            )""")
+            rows = conn.execute(
+                "SELECT outbox_id,message_key,message,status,attempts,created_at FROM telegram_outbox "
+                "WHERE status IN ('QUEUED','SENDING','RETRY_PENDING') ORDER BY created_at ASC LIMIT ?",
+                (max(1, min(5000, int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
+    @staticmethod
+    def update_telegram_outbox(outbox_id: str, status: str, attempts: Optional[int] = None,
+                               last_error: Optional[str] = None) -> bool:
+        oid = str(outbox_id or "").strip()
+        if not oid:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        conn = None
+        try:
+            path = str(CONFIG.get("DB_PATH") or "./unified_scalper.db")
+            conn = sqlite3.connect(path, timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            if attempts is None:
+                cur = conn.execute("UPDATE telegram_outbox SET status=?,updated_at=?,last_error=? WHERE outbox_id=?",
+                                   (str(status), now, str(last_error or "")[:240] or None, oid))
+            else:
+                cur = conn.execute("UPDATE telegram_outbox SET status=?,attempts=?,updated_at=?,last_error=? WHERE outbox_id=?",
+                                   (str(status), max(0, int(attempts)), now, str(last_error or "")[:240] or None, oid))
+            conn.commit()
+            return bool(cur.rowcount)
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
     # ---------------------------------------------------------------------
     # v4.2.2 FIX — ASYNC NON-BLOCKING WRAPPERS.
     # The sync methods above use the stdlib sqlite3 driver, which is fully
@@ -12262,6 +12372,8 @@ class TelegramDispatcher:
     # actually accepts the message.  The queue remains string-compatible with
     # all legacy callers.
     _delivery_callbacks: Dict[str, List[Tuple[Any, Any]]] = defaultdict(list)
+    _outbox_ids_by_key: Dict[str, deque] = defaultdict(deque)
+    _outbox_inflight_keys: set = set()
     _recent_enqueued_keys: Dict[str, float] = {}
     _recent_enqueued_lock = threading.RLock()
 
@@ -12364,11 +12476,46 @@ class TelegramDispatcher:
                     for k_dup, ts_dup in list(cls._recent_enqueued_keys.items()):
                         if float(ts_dup or 0.0) < cutoff_dup:
                             cls._recent_enqueued_keys.pop(k_dup, None)
+        # Persist before volatile queue admission. This is an at-least-once
+        # outbox: a process crash after Telegram accepts but before the DB ACK may
+        # replay the same message, which is safer than silent loss.
+        # Coalesce an identical payload already queued/in-flight. Attach any
+        # semantic callback to the existing delivery instead of creating a
+        # second durable row whose callback could be fired by the wrong send.
+        _already_pending = key in {cls._message_key(x) for x in list(cls._queue)} or key in cls._outbox_inflight_keys
+        if _already_pending:
+            if has_callback:
+                cls._delivery_callbacks[key].append((on_success, on_failure))
+            STATS["v702_a66_telegram_outbox_coalesced"] = int(STATS.get("v702_a66_telegram_outbox_coalesced", 0) or 0) + 1
+            return True
+        try:
+            _outbox_id = await asyncio.to_thread(DBManager.enqueue_telegram_outbox, msg)
+            cls._outbox_ids_by_key[key].append(_outbox_id)
+        except Exception as _outbox_exc:
+            # A failed durable write must not poison the short duplicate-suppress
+            # window; callers must be able to retry the same important message.
+            with cls._recent_enqueued_lock:
+                cls._recent_enqueued_keys.pop(key, None)
+            STATS["v702_a66_telegram_outbox_enqueue_blocked"] = int(STATS.get("v702_a66_telegram_outbox_enqueue_blocked", 0) or 0) + 1
+            logger.critical("[V702-A66-TG-OUTBOX] message not queued because durable persistence failed: %s", _outbox_exc)
+            if callable(on_failure):
+                try: await asyncio.to_thread(on_failure, "durable_outbox_persist_failed")
+                except Exception: pass
+            return False
         # Settle the evicted message's callback before admitting the new item.
-        # The outcome is explicit: queue eviction is a terminal delivery failure,
-        # not a silent callback leak or a successful enqueue for the old message.
+        # The old row moves to DEAD_LETTER and the digest callback restores its
+        # source window for a fresh message with a new durable id.
         if getattr(cls._queue, "maxlen", None) is not None and cls._queue.maxlen <= 0:
             STATS["telegram_enqueue_zero_capacity"] = int(STATS.get("telegram_enqueue_zero_capacity", 0) or 0) + 1
+            try:
+                await asyncio.to_thread(DBManager.update_telegram_outbox, _outbox_id, "DEAD_LETTER", 0, "queue_capacity_zero")
+            except Exception as _zero_capacity_db_exc:
+                logger.critical("[V702-A66-TG-OUTBOX] zero-capacity dead-letter persistence failed: %s", _zero_capacity_db_exc)
+            _ids = cls._outbox_ids_by_key.get(key)
+            if _ids:
+                try: _ids.remove(_outbox_id)
+                except ValueError: pass
+                if not _ids: cls._outbox_ids_by_key.pop(key, None)
             if callable(on_failure):
                 try:
                     await asyncio.to_thread(on_failure, "queue_capacity_zero")
@@ -12377,6 +12524,17 @@ class TelegramDispatcher:
             return False
         _evicted_msg = cls._drop_oldest_with_callbacks()
         if _evicted_msg is not None:
+            _evicted_key = cls._message_key(_evicted_msg)
+            _evicted_ids = cls._outbox_ids_by_key.get(_evicted_key)
+            if _evicted_ids:
+                _evicted_id = _evicted_ids.popleft()
+                if not _evicted_ids:
+                    cls._outbox_ids_by_key.pop(_evicted_key, None)
+                try:
+                    await asyncio.to_thread(DBManager.update_telegram_outbox, _evicted_id, "DEAD_LETTER", None, "queue_evicted")
+                except Exception as _evict_db_exc:
+                    STATS["v702_a66_telegram_outbox_errors"] = int(STATS.get("v702_a66_telegram_outbox_errors", 0) or 0) + 1
+                    logger.critical("[V702-A66-TG-OUTBOX] queue-evicted message state update failed: %s", _evict_db_exc)
             await cls._fire_delivery_callbacks(_evicted_msg, ok=False, permanent=True, reason="queue_evicted")
             STATS["telegram_queue_evicted"] = int(STATS.get("telegram_queue_evicted", 0) or 0) + 1
         if has_callback:
@@ -12554,8 +12712,15 @@ class TelegramCommandController:
                     lambda: exchange.fetch_open_orders(),
                     retry_safe=True,
                 )
-            return list(rows or []) if isinstance(rows, list) else []
+            result = list(rows or []) if isinstance(rows, list) else []
+            _scope = str(symbol or "ALL")
+            STATS[f"v561_open_orders_status_{_scope}"] = "SUCCESS_ROWS" if result else "SUCCESS_EMPTY"
+            STATS[f"v561_open_orders_last_error_{_scope}"] = None
+            return result
         except Exception as exc:
+            _scope = str(symbol or "ALL")
+            STATS[f"v561_open_orders_status_{_scope}"] = "ERROR"
+            STATS[f"v561_open_orders_last_error_{_scope}"] = f"{type(exc).__name__}:{str(exc)[:160]}"
             logger.warning(f"[V561-TG] fetch_open_orders failed: {exc}")
             return []
 
@@ -12577,10 +12742,18 @@ class TelegramCommandController:
     ) -> Tuple[int, int, List[str]]:
         rows = await cls._fetch_open_orders(exchange, symbol)
         matched = []
+        trade = ACTIVE_TRADES.get(symbol)
+        owned_ids = set()
+        if trade is not None:
+            for field in ("sl_order_id", "tp1_order_id", "tp2_order_id", "tp3_order_id"):
+                _owned = str(getattr(trade, field, "") or "").strip()
+                if _owned:
+                    owned_ids.add(_owned)
         for order in rows:
-            if all_orders or not bool(CONFIG.get("V561_CANCEL_SELL_LIMIT_ONLY", True)):
+            _oid_candidate = str((order or {}).get("id") or "").strip()
+            if all_orders:
                 matched.append(order)
-            elif cls._is_target_sell(order):
+            elif cls._is_target_sell(order) and _oid_candidate in owned_ids:
                 matched.append(order)
 
         ok_count = 0
@@ -12593,9 +12766,10 @@ class TelegramCommandController:
                 continue
             ids.append(oid)
             try:
-                ok = await OrderExecutor.cancel_order_safe(
-                    exchange, oid, symbol
-                )
+                async with HandoffOwnership.lock_for(symbol):
+                    ok = await OrderExecutor.cancel_order_safe(
+                        exchange, oid, symbol
+                    )
                 if ok:
                     ok_count += 1
                 else:
@@ -12630,16 +12804,25 @@ class TelegramCommandController:
         ok_count = 0
         fail_count = 0
 
+        # Cancel only target orders owned by this bot's active TradeState.
+        # Explicit /cancel_all SYMBOL remains the separately named broad action.
+        owned_targets = {}
+        for _symbol, _trade in list(ACTIVE_TRADES.items()):
+            for _field in ("tp1_order_id", "tp2_order_id", "tp3_order_id"):
+                _oid = str(getattr(_trade, _field, "") or "").strip()
+                if _oid:
+                    owned_targets[_oid] = str(_symbol)
         for order in rows:
             if not cls._is_target_sell(order):
                 continue
             symbol = str(order.get("symbol") or "")
             oid = str(order.get("id") or "")
-            if not symbol or not oid:
+            if not symbol or not oid or owned_targets.get(oid) != symbol:
                 continue
             by_symbol[symbol] += 1
             try:
-                ok = await OrderExecutor.cancel_order_safe(exchange, oid, symbol)
+                async with HandoffOwnership.lock_for(symbol):
+                    ok = await OrderExecutor.cancel_order_safe(exchange, oid, symbol)
                 if ok:
                     ok_count += 1
                 else:
@@ -12658,8 +12841,13 @@ class TelegramCommandController:
     @classmethod
     async def _format_orders(cls, exchange, symbol: Optional[str]) -> str:
         rows = await cls._fetch_open_orders(exchange, symbol)
+        _scope = str(symbol or "ALL")
+        _read_status = str(STATS.get(f"v561_open_orders_status_{_scope}", "UNKNOWN") or "UNKNOWN")
+        if _read_status == "ERROR":
+            _detail = str(STATS.get(f"v561_open_orders_last_error_{_scope}", "read_failed") or "read_failed")
+            return f"{_scope}: open orders UNKNOWN (read failed: {_detail[:120]})."
         if not rows:
-            return f"{symbol or 'ALL'}: no open orders."
+            return f"{_scope}: no open orders (verified empty)."
 
         lines = [f"Open orders: {len(rows)}"]
         for o in rows[:20]:
@@ -21775,6 +21963,15 @@ class PositionManager:
 
     @staticmethod
     async def _tick_locked(exchange):
+        # A cycle is healthy only when every position present at cycle start
+        # received a valid market mark and protection evaluation, or was
+        # conclusively closed during this cycle. Per-symbol exceptions must not
+        # be hidden by the loop's best-effort continuation.
+        _pm_cycle_started = float(WALL_NOW())
+        _pm_cycle_symbols = [str(x) for x in list(ACTIVE_TRADES.keys())]
+        _pm_cycle_status = {sym: "PENDING" for sym in _pm_cycle_symbols}
+        def _pm_set_status(_sym, _state):
+            _pm_cycle_status[str(_sym)] = str(_state)[:180]
         # v4.0.2 PATCH B: heartbeat for SoftwareSLFallback consumers
         try:
             SoftwareSLTelemetry.register_pm_tick()
@@ -21805,20 +22002,23 @@ class PositionManager:
                         or bool(getattr(trade, "entry_reconcile_required", False))):
                     _may_manage = await _v702_reconcile_entry_intent_for_trade(exchange, trade)
                     if float(getattr(trade, "remaining_position", 0.0) or 0.0) <= 0.0:
+                        _pm_set_status(symbol, "CLOSED")
                         continue
                     if not _may_manage:
+                        _pm_set_status(symbol, "INCOMPLETE:ENTRY_RECONCILIATION")
                         continue
                 # Fetch current price. Protection reads deliberately avoid the
                 # generic transient retry path: duplicating a read is harmless,
                 # but delaying a software-SL decision is not. The next dedicated
                 # PM tick is the bounded retry point.
                 ticker = await safe_api_call(
-                    f"fetch_ticker_{symbol}",
+                    f"protected_fetch_ticker_{symbol}",
                     lambda: exchange.fetch_ticker(symbol),
                     retry_safe=bool(CONFIG.get("V702_PROTECTION_TICKER_RETRY_SAFE", False)),
                 )
                 cur = float(ticker.get("last") or ticker.get("close") or 0)
-                if cur <= 0:
+                if cur <= 0 or not math.isfinite(cur):
+                    _pm_set_status(symbol, "INCOMPLETE:INVALID_MARK_PRICE")
                     continue
                 bid = 0.0
                 try:
@@ -21891,6 +22091,7 @@ class PositionManager:
                         _sw_closed = False
                         logger.error(f"[V574-SL] {symbol} target-only software-SL check failed: {_sw_e}")
                     if _is_trade_closed_locally(symbol, trade) or _sw_closed:
+                        _pm_set_status(symbol, "CLOSED")
                         continue
                     try:
                         await _v559_monitor_sl_only(trade, cur)
@@ -21904,21 +22105,25 @@ class PositionManager:
                         logger.error(
                             f"[V559-TARGET] {symbol} reconcile failed: {_tgt_e}"
                         )
+                    _pm_set_status(symbol, "PROTECTED" if _v563_trade_protection_healthy(trade) else "INCOMPLETE:PROTECTION_UNHEALTHY")
                     continue
 
                 # v4.5.17: reconcile ambiguous SL/TP outcomes before any new
                 # mutation; unresolved ambiguity never permits a blind retry.
                 if hasattr(trade, "v517_pending_sl_reconcile"):
                     if not await _v517_reconcile_pending_sl(exchange, trade):
+                        _pm_set_status(symbol, "INCOMPLETE:PENDING_SL_RECONCILIATION")
                         continue
                 if hasattr(trade, "v517_pending_exit_reconcile"):
                     if not await _v517_reconcile_pending_exit(exchange, trade):
+                        _pm_set_status(symbol, "INCOMPLETE:PENDING_EXIT_RECONCILIATION")
                         continue
 
                 # SL health audit — may finalize (SL_HIT / MISSING) and pop trade.
                 await SLHealthAuditor.verify(exchange, trade)
                 # v4.0.4 PATCH R — short-circuit if audit finalized/closed the trade
                 if _is_trade_closed_locally(symbol, trade):
+                    _pm_set_status(symbol, "CLOSED")
                     STATS["tick_shortcircuit_after_audit"] = \
                         STATS.get("tick_shortcircuit_after_audit", 0) + 1
                     continue
@@ -21926,9 +22131,14 @@ class PositionManager:
                 await SoftwareSLFallback.check(exchange, trade, protect_cur)
                 # v4.0.4 PATCH R — short-circuit if software fallback finalized/closed
                 if _is_trade_closed_locally(symbol, trade):
+                    _pm_set_status(symbol, "CLOSED")
                     STATS["tick_shortcircuit_after_swsl"] = \
                         STATS.get("tick_shortcircuit_after_swsl", 0) + 1
                     continue
+                if not _v563_trade_protection_healthy(trade):
+                    _pm_set_status(symbol, "INCOMPLETE:PROTECTION_UNHEALTHY_AFTER_AUDIT")
+                else:
+                    _pm_set_status(symbol, "PROTECTED")
 
                 # V702 R3 LSB LOSS CLOSURE: confirmed breakout-thesis failure can
                 # exit before the generic ATR stop. EXIT-ONLY; no entry gate is changed.
@@ -21942,6 +22152,7 @@ class PositionManager:
                         f"[V702-R4] structural failure check failed {symbol}: {_v702_struct_e}"
                     )
                 if _v702_struct_closed or _is_trade_closed_locally(symbol, trade):
+                    _pm_set_status(symbol, "CLOSED" if _is_trade_closed_locally(symbol, trade) else _pm_cycle_status.get(symbol, "INCOMPLETE:STRUCTURAL_EXIT"))
                     STATS["tick_shortcircuit_after_structural_invalidation"] = int(
                         STATS.get("tick_shortcircuit_after_structural_invalidation", 0) or 0
                     ) + 1
@@ -22009,6 +22220,11 @@ class PositionManager:
                             # v4.0.9 DS-2 — wrap the SL cancel+replace in the
                             # SAME symbol lock used by build_and_route so no
                             # entry-side SL work can interleave mid-mutation.
+                            # Capture the exact pre-BE stop in this trade scope.
+                            # Recovery must never depend on a local left over from
+                            # another symbol or on an unrelated ExitManager path.
+                            prev_sl = float(getattr(trade, "current_sl", 0.0) or
+                                            getattr(trade, "original_sl", 0.0) or 0.0)
                             if (
                                 bool(getattr(trade, "software_sl_active", False))
                                 and bool(CONFIG.get("V564_SOFTWARE_SL_LOCAL_BE_ENABLE", True))
@@ -22503,6 +22719,14 @@ class PositionManager:
                         STATS["v571_time_exit_no_sell"] = int(
                             STATS.get("v571_time_exit_no_sell", 0) or 0
                         ) + 1
+                        # The time-exit policy is an entry-control event, not a
+                        # failed protection evaluation. Keep the PM lease healthy
+                        # only when the already-active stop remains verified.
+                        _pm_set_status(
+                            symbol,
+                            "PROTECTED" if _v563_trade_protection_healthy(trade)
+                            else "INCOMPLETE:PROTECTION_UNHEALTHY_AT_TIME_EXIT",
+                        )
                         continue
                 except Exception as _time_exit_exc:
                     _v593_note_suppressed_exception(
@@ -22517,9 +22741,39 @@ class PositionManager:
                 # v4.2.2 FIX — non-blocking snapshot (worker thread) so the
                 # PositionManager tick loop is never stalled by disk I/O.
                 await DBManager.asave_trade_snapshot(trade)
+                if _is_trade_closed_locally(symbol, trade):
+                    _pm_set_status(symbol, "CLOSED")
+                elif _v563_trade_protection_healthy(trade):
+                    _pm_set_status(symbol, "PROTECTED")
+                else:
+                    _pm_set_status(symbol, "INCOMPLETE:PROTECTION_UNHEALTHY_AT_CYCLE_END")
 
             except Exception as e:
-                logger.error(f"[PositionManager] {symbol}: {e}")
+                _pm_set_status(symbol, f"ERROR:{type(e).__name__}:{str(e)[:120]}")
+                logger.critical(f"[PositionManager] protection cycle incomplete for {symbol}: {type(e).__name__}: {e}")
+
+        _pm_failed = {sym: state for sym, state in _pm_cycle_status.items()
+                      if state not in {"PROTECTED", "CLOSED"}}
+        # Include positions that appeared during the cycle; they also need a
+        # valid protection state before this tick can renew the health lease.
+        for _sym, _trade in list(ACTIVE_TRADES.items()):
+            if not _v563_trade_protection_healthy(_trade):
+                _pm_failed.setdefault(str(_sym), "INCOMPLETE:ACTIVE_POSITION_NOT_PROTECTED")
+        _pm_report = {
+            "started_ts": _pm_cycle_started, "completed_ts": float(WALL_NOW()),
+            "positions_at_start": len(_pm_cycle_symbols),
+            "positions_open_at_end": len(ACTIVE_TRADES),
+            "status_by_symbol": dict(_pm_cycle_status),
+            "failed_by_symbol": _pm_failed,
+            "healthy": not bool(_pm_failed),
+            "source": "POSITION_MANAGER_PER_POSITION_PROTECTION_EVALUATION",
+        }
+        STATS["v702_pm_cycle_report"] = _pm_report
+        if _pm_failed:
+            STATS["v702_pm_cycle_incomplete_total"] = int(STATS.get("v702_pm_cycle_incomplete_total", 0) or 0) + 1
+        else:
+            STATS["v702_pm_cycle_complete_total"] = int(STATS.get("v702_pm_cycle_complete_total", 0) or 0) + 1
+        return _pm_report
 
 
 # =============================================================================
@@ -22538,7 +22792,9 @@ async def _v568_reconcile_recovered_protection(exchange) -> None:
             qty=float(getattr(trade,"remaining_position",0.0) or 0.0)
             entry=float(getattr(trade,"entry",0.0) or 0.0)
             sl=float(getattr(trade,"current_sl",0.0) or getattr(trade,"original_sl",0.0) or 0.0)
-            if qty<=0 or entry<=0 or sl<=0 or sl>=entry:
+            # A recovered BE/profit-lock stop at or above entry is valid.
+            # Do not misclassify it as a malformed original entry stop.
+            if qty<=0 or entry<=0 or sl<=0:
                 live_entries_block(
                     f"recovered_trade_protection_invalid_{symbol}",
                     where="V568.startup_reconcile"
@@ -22763,9 +23019,12 @@ async def _position_manager_task(exchange):
             t0 = MONO_NOW()
             try:
                 if ACTIVE_TRADES:
-                    await PositionManager.tick(exchange)
-                # No open trades is a healthy idle cycle; an exception during
-                # management deliberately leaves the last healthy stamp stale.
+                    _pm_result = await PositionManager.tick(exchange)
+                    if not isinstance(_pm_result, dict) or not bool(_pm_result.get("healthy")):
+                        _failed_symbols = dict((_pm_result or {}).get("failed_by_symbol", {}) or {}) if isinstance(_pm_result, dict) else {}
+                        raise RuntimeError(f"position_protection_cycle_incomplete:{_failed_symbols}")
+                # No open trades is a healthy idle cycle; an incomplete per-trade
+                # evaluation deliberately leaves the previous health lease stale.
                 next_ticks = int(STATS.get("v702_pm_healthy_ticks", 0) or 0) + 1
                 payload = _v702_pm_heartbeat_payload()
                 payload["timestamp"] = float(time.time())
@@ -22879,33 +23138,50 @@ STATS.setdefault("v679_ticker_fetch_errors", 0)
 STATS.setdefault("v679_boot_watchdog_quarantine_cleared", 0)
 STATS.setdefault("v679_pool_dedupe_removed", 0)
 
-_V679_TICKER_SNAPSHOT: Dict[str, Any] = {"ts": 0.0, "tickers": {}}
+_V679_TICKER_SNAPSHOT: Dict[str, Any] = {"ts": 0.0, "tickers": {}, "ticker_ts": {}}
 _V679_TICKER_LOCK = asyncio.Lock()
 
 async def _v679_get_ticker_snapshot(exchange, symbols: Optional[List[str]] = None, *, force: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Return one bounded shared ticker snapshot; missing rows never authorize a trade."""
+    """Return bounded ticker rows using per-symbol freshness, never batch freshness.
+
+    A refresh of B must not renew the TTL of a cached A row. Returned rows are
+    restricted to individually fresh observations; callers cannot accidentally
+    consume stale rows just because a neighbouring symbol was refreshed.
+    """
     global _V679_TICKER_SNAPSHOT
+    ttl = max(1.0, float(CONFIG.get("V679_TICKER_SNAPSHOT_TTL_SEC", 20.0)))
+
+    def _fresh_rows(cache_map, cache_ts_map, now_mono, wanted_symbols=None):
+        out = {}
+        for _sym, _row in (cache_map or {}).items():
+            if wanted_symbols and _sym not in wanted_symbols:
+                continue
+            _ts = float((cache_ts_map or {}).get(_sym, 0.0) or 0.0)
+            if _ts > 0 and 0.0 <= now_mono - _ts <= ttl and isinstance(_row, dict):
+                out[str(_sym)] = _row
+        return out
+
+    wanted: List[str] = []
     try:
         wanted = [str(x) for x in (symbols or []) if str(x)]
-        ttl = max(1.0, float(CONFIG.get("V679_TICKER_SNAPSHOT_TTL_SEC", 20.0)))
         now = MONO_NOW()
         cached = dict(_V679_TICKER_SNAPSHOT or {})
-        cache_ts = float(cached.get("ts", 0.0) or 0.0)
         cache_map = cached.get("tickers") if isinstance(cached.get("tickers"), dict) else {}
-        if (not force and cache_ts > 0.0 and now - cache_ts <= ttl
-                and (not wanted or all(sym in cache_map for sym in wanted))):
+        cache_ts_map = cached.get("ticker_ts") if isinstance(cached.get("ticker_ts"), dict) else {}
+        fresh = _fresh_rows(cache_map, cache_ts_map, now, set(wanted) if wanted else None)
+        if not force and ((wanted and len(fresh) == len(set(wanted))) or (not wanted and bool(cache_map) and len(fresh) == len(cache_map))):
             STATS["v679_ticker_cache_hits"] = int(STATS.get("v679_ticker_cache_hits", 0) or 0) + 1
-            return dict(cache_map)
+            return fresh
         STATS["v679_ticker_cache_misses"] = int(STATS.get("v679_ticker_cache_misses", 0) or 0) + 1
         async with _V679_TICKER_LOCK:
             now = MONO_NOW()
             cached = dict(_V679_TICKER_SNAPSHOT or {})
-            cache_ts = float(cached.get("ts", 0.0) or 0.0)
             cache_map = cached.get("tickers") if isinstance(cached.get("tickers"), dict) else {}
-            if (not force and cache_ts > 0.0 and now - cache_ts <= ttl
-                    and (not wanted or all(sym in cache_map for sym in wanted))):
+            cache_ts_map = cached.get("ticker_ts") if isinstance(cached.get("ticker_ts"), dict) else {}
+            fresh = _fresh_rows(cache_map, cache_ts_map, now, set(wanted) if wanted else None)
+            if not force and ((wanted and len(fresh) == len(set(wanted))) or (not wanted and bool(cache_map) and len(fresh) == len(cache_map))):
                 STATS["v679_ticker_cache_hits"] = int(STATS.get("v679_ticker_cache_hits", 0) or 0) + 1
-                return dict(cache_map)
+                return fresh
             label = "fetch_tickers"
             factory = (lambda: exchange.fetch_tickers(wanted)) if wanted else exchange.fetch_tickers
             tickers = await asyncio.wait_for(
@@ -22914,26 +23190,29 @@ async def _v679_get_ticker_snapshot(exchange, symbols: Optional[List[str]] = Non
             )
             if not isinstance(tickers, dict):
                 raise RuntimeError("v679_ticker_snapshot_invalid")
-            merged = {} if not wanted else dict(cache_map)
-            merged.update(tickers)
+            merged = dict(cache_map) if wanted else {}
+            merged_ts = dict(cache_ts_map) if wanted else {}
             fetched_now = MONO_NOW()
-            _V679_TICKER_SNAPSHOT = {"ts": fetched_now, "tickers": merged}
-            return dict(merged)
+            for _sym, _row in tickers.items():
+                _sym = str(_sym)
+                if isinstance(_row, dict):
+                    merged[_sym] = _row
+                    merged_ts[_sym] = fetched_now
+            _V679_TICKER_SNAPSHOT = {"ts": fetched_now, "tickers": merged, "ticker_ts": merged_ts}
+            return _fresh_rows(merged, merged_ts, fetched_now, set(wanted) if wanted else None)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         STATS["v679_ticker_fetch_errors"] = int(STATS.get("v679_ticker_fetch_errors", 0) or 0) + 1
+        STATS["v679_ticker_last_error"] = f"{type(exc).__name__}:{str(exc)[:160]}"
         logger.warning("[V679-TICKER] shared snapshot unavailable: %s", exc)
-        # Fail closed: a stale/unknown ticker snapshot is never treated as fresh
-        # market truth. Reuse only when the existing snapshot is still inside TTL.
         try:
             cached = dict(_V679_TICKER_SNAPSHOT or {})
-            cache_ts = float(cached.get("ts", 0.0) or 0.0)
-            if cache_ts > 0.0 and MONO_NOW() - cache_ts <= ttl:
-                return dict(cached.get("tickers") or {})
+            cache_map = cached.get("tickers") if isinstance(cached.get("tickers"), dict) else {}
+            cache_ts_map = cached.get("ticker_ts") if isinstance(cached.get("ticker_ts"), dict) else {}
+            return _fresh_rows(cache_map, cache_ts_map, MONO_NOW(), set(wanted) if wanted else None)
         except Exception:
-            pass
-        return {}
+            return {}
 
 async def build_top_liquidity_universe(exchange, max_symbols: int = 120) -> List[str]:
     """Build a dynamic MEXC SPOT USDT universe ranked by 24h quote volume.
@@ -23229,7 +23508,34 @@ def _v652_install_task_reference():
 # It NEVER authorizes, queues, submits, cancels, sizes, or changes live orders.
 # =============================================================================
 V702_A54_CANONICAL_RELEASE_ID = "UNIFIED-SCALPER-V702-A55-CANONICAL-FINAL"
-V702_KNOWLEDGE_EDGE_VERSION = "V702-KNOWLEDGE-EDGE-SHADOW-7-A63"
+V702_KNOWLEDGE_EDGE_VERSION = "V702-KNOWLEDGE-EDGE-SHADOW-8-A66-AUDIT-CLOSURE"
+V702_ECONOMIC_MODEL_VERSION = "A66_PARTIAL_EXIT_COST_AND_FDR_V1"
+
+def _v702_economic_model_fingerprint() -> str:
+    """Fingerprint the assumptions that make Paper/Edge outcomes comparable."""
+    numeric_keys = (
+        "TAKER_FEE_PCT", "ROUNDTRIP_FEE_MULT",
+        "V702_SMALL_NET_MIN_NET_PROFIT_PCT", "V702_SMALL_NET_MIN_NET_RR_TP1",
+        "V702_SMALL_NET_MIN_NET_RR_OVERALL", "V702_SMALL_NET_SPREAD_FALLBACK_PCT",
+        "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT", "V702_MEASURED_COST_BUFFER_PCT",
+        "V702_SHADOW_MIN_ROUND_TRIP_COST_PCT", "MIN_TP1_TO_FEE_RATIO",
+        "TP1_EXIT_PCT", "TP2_EXIT_PCT", "RUNNER_KEEP_PCT_AT_TP3",
+        "V702_SMALL_NET_MAX_TP1_RR", "V702_SMALL_NET_MAX_TP2_RR",
+    )
+    payload = {"version": V702_ECONOMIC_MODEL_VERSION, "edge_version": V702_KNOWLEDGE_EDGE_VERSION,
+               "paper_candle_contract": "CLOSED_CANDLE_SEQUENCE_V1",
+               "market_type": str(CONFIG.get("MARKET_TYPE", "SPOT")).upper(),
+               "long_only": bool(CONFIG.get("LONG_ONLY", True)),
+               "runner_enabled": bool(CONFIG.get("ENABLE_RUNNER_MODE", True))}
+    for key in numeric_keys:
+        raw = CONFIG.get(key, 0.0)
+        if isinstance(raw, bool):
+            raise ValueError(f"economic_config_boolean:{key}")
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError(f"economic_config_non_finite:{key}")
+        payload[key] = value
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 class KnowledgeOutcomeLedger:
     _last_summary_ts = 0.0
@@ -23569,6 +23875,8 @@ class KnowledgeOutcomeLedger:
                int(getattr(candidate,"generated_at_ms",0) or 0),cycle,"WAITING_ENTRY",now,now,
                json.dumps({
                   "horizon_sec":horizon,"version":V702_KNOWLEDGE_EDGE_VERSION,
+                  "economic_model_version":V702_ECONOMIC_MODEL_VERSION,
+                  "economic_model_fingerprint":_v702_economic_model_fingerprint(),
                   "setup_id":setup_id,
                   "attempt_id":attempt_id,
                   "setup_cluster_id":setup_cluster_id,
@@ -24305,6 +24613,8 @@ class KnowledgeOutcomeLedger:
                     and bool(_edge_notes.get("shadow_presend_eligible"))
                     and bool(_edge_notes.get("market_live_eligible"))
                     and str(_edge_notes.get("version") or "") == V702_KNOWLEDGE_EDGE_VERSION
+                    and str(_edge_notes.get("economic_model_version") or "") == V702_ECONOMIC_MODEL_VERSION
+                    and str(_edge_notes.get("economic_model_fingerprint") or "") == _v702_economic_model_fingerprint()
                     and bool(_edge_notes.get("coverage_complete", False))
                     and str(_edge_notes.get("coverage_contract") or "") == "CLOSED_CANDLE_SEQUENCE_V1"
                     and not (bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) and str(_edge_row["final_outcome"] or "").upper() == "TP3")
@@ -24572,7 +24882,11 @@ class KnowledgeOutcomeLedger:
             _zscore = (_mean * math.sqrt(_n_train) / _sd) if _sd > 1e-12 else (float("inf") if _mean > 0 else 0.0)
             _pvalue = 0.5 * math.erfc(_zscore / math.sqrt(2.0)) if math.isfinite(_zscore) else 0.0
             _entry = {
-                "key": _key, "entries": _n_train,
+                "key": _key,
+                # `entries` is the count of independent, purged clusters used
+                # to qualify the recipe. Training/validation/holdout counts
+                # remain separate and are never overloaded into this field.
+                "entries": _n, "training_entries": _n_train,
                 "raw_modeled_rows": sum(len(v) for v in _by_cluster.values()),
                 "effective_sample_size": _n,
                 "train_samples": len(_train), "validation_samples": len(_validation),
@@ -24590,6 +24904,8 @@ class KnowledgeOutcomeLedger:
                 "first_half_expectancy_r": _first_half,
                 "second_half_expectancy_r": _second_half,
                 "p_value_one_sided": _pvalue,
+                "economic_model_version": V702_ECONOMIC_MODEL_VERSION,
+                "economic_model_fingerprint": _v702_economic_model_fingerprint(),
                 "sample_sufficient": True,
                 "status": "NOT_PROVEN",
             }
@@ -24599,12 +24915,24 @@ class KnowledgeOutcomeLedger:
         # Benjamini-Hochberg FDR correction across the small, coarse recipe family set.
         _bh_candidates.sort(key=lambda x: x[0])
         _bh_cutoff = 0.10
-        _bh_max_index = 0
-        for _idx, (_pvalue, _key) in enumerate(_bh_candidates, start=1):
-            if _pvalue <= (_bh_cutoff * _idx / max(1, len(_bh_candidates))):
-                _bh_max_index = _idx
-        _bh_accepted = {key for _pvalue, key in _bh_candidates[:_bh_max_index]}
+        _bh_family_size = len(_bh_candidates)
+        _bh_rank = {key: idx for idx, (_pvalue, key) in enumerate(_bh_candidates, start=1)}
+        _bh_adjusted: Dict[str, float] = {}
+        _bh_running = 1.0
+        for _idx in range(_bh_family_size, 0, -1):
+            _pvalue, _key = _bh_candidates[_idx - 1]
+            _bh_running = min(_bh_running, min(1.0, float(_pvalue) * _bh_family_size / max(1, _idx)))
+            _bh_adjusted[_key] = _bh_running
+        _bh_accepted = {key for key, adjusted in _bh_adjusted.items() if adjusted <= _bh_cutoff}
         for _key, _entry in learned_core.items():
+            _entry.update({
+                "fdr_method": "BENJAMINI_HOCHBERG",
+                "fdr_q": _bh_cutoff,
+                "fdr_family_size": _bh_family_size,
+                "fdr_rank": int(_bh_rank.get(_key, 0)),
+                "fdr_adjusted_p": _bh_adjusted.get(_key),
+                "fdr_significant": bool(_key in _bh_accepted),
+            })
             if (
                 _key in _bh_accepted
                 and _entry["expectancy_r"] >= 0.10
@@ -24619,7 +24947,11 @@ class KnowledgeOutcomeLedger:
         positive_observed=sorted([d for d in learned_core.values() if d["status"] == "VALIDATED_POSITIVE"],key=lambda d:(-d["expectancy_r"],-d["entries"],d["key"]))[:12]
         negative_observed=sorted([d for d in learned_core.values() if d["expectancy_r"] < 0.0],key=lambda d:(d["expectancy_r"],-d["entries"],d["key"]))[:12]
         return {
-            "version":V702_KNOWLEDGE_EDGE_VERSION,"generated_at":WALL_NOW(),"overall":build(rows),
+            "version":V702_KNOWLEDGE_EDGE_VERSION,"generated_at":WALL_NOW(),
+            "economic_model_version":V702_ECONOMIC_MODEL_VERSION,
+            "economic_model_fingerprint":_v702_economic_model_fingerprint(),
+            "fdr_contract":{"method":"BENJAMINI_HOCHBERG","q":0.10,"family_size":_bh_family_size},
+            "overall":build(rows),
             "discovery_shadow":build(discovery_rows),
             "paper_selected":build(paper_selected_rows),
             "paper_selected_active":paper_selected_active,
@@ -24939,7 +25271,8 @@ class EdgeGate:
         if not family or not style or not timeframe or htf is None:
             return None
         try:
-            htf_bucket = KnowledgeOutcomeLedger._bucket_htf(float(htf))
+            htf_value = EdgeGate._finite_metric(htf, "htf_strength", lower=0.0, upper=100.0)
+            htf_bucket = KnowledgeOutcomeLedger._bucket_htf(htf_value)
         except Exception:
             return None
         return "|".join((family, "STYLE="+style, "TF="+timeframe, "HTF="+htf_bucket))
@@ -24974,6 +25307,10 @@ class EdgeGate:
                 return False, "edge_report_missing_or_invalid"
             if str(report.get("version") or "") != str(V702_KNOWLEDGE_EDGE_VERSION):
                 return False, "edge_report_version_mismatch"
+            _economic_fp = _v702_economic_model_fingerprint()
+            if (str(report.get("economic_model_version") or "") != V702_ECONOMIC_MODEL_VERSION
+                    or str(report.get("economic_model_fingerprint") or "") != _economic_fp):
+                return False, "edge_economic_model_fingerprint_mismatch"
             report_ts = cls._finite_metric(report.get("generated_at"), "generated_at", lower=1.0)
             now = cls._finite_metric(WALL_NOW(), "wall_clock", lower=1.0)
             future_skew = max(0.0, min(5.0, cls._finite_metric(CONFIG.get("V702_EDGE_FUTURE_SKEW_SEC", 2.0), "future_skew", lower=0.0)))
@@ -24998,6 +25335,34 @@ class EdgeGate:
                 return False, "edge_sample_below_minimum"
             if str(recipe.get("status") or "") != "VALIDATED_POSITIVE":
                 return False, "edge_statistical_validation_failed"
+            # A status string is not proof by itself. Require the exact evidence
+            # dimensions produced by the canonical walk-forward/FDR report.
+            effective_n = cls._finite_metric(recipe.get("effective_sample_size"), "effective_sample_size", lower=float(min_n))
+            train_n = cls._finite_metric(recipe.get("train_samples"), "train_samples", lower=40.0)
+            validation_n = cls._finite_metric(recipe.get("validation_samples"), "validation_samples", lower=15.0)
+            holdout_n = cls._finite_metric(recipe.get("holdout_samples"), "holdout_samples", lower=15.0)
+            if not bool(recipe.get("purged_walk_forward")) or not bool(recipe.get("sample_sufficient")):
+                return False, "edge_validation_contract_missing"
+            if str(recipe.get("independent_cluster_model") or "") != "SYMBOL_FAMILY_TF_30M_WORST_CASE_V1":
+                return False, "edge_cluster_model_missing_or_unknown"
+            if (str(recipe.get("economic_model_version") or "") != V702_ECONOMIC_MODEL_VERSION
+                    or str(recipe.get("economic_model_fingerprint") or "") != _economic_fp):
+                return False, "edge_recipe_economic_fingerprint_mismatch"
+            if str(recipe.get("fdr_method") or "") != "BENJAMINI_HOCHBERG":
+                return False, "edge_fdr_method_missing"
+            _fdr_q = cls._finite_metric(recipe.get("fdr_q"), "fdr_q", lower=0.0, upper=0.10)
+            _fdr_family = cls._finite_metric(recipe.get("fdr_family_size"), "fdr_family_size", lower=1.0)
+            _fdr_rank = cls._finite_metric(recipe.get("fdr_rank"), "fdr_rank", lower=1.0)
+            _fdr_adjusted = cls._finite_metric(recipe.get("fdr_adjusted_p"), "fdr_adjusted_p", lower=0.0, upper=1.0)
+            if (_fdr_family != int(_fdr_family) or _fdr_rank != int(_fdr_rank)
+                    or _fdr_rank > _fdr_family or not bool(recipe.get("fdr_significant"))
+                    or _fdr_adjusted > _fdr_q):
+                return False, "edge_fdr_adjusted_significance_failed"
+            _validation_exp = cls._finite_metric(recipe.get("validation_expectancy_r"), "validation_expectancy_r", lower=-100.0, upper=100.0)
+            _holdout_exp = cls._finite_metric(recipe.get("holdout_expectancy_r"), "holdout_expectancy_r", lower=-100.0, upper=100.0)
+            _p_value = cls._finite_metric(recipe.get("p_value_one_sided"), "p_value_one_sided", lower=0.0, upper=1.0)
+            if _validation_exp <= 0.0 or _holdout_exp <= 0.0:
+                return False, "edge_validation_holdout_not_positive"
             expectancy = cls._finite_metric(recipe.get("expectancy_r"), "expectancy_r", lower=-100.0, upper=100.0)
             lower_bound = cls._finite_metric(recipe.get("lower_bound_90_r"), "lower_bound_90_r", lower=-100.0, upper=100.0)
             first_half = cls._finite_metric(recipe.get("first_half_expectancy_r"), "first_half_expectancy_r", lower=-100.0, upper=100.0)
@@ -25101,7 +25466,9 @@ async def run_bot(universe: List[str]):
     _early_protection_tasks = []
     try:
         if ACTIVE_TRADES:
-            await PositionManager.tick(exchange)
+            _pm_initial_result = await PositionManager.tick(exchange)
+            if not isinstance(_pm_initial_result, dict) or not bool(_pm_initial_result.get("healthy")):
+                raise RuntimeError("startup_position_protection_cycle_incomplete")
         _pm_payload = _v702_pm_heartbeat_payload()
         _pm_payload["timestamp"] = float(time.time())
         _pm_payload["healthy_ticks"] = max(1, int(STATS.get("v702_pm_healthy_ticks", 0) or 0) + 1)
@@ -25153,6 +25520,10 @@ async def run_bot(universe: List[str]):
                 raise RuntimeError("top_liquidity_universe_empty")
             universe = list(universe)
             STATS["v702_a66_universe_boot_degraded"] = False
+            STATS["v702_a66_universe_status"] = "READY"
+            STATS["v702_a66_universe_size"] = int(len(universe))
+            STATS["v702_a66_universe_last_success_ts"] = float(WALL_NOW())
+            STATS["v702_a66_universe_last_error"] = None
         except Exception as _univ_boot_e:
             logger.critical(
                 "[Universe] initial TOP_LIQUIDITY resolution failed: %s — "
@@ -25162,6 +25533,9 @@ async def run_bot(universe: List[str]):
             LiveStateMachine.block("liquidity_universe_boot_failed", where="run_bot.universe")
             universe = []
             STATS["v702_a66_universe_boot_degraded"] = True
+            STATS["v702_a66_universe_status"] = "EMPTY"
+            STATS["v702_a66_universe_size"] = 0
+            STATS["v702_a66_universe_last_error"] = f"{type(_univ_boot_e).__name__}:{str(_univ_boot_e)[:160]}"
             STATS["v702_a66_universe_boot_last_error"] = (
                 f"{type(_univ_boot_e).__name__}:{str(_univ_boot_e)[:240]}"
             )
@@ -25410,20 +25784,38 @@ async def run_bot(universe: List[str]):
                         run_bot._liq_universe_last_attempt_ts = run_bot._liq_universe_ts
                         STATS["v702_a66_universe_boot_degraded"] = False
                         STATS["v702_a66_universe_recovered_ts"] = WALL_NOW()
+                        STATS["v702_a66_universe_status"] = "READY"
+                        STATS["v702_a66_universe_size"] = int(len(run_bot._liq_universe))
+                        STATS["v702_a66_universe_last_success_ts"] = float(WALL_NOW())
+                        STATS["v702_a66_universe_last_error"] = None
                         STATS["liquidity_universe_refresh_ok"] = STATS.get("liquidity_universe_refresh_ok", 0) + 1
                     except Exception as _ue:
                         STATS["liquidity_universe_refresh_error"] = STATS.get("liquidity_universe_refresh_error", 0) + 1
                         STATS["v702_a66_universe_retry_last_error"] = f"{type(_ue).__name__}:{str(_ue)[:240]}"
+                        STATS["v702_a66_universe_status"] = "STALE_FALLBACK" if run_bot._liq_universe else "EMPTY"
+                        STATS["v702_a66_universe_size"] = int(len(run_bot._liq_universe))
+                        STATS["v702_a66_universe_last_error"] = STATS["v702_a66_universe_retry_last_error"]
                         logger.warning(
                             "[A66-UNIVERSE-RETRY] failed: %s — retry_after_sec=%.0f last_valid_size=%d",
                             _ue, _empty_retry_sec, len(run_bot._liq_universe),
                         )
                 scan_universe = [s.strip() for s in _manual_env.split(",") if s.strip()] if _manual_env else list(run_bot._liq_universe)
+                if _manual_env:
+                    STATS["v702_a66_universe_status"] = "MANUAL"
+                    STATS["v702_a66_universe_size"] = int(len(scan_universe))
             except Exception as _u_outer:
                 logger.warning(f"[Universe] selector error: {_u_outer} — keeping previous universe")
                 scan_universe = list(getattr(run_bot, "_liq_universe", universe))
+                STATS["v702_a66_universe_status"] = "STALE_FALLBACK" if scan_universe else "EMPTY"
+                STATS["v702_a66_universe_size"] = int(len(scan_universe))
+                STATS["v702_a66_universe_last_error"] = f"{type(_u_outer).__name__}:{str(_u_outer)[:160]}"
 
             if not scan_universe:
+                STATS["v702_a66_universe_status"] = "EMPTY"
+                STATS["v702_a66_universe_size"] = 0
+                STATS["v702_a66_scan_status"] = "DEFERRED_NO_UNIVERSE"
+                STATS["v702_a66_scan_symbols_attempted"] = 0
+                STATS["v702_a66_scan_ticker_rows"] = 0
                 # Never spin through BTC/4TF/candidate plumbing with no symbols.
                 # PositionManager, Telegram and heartbeat tasks remain independent.
                 STATS["v702_a66_scan_deferred_no_universe"] = int(
@@ -25936,6 +26328,10 @@ async def run_bot(universe: List[str]):
                 exchange, list(deep_scan_universe), force=False
             )
             STATS["v679_ticker_snapshot_size"] = int(len(_v679_ticker_snapshot))
+            STATS["v702_a66_scan_status"] = "MARKET_DATA_READY" if _v679_ticker_snapshot else "MARKET_DATA_UNAVAILABLE"
+            STATS["v702_a66_scan_symbols_attempted"] = int(len(deep_scan_universe))
+            STATS["v702_a66_scan_ticker_rows"] = int(len(_v679_ticker_snapshot))
+            STATS["v702_a66_scan_last_attempt_ts"] = float(WALL_NOW())
 
             # V650 THROUGHPUT CLOSURE — bounded concurrent read-only deep scan.
             # The prior implementation fetched 4 OHLCV frames + ticker serially
@@ -68343,11 +68739,20 @@ try:
                         return True, False
                     if r.status == 429:
                         STATS["telegram_retry_429"] = int(STATS.get("telegram_retry_429", 0) or 0) + 1
+                        ra = None
                         try:
-                            ra = int(r.headers.get("Retry-After", "5") or 5)
+                            api_error = json.loads(body) if body else {}
+                            ra = (api_error.get("parameters") or {}).get("retry_after") if isinstance(api_error, dict) else None
+                        except Exception:
+                            ra = None
+                        if ra is None:
+                            ra = r.headers.get("Retry-After", 5)
+                        try:
+                            ra = int(float(ra))
                         except Exception:
                             ra = 5
-                        STATS["v696_telegram_retry_after_sec"] = max(1, min(60, ra))
+                        STATS["v696_telegram_retry_after_sec"] = max(1, min(3600, ra))
+                        STATS["v696_telegram_last_error"] = f"HTTP_429_RETRY_AFTER:{STATS['v696_telegram_retry_after_sec']}"
                         return False, False
                     if 500 <= r.status <= 599:
                         STATS["telegram_retry_5xx"] = int(STATS.get("telegram_retry_5xx", 0) or 0) + 1
@@ -68434,7 +68839,16 @@ try:
                                 continue
                         if msg is not None:
                             key = cls._message_key(msg)
+                            cls._outbox_inflight_keys.add(key)
+                            _ids_for_key = cls._outbox_ids_by_key.get(key)
+                            _outbox_id = _ids_for_key[0] if _ids_for_key else None
+                            _attempt_before = int(cls._attempts.get(key, 0) or 0)
+                            if _outbox_id:
+                                try: await asyncio.to_thread(DBManager.update_telegram_outbox, _outbox_id, "SENDING", _attempt_before + 1, None)
+                                except Exception as _outbox_state_exc:
+                                    logger.critical("[V702-A66-TG-OUTBOX] could not mark message SENDING: %s", _outbox_state_exc)
                             ok, permanent = await cls._send_one(msg)
+                            cls._outbox_inflight_keys.discard(key)
                             if ok:
                                 cls._last_ok_ts = MONO_NOW()
                                 STATS["telegram_sent_ok"] = int(STATS.get("telegram_sent_ok", 0) or 0) + 1
@@ -68442,6 +68856,14 @@ try:
                                 STATS["telegram_queue_depth_last"] = len(cls._queue)
                                 cls._attempts.pop(key, None)
                                 cls._retry_not_before.pop(key, None)
+                                if _outbox_id:
+                                    try: await asyncio.to_thread(DBManager.update_telegram_outbox, _outbox_id, "DELIVERED", _attempt_before + 1, None)
+                                    except Exception as _outbox_ack_exc:
+                                        STATS["v702_a66_telegram_outbox_ack_errors"] = int(STATS.get("v702_a66_telegram_outbox_ack_errors", 0) or 0) + 1
+                                        logger.critical("[V702-A66-TG-OUTBOX] Telegram accepted message but durable ACK failed: %s", _outbox_ack_exc)
+                                if _ids_for_key:
+                                    _ids_for_key.popleft()
+                                    if not _ids_for_key: cls._outbox_ids_by_key.pop(key, None)
                                 await cls._fire_delivery_callbacks(msg, True, False, "delivered")
                             else:
                                 cls._attempts[key] += 1
@@ -68451,6 +68873,13 @@ try:
                                     STATS["v696_telegram_last_drop_ts"] = WALL_NOW()
                                     cls._attempts.pop(key, None)
                                     cls._retry_not_before.pop(key, None)
+                                    if _outbox_id:
+                                        try: await asyncio.to_thread(DBManager.update_telegram_outbox, _outbox_id, "DEAD_LETTER", attempt, "permanent_failure" if permanent else "retry_exhausted")
+                                        except Exception as _outbox_dead_exc:
+                                            logger.critical("[V702-A66-TG-OUTBOX] dead-letter persistence failed: %s", _outbox_dead_exc)
+                                    if _ids_for_key:
+                                        _ids_for_key.popleft()
+                                        if not _ids_for_key: cls._outbox_ids_by_key.pop(key, None)
                                     await cls._fire_delivery_callbacks(
                                         msg, False, True, "permanent_failure" if permanent else "retry_exhausted"
                                     )
@@ -68458,10 +68887,14 @@ try:
                                     # Requeue at tail so one bad message cannot
                                     # monopolize all operator notifications.
                                     cls._queue.append(msg)
+                                    if _outbox_id:
+                                        try: await asyncio.to_thread(DBManager.update_telegram_outbox, _outbox_id, "RETRY_PENDING", attempt, str(STATS.get("v696_telegram_last_error", "retryable_failure"))[:200])
+                                        except Exception as _outbox_retry_exc:
+                                            logger.critical("[V702-A66-TG-OUTBOX] retry state persistence failed: %s", _outbox_retry_exc)
                                     STATS["telegram_requeued"] = int(STATS.get("telegram_requeued", 0) or 0) + 1
                                     delay = min(30.0, float(CONFIG.get("V696_TELEGRAM_RETRY_BASE_SEC", 2.0)) * (2 ** min(attempt - 1, 4)))
                                     _retry_after = int(STATS.get("v696_telegram_retry_after_sec", 0) or 0) if int(STATS.get("v696_telegram_last_http_status", 0) or 0) == 429 else 0
-                                    delay = max(delay, float(min(60, max(0, _retry_after))))
+                                    delay = max(delay, float(min(3600, max(0, _retry_after))))
                                     cls._retry_not_before[key] = MONO_NOW() + delay + random.random()
                         else:
                             STATS["telegram_queue_depth_last"] = 0
@@ -83561,9 +83994,19 @@ class _V702R28TelegramDigest:
             _cf_policy_attempts, _cf_policy_stored, _cf_policy_not_stored = 0, 0, 0
             _cf_policy_pending, _cf_policy_drops, _cf_policy_errors, _cf_policy_enabled = 0, 0, 0, False
             _cf_htf_attempts, _cf_htf_stored, _cf_htf_not_stored, _cf_htf_drops, _cf_htf_errors, _cf_htf_enabled = 0, 0, 0, 0, 0, False
+        _universe_status = str(STATS.get("v702_a66_universe_status", "UNKNOWN") or "UNKNOWN")[:18]
+        _universe_size = max(0, int(STATS.get("v702_a66_universe_size", 0) or 0))
+        _universe_last_ok = float(STATS.get("v702_a66_universe_last_success_ts", 0.0) or 0.0)
+        _universe_age = max(0, int(float(WALL_NOW()) - _universe_last_ok)) if _universe_last_ok > 0 else -1
+        _scan_status = str(STATS.get("v702_a66_scan_status", "NOT_STARTED") or "NOT_STARTED")[:22]
+        _scan_symbols = max(0, int(STATS.get("v702_a66_scan_symbols_attempted", 0) or 0))
+        _scan_tickers = max(0, int(STATS.get("v702_a66_scan_ticker_rows", 0) or 0))
+        _universe_retry = max(0, min(300, int(float(CONFIG.get("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0) or 60.0))))
+        _universe_error = re.sub(r"[^A-Za-z0-9_.:-]", "", str(STATS.get("v702_a66_universe_last_error", "none") or "none"))[:34]
         lines = [
             "<b>📊 V702 OPERATOR DIGEST — CANONICAL</b>",
             f"Window≈{int(age)}s | compacted_events={events} | categories={sum(cats.values())}",
+            f"UNIVERSE status={_universe_status} size={_universe_size} age_sec={_universe_age} retry_sec={_universe_retry} error={_universe_error} | SCAN status={_scan_status} symbols={_scan_symbols} ticker_rows={_scan_tickers}",
             f"A51_POLICY_PREFILTER process_total blocks={_a51_blocks} saved_checks={_a51_saved_checks} errors={_a51_errors} last_error={_a51_last_error}",
             f"CF_SHADOW_POLICY_REJECT enabled={str(_cf_policy_enabled).lower()} attempted={_cf_policy_attempts} stored={_cf_policy_stored} not_stored={_cf_policy_not_stored} io_pending_all={_cf_policy_pending} backpressure_drops={_cf_policy_drops} errors={_cf_policy_errors} | CF_SHADOW_HTF_REJECT enabled={str(_cf_htf_enabled).lower()} attempted={_cf_htf_attempts} stored={_cf_htf_stored} not_stored={_cf_htf_not_stored} backpressure_drops={_cf_htf_drops} errors={_cf_htf_errors}",
             cls._compact_counts(),
@@ -83602,12 +84045,12 @@ class _V702R28TelegramDigest:
         # Bound volatile telemetry rows before calculating the remaining
         # allowance. Without this, a very long heartbeat/window line could
         # consume the entire message and physically cut off mandatory headings.
-        head_limits = (42, 70, 100, 300, 125, 90, 170, 70, 130)
-        head = [_clip_digest_line(line, head_limits[i]) for i, line in enumerate(lines[:9])]
+        head_limits = (42, 70, 100, 200, 300, 125, 90, 170, 70, 130)
+        head = [_clip_digest_line(line, head_limits[i]) for i, line in enumerate(lines[:10])]
         tail_source = lines[-4:]
         tail_limits = (100, 220, 80, 45)
         tail = [_clip_digest_line(line, tail_limits[i]) for i, line in enumerate(tail_source)]
-        middle = lines[len(lines[:9]):-4]
+        middle = lines[len(lines[:10]):-4]
         mandatory = {i for i, line in enumerate(middle) if line.startswith("<b>") and line.endswith("</b>")}
         separator_cost = len("\n".join(head + ["…"] + tail))
         heading_cost = sum(len(middle[i]) + 1 for i in mandatory)
@@ -88423,6 +88866,70 @@ async def _v702_telegram_enqueue_observed(cls, msg, *args, **kwargs):
         except Exception: pass
     return result
 TelegramDispatcher.enqueue = _v702_telegram_enqueue_observed
+
+async def _v702_a66_restore_telegram_outbox_once() -> int:
+    """Rehydrate durable operator messages after process restart (at-least-once)."""
+    try:
+        rows = await asyncio.to_thread(DBManager.list_pending_telegram_outbox, 5000)
+        restored = 0
+        maxlen = int(getattr(TelegramDispatcher._queue, "maxlen", 0) or 0)
+        for row in rows:
+            raw = str(row.get("message") or "")
+            if not raw:
+                continue
+            key = TelegramDispatcher._message_key(raw)
+            ids = TelegramDispatcher._outbox_ids_by_key[key]
+            outbox_id = str(row.get("outbox_id") or "")
+            if outbox_id and outbox_id not in ids:
+                ids.append(outbox_id)
+            queued_keys = {TelegramDispatcher._message_key(x) for x in list(TelegramDispatcher._queue)}
+            if key in queued_keys or key in TelegramDispatcher._outbox_inflight_keys:
+                continue
+            if maxlen and len(TelegramDispatcher._queue) >= maxlen:
+                break
+            if row.get("status") == "SENDING":
+                # A crash may have occurred after venue acceptance; delivery is
+                # at-least-once and an operator-visible replay is safer than loss.
+                await asyncio.to_thread(DBManager.update_telegram_outbox, outbox_id, "RETRY_PENDING", int(row.get("attempts", 0) or 0), "recovered_after_interrupted_send")
+            key_attempts = max(0, int(row.get("attempts", 0) or 0))
+            if key_attempts:
+                TelegramDispatcher._attempts[key] = min(key_attempts, max(0, int(CONFIG.get("V696_TELEGRAM_RETRY_MAX", 5) or 5) - 1))
+            TelegramDispatcher._queue.append(raw)
+            restored += 1
+        if restored:
+            STATS["v702_a66_telegram_outbox_restored"] = int(STATS.get("v702_a66_telegram_outbox_restored", 0) or 0) + restored
+            STATS["v702_a66_telegram_outbox_callbacks_not_restored"] = int(STATS.get("v702_a66_telegram_outbox_callbacks_not_restored", 0) or 0) + restored
+            logger.warning("[V702-A66-TG-OUTBOX] restored %d pending message(s); semantic callbacks are process-local and are not replayed", restored)
+        return restored
+    except Exception as exc:
+        STATS["v702_a66_telegram_outbox_restore_errors"] = int(STATS.get("v702_a66_telegram_outbox_restore_errors", 0) or 0) + 1
+        logger.critical("[V702-A66-TG-OUTBOX] restore failed: %s", exc)
+        return 0
+
+async def _v702_a66_telegram_outbox_feeder() -> None:
+    while TelegramDispatcher._running:
+        try:
+            await _v702_a66_restore_telegram_outbox_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            STATS["v702_a66_telegram_outbox_feeder_errors"] = int(STATS.get("v702_a66_telegram_outbox_feeder_errors", 0) or 0) + 1
+            logger.warning("[V702-A66-TG-OUTBOX] feeder error: %s", exc)
+        await asyncio.sleep(5.0)
+
+_V702_A66_PREV_TG_RUN = TelegramDispatcher.run_forever
+async def _v702_a66_tg_run_forever(cls):
+    await _v702_a66_restore_telegram_outbox_once()
+    cls._running = True
+    feeder = asyncio.create_task(_v702_a66_telegram_outbox_feeder())
+    try:
+        await _V702_A66_PREV_TG_RUN()
+    finally:
+        cls._running = False
+        feeder.cancel()
+        try: await feeder
+        except asyncio.CancelledError: pass
+TelegramDispatcher.run_forever = classmethod(_v702_a66_tg_run_forever)
 
 _V702_SUBMIT_ENTRY_ORIGINAL = OrderExecutor.submit_entry
 async def _v702_submit_entry_observed(exchange,symbol,qty,price,*args,**kwargs):
@@ -98606,6 +99113,9 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
             if delivery_group["settled"]:
                 return None
             delivery_group["settled"] = True
+        # A terminal Telegram failure must restore the exact window for retry,
+        # even when this digest contained no Discovery callbacks.
+        _restore_failed_snapshot()
         return _settle_discovery_callbacks(False, str(reason or "permanent_failure"))
 
     def _cancel_delivery_group():
@@ -98697,19 +99207,16 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
             tagged = f"DIGEST {index}/{len(chunks)}\n{part}"
             if len(tagged) > limit:
                 raise ValueError(f"digest_part_over_limit:{index}:{len(tagged)}>{limit}")
-            if delivery_callbacks:
-                admission = {"accepted": False}
-                def _on_part_success(reason="delivered", _admission=admission):
-                    return _part_success(reason) if _admission["accepted"] else None
-                def _on_part_failure(reason="permanent_failure", _admission=admission):
-                    return _part_failure(reason) if _admission["accepted"] else None
-                ok = await _V702_R28_RAW_ENQUEUE(
-                    tagged, on_success=_on_part_success, on_failure=_on_part_failure
-                )
-                if ok is not False:
-                    admission["accepted"] = True
-            else:
-                ok = await _V702_R28_RAW_ENQUEUE(tagged)
+            admission = {"accepted": False}
+            def _on_part_success(reason="delivered", _admission=admission):
+                return _part_success(reason) if _admission["accepted"] else None
+            def _on_part_failure(reason="permanent_failure", _admission=admission):
+                return _part_failure(reason) if _admission["accepted"] else None
+            ok = await _V702_R28_RAW_ENQUEUE(
+                tagged, on_success=_on_part_success, on_failure=_on_part_failure
+            )
+            if ok is not False:
+                admission["accepted"] = True
             if ok is False:
                 _cancel_delivery_group()
                 STATS["v702_r28_digest_send_fail"] = int(STATS.get("v702_r28_digest_send_fail", 0) or 0) + 1
@@ -98725,6 +99232,13 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
         # knowledge callbacks only after every digest part is Telegram-ACKed.
         STATS["v702_a63_digest_delivery_state"] = "QUEUED_NOT_DELIVERED_ACK"
         return True
+    except asyncio.CancelledError:
+        _cancel_delivery_group()
+        _restore_failed_snapshot()
+        STATS["v702_a63_digest_cancelled_after_snapshot"] = int(
+            STATS.get("v702_a63_digest_cancelled_after_snapshot", 0) or 0
+        ) + 1
+        raise
     except Exception as exc:
         _cancel_delivery_group()
         _restore_failed_snapshot()
@@ -100762,7 +101276,9 @@ def _v702_a63_self_test():
                 and "evaluation_attempt_id" in source
                 and "account_execution_eligible" in source
             ),
-            "edge_schema_is_a63_isolated": V702_KNOWLEDGE_EDGE_VERSION == "V702-KNOWLEDGE-EDGE-SHADOW-7-A63",
+            "edge_schema_is_versioned_and_isolated": V702_KNOWLEDGE_EDGE_VERSION in {
+                "V702-KNOWLEDGE-EDGE-SHADOW-7-A63", "V702-KNOWLEDGE-EDGE-SHADOW-8-A66-AUDIT-CLOSURE"
+            },
             "paper_replay_requires_contiguous_closed_candles": (
                 "CLOSED_CANDLE_SEQUENCE_V1" in source
                 and "DATA_GAP_UNRESOLVED" in source
@@ -101037,10 +101553,12 @@ globals()["validate_config"] = _v702_a65_validate_config
 # =============================================================================
 V702_A66_RELEASE_REVISION = "A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15"
 V702_A66_RELEASE_TAG = "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL"
-V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A66_RELEASE_REVISION
+V702_A66_POST_AUDIT_PATCH_REVISION = "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15"
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A66_RELEASE_REVISION + "-" + V702_A66_POST_AUDIT_PATCH_REVISION
 CONFIG.setdefault("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0)
 STATS["v702_a66_release_revision"] = V702_A66_RELEASE_REVISION
 STATS["v702_a66_release_tag"] = V702_A66_RELEASE_TAG
+STATS["v702_a66_post_audit_patch_revision"] = V702_A66_POST_AUDIT_PATCH_REVISION
 FINAL_CANONICAL_RUNTIME.update({
     "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
     "package_revision": V702_PACKAGE_AUDIT_REVISION,
@@ -101049,7 +101567,16 @@ FINAL_CANONICAL_RUNTIME.update({
     "active_distribution_revision": V702_A66_RELEASE_REVISION,
     "active_distribution_release_tag": V702_A66_RELEASE_TAG,
     "active_release_tag": V702_A66_RELEASE_TAG,
+    # Keep the historical active_post_audit_patch_revision field for old
+    # dashboards; the explicit *_current field is the authoritative A66 closure.
+    "active_post_audit_patch_revision_current": V702_A66_POST_AUDIT_PATCH_REVISION,
     "a66_startup_protection_continuity": True,
+    "telegram_durable_outbox_implemented": True,
+    "telegram_outbox_delivery_semantics": "AT_LEAST_ONCE",
+    "telegram_semantic_callbacks_survive_restart": False,
+    "telegram_real_delivery_ack_proven": False,
+    "edge_schema_version": V702_KNOWLEDGE_EDGE_VERSION,
+    "economic_model_version": V702_ECONOMIC_MODEL_VERSION,
 })
 FINAL_CANONICAL_RUNTIME["a66_bounded_empty_universe_retry_sec"] = float(CONFIG["V702_A66_UNIVERSE_EMPTY_RETRY_SEC"])
 FINAL_CANONICAL_RUNTIME["production_decision"] = "NO_GO_UNATTENDED_LIVE"
@@ -101092,6 +101619,80 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
             and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
             and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
         )
+        _validator_start = _src.index("\ndef _v702_a66_validate_config() -> bool:") + 1
+        _validator_end = _src.index('globals()["validate_config"] = _v702_a66_validate_config', _validator_start)
+        _validator_src = _src[_validator_start:_validator_end]
+        checks["inherited_validator_failure_cannot_be_overridden"] = (
+            '_result = {**_audit, "base_previous": _base_ok}' in _validator_src
+            and '_result["pass"] = bool(_base_ok and _audit.get("pass", False))' in _validator_src
+        )
+        _pm_start = _src.index("    async def _tick_locked(exchange):")
+        _pm_end = _src.index("# =============================================================================\n#  v4.5.68", _pm_start)
+        _pm_src = _src[_pm_start:_pm_end]
+        _pm_task_start = _src.index("async def _position_manager_task(exchange):")
+        _pm_task_end = _src.index("# =============================================================================\n#  SECTION 38", _pm_task_start)
+        _pm_task_src = _src[_pm_task_start:_pm_task_end]
+        checks["position_manager_cycle_health_is_per_position"] = (
+            '"failed_by_symbol": _pm_failed' in _pm_src
+            and '"healthy": not bool(_pm_failed)' in _pm_src
+            and "position_protection_cycle_incomplete" in _pm_task_src
+        )
+        _protection_start = _src.index("def _v563_trade_protection_healthy(trade: Any) -> bool:")
+        _protection_end = _src.index("def _v563_stopless_block_resolved_for_entry", _protection_start)
+        _protection_src = _src[_protection_start:_protection_end]
+        checks["break_even_and_profit_lock_are_valid_protective_stops"] = (
+            "if qty <= 0 or entry <= 0 or sl <= 0" in _protection_src
+            and "sl >= entry" not in _protection_src
+        )
+        checks["tp1_recovery_captures_previous_stop_in_trade_scope"] = (
+            'prev_sl = float(getattr(trade, "current_sl"' in _pm_src
+            and "_v562_recover_after_sl_replace_failure" in _pm_src
+        )
+        _rate_start = _src.index("class V702PlatformRateLimiter:")
+        _rate_end = _src.index("class ", _rate_start + 10)
+        _rate_src = _src[_rate_start:_rate_end]
+        checks["protection_ticker_priority_precedes_scanner_ticker"] = (
+            _rate_src.find("protected_fetch_ticker") >= 0
+            and _rate_src.find("protected_fetch_ticker") < _rate_src.find('"ticker"')
+        )
+        _ticker_start = _src.index("async def _v679_get_ticker_snapshot")
+        _ticker_end = _src.index("async def build_top_liquidity_universe", _ticker_start)
+        _ticker_src = _src[_ticker_start:_ticker_end]
+        checks["ticker_cache_uses_per_symbol_timestamps"] = (
+            'cached.get("ticker_ts")' in _ticker_src and 'merged_ts[_sym] = fetched_now' in _ticker_src
+        )
+        _db_start = _src.index("class DBManager:")
+        _db_end = _src.index("class ", _db_start + 20)
+        _db_src = _src[_db_start:_db_end]
+        checks["telegram_outbox_is_persisted_before_ack"] = (
+            "telegram_outbox" in _db_src and "def enqueue_telegram_outbox" in _db_src
+            and "def update_telegram_outbox" in _db_src
+        )
+        checks["telegram_outbox_recovery_is_explicitly_at_least_once"] = (
+            "async def _v702_a66_restore_telegram_outbox_once" in _src
+            and FINAL_CANONICAL_RUNTIME.get("telegram_outbox_delivery_semantics") == "AT_LEAST_ONCE"
+            and FINAL_CANONICAL_RUNTIME.get("telegram_semantic_callbacks_survive_restart") is False
+        )
+        _cost_path = Path(__file__).with_name("v702_core__execution__cost_model.py")
+        _cost_src = _cost_path.read_text(encoding="utf-8") if _cost_path.is_file() else ""
+        checks["measured_costs_fail_closed_without_downward_clipping"] = (
+            "measured_cost_pct" in _cost_src and "raise ValueError" in _cost_src
+            and "raw_selected = measured + buffer" in _cost_src
+        )
+        checks["edge_gate_binds_fdr_and_economic_model_fingerprint"] = (
+            "BENJAMINI_HOCHBERG" in _src and "economic_model_fingerprint" in _src
+            and "edge_fdr_adjusted_significance_failed" in _src
+        )
+        _shadow_path = Path(__file__).with_name("v702_intraday_shadow.py")
+        _shadow_src = _shadow_path.read_text(encoding="utf-8") if _shadow_path.is_file() else ""
+        checks["paper_shadow_rejects_invalid_candles_and_unresolved_gaps"] = (
+            "gap_before" in _shadow_src and "AMBIGUOUS_DATA_GAP" in _shadow_src
+            and "TIMEOUT" in _shadow_src
+        )
+        checks["tp1_full_close_and_partial_realized_metrics_are_distinct"] = (
+            "TP1_FULL_CLOSE_NET_USDT" in _src
+            and "TP1_PARTIAL_REALIZED_NET_USDT" in _src
+        )
         failed = [k for k, v in checks.items() if not bool(v)]
         return {"pass": not failed, "checks": checks, "failed": failed,
                 "retry_interval_sec": float(CONFIG.get("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0)),
@@ -101107,8 +101708,19 @@ def _v702_a66_validate_config() -> bool:
     try:
         _base_ok = bool(callable(_V702_A66_PREVIOUS_VALIDATE_CONFIG) and _V702_A66_PREVIOUS_VALIDATE_CONFIG())
         _audit = _v702_a66_startup_recovery_source_check()
-        _result = {"pass": bool(_base_ok and _audit.get("pass")),
-                   "base_previous": _base_ok, **_audit}
+        _result = {**_audit, "base_previous": _base_ok}
+        # The final authority is the conjunction of the inherited chain and
+        # the active A66 checks. Never let an expanded audit report overwrite it.
+        _base_failures = []
+        if not _base_ok:
+            _base_failures.append("previous_validator_failed")
+            _prior = STATS.get("v702_r28_final_validation", {})
+            if isinstance(_prior, dict) and _prior.get("pass") is False:
+                _base_failures.extend(str(x) for x in (_prior.get("failed", []) or []))
+        _result["failed"] = list(dict.fromkeys(
+            list(_result.get("failed", []) or []) + _base_failures
+        ))
+        _result["pass"] = bool(_base_ok and _audit.get("pass", False))
         STATS["v702_a66_final_validation"] = _result
         if _result["pass"]:
             logger.info("[V702-A66-VALIDATION] PASS checks=%d retry_sec=%.0f",

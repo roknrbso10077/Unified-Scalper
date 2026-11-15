@@ -1,3 +1,21 @@
+# V702 A66 — merged Production Audit closure (2026-11-15)
+
+- Correct the final validator so a successful A66 source audit cannot overwrite a failed inherited validator; all previous-chain and active-audit checks must pass.
+- Make PositionManager cycle health per-position: a failed mark, reconciliation, stop audit, or protection check cannot refresh the healthy lease. Keep task liveness separate from verified protection health.
+- Preserve valid break-even/profit-lock stops at or above entry in active-protection validation and recovered-protection reconciliation. Capture the exact previous stop in the TP1 trade scope before a BE replacement, so recovery never depends on an uninitialized or cross-symbol local.
+- Give protected ticker/stop/reconciliation calls explicit first priority over broad ticker/scan matching, and use per-symbol ticker-cache timestamps so refreshing one market cannot renew the freshness of another.
+- Add Telegram SQLite Outbox persistence before enqueue, dedup/coalescing, restart replay, bounded 429 `retry_after` handling, and explicit terminal delivery states. This is at-least-once delivery; semantic callbacks remain in-process and do not survive restart. No live Telegram delivery claim is made.
+- Distinguish TP1 hypothetical full-close net from TP1 partial-realized model net using the configured TP1 exit fraction. Preserve all existing fee, net-profit, net-RR, and risk gates. These are modeled quantities until actual fills and fee records are available.
+- Fail closed on non-finite or negative measured cost/fee inputs; never clip an observed high spread/cost downward. Bind Edge authorization to Edge schema v8, the full economic-model fingerprint, minimum independent/train/validation/holdout sample contracts, purged walk-forward evidence, and Benjamini–Hochberg FDR q=0.10. A change in cost or exit assumptions isolates old evidence.
+- Harden Paper candles against impossible OHLC, non-finite values, duplicate/out-of-order timestamps, and unobserved gaps. Mark unresolved gaps ambiguous, and apply Adaptive Shadow timeouts both before and after TP1.
+- Make a failed open-order read display `UNKNOWN` rather than a false empty list; restrict default cancellation to bot-tracked order IDs and keep broad cancel-all explicit. Restore failed/cancelled Digest snapshots for retry.
+- Add A66 source checks for these merged closure invariants. Keep all existing strategy engines, research lanes, exit behavior, risk limits, and Spot/Long-only restrictions. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain unchanged.
+- Update release and workflow identity to A66 while preserving the historical workflow file path.
+
+**Not certified by this offline release:** public/private CCXT separation and Spot-only market metadata behavior; all startup/preflight interruption permutations; complete recovered-position identity coverage; old-Universe fallback truth; independent scheduling of all pending Shadow samples; bounded long-run SQLite/ledger retention; every static F821/legacy fallback ranking issue; transactional persistence of Telegram semantic callbacks; live Telegram delivery; native exchange stop behavior; MEXC authenticated integration; full transitive hash lock; Python 3.12/Linux amd64 CI; Docker image build; profitability/Edge from real market fills. The entry policy stays closed.
+
+---
+
 # V702 A64 — Telegram Digest delivery-ACK and callback-ownership closure (2026-11-14)
 
 - Fix the A63 snapshot/swap Digest path dropping Discovery success/failure callbacks when the captured generation was detached. Each emitted Digest part now carries delivery callbacks, and Discovery/Knowledge success is settled only after every Digest part receives Telegram's message-level delivery ACK.

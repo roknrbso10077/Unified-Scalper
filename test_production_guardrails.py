@@ -63,7 +63,8 @@ class ProductionGuardrailTests(unittest.TestCase):
              patch.dict(bot.CONFIG, {"V702_LIVE_PILOT_ENABLE": True}), \
              patch.object(bot.LiveStateMachine, "is_live_runnable", return_value=True), \
              patch.object(bot, "_v702_position_manager_health_ok", return_value=True), \
-             patch.object(bot.KillSwitch, "is_active", return_value=False):
+             patch.object(bot.KillSwitch, "is_active", return_value=False), \
+             patch.dict(bot.LIVE_ENTRIES_BLOCKED, {"active": False, "reason": None, "where": None, "since": None}):
             monitor_only = bot._V702_R39_REFRESH_ENTRY_MODE()
             self.assertFalse(monitor_only)
             self.assertEqual(bot.STATS.get("v702_runtime_entry_policy"), "USER_REQUESTED_LIVE_PILOT")
@@ -80,6 +81,7 @@ class ProductionGuardrailTests(unittest.TestCase):
                  patch.object(bot, "_v702_position_manager_health_ok", return_value=True), \
                  patch.object(bot.LiveStateMachine, "is_live_runnable", return_value=True), \
                  patch.object(bot.KillSwitch, "is_active", return_value=False), \
+                 patch.dict(bot.LIVE_ENTRIES_BLOCKED, {"active": False, "reason": None, "where": None, "since": None}), \
                  patch.object(bot.V702PortfolioDrawdownGuard, "authorize_entry", new=AsyncMock(
                      return_value=(True, "portfolio_drawdown_ok", {"equity_valuation_ok": True}))) as authorization:
                 # Prove an absent diagnostic variable does not silently block the user-requested pilot.
@@ -109,7 +111,8 @@ class ProductionGuardrailTests(unittest.TestCase):
                                          "ENABLE_LIVE_TRADING": True, "PAPER_TRADING_MODE": False}), \
                  patch.object(bot.LiveStateMachine, "is_live_runnable", return_value=True), \
                  patch.object(bot, "_v702_position_manager_health_ok", return_value=True), \
-                 patch.object(bot.KillSwitch, "is_active", return_value=False):
+                 patch.object(bot.KillSwitch, "is_active", return_value=False), \
+                 patch.dict(bot.LIVE_ENTRIES_BLOCKED, {"active": False, "reason": None, "where": None, "since": None}):
                 return await bot.V702PortfolioDrawdownGuard.authorize_entry(
                     bot.__dict__, FakeExchange(), "BTC/USDT")
 
@@ -156,6 +159,7 @@ class ProductionGuardrailTests(unittest.TestCase):
                  patch.object(bot, "_v702_position_manager_health_ok", return_value=True), \
                  patch.object(bot.LiveStateMachine, "is_live_runnable", return_value=True), \
                  patch.object(bot.KillSwitch, "is_active", return_value=False), \
+                 patch.dict(bot.LIVE_ENTRIES_BLOCKED, {"active": False, "reason": None, "where": None, "since": None}), \
                  patch.object(bot.V702PortfolioDrawdownGuard, "authorize_entry", new=AsyncMock(
                      return_value=(False, "portfolio_peak_drawdown_latched", {"drawdown_pct": 5.1}))) as authorization:
                 result = await bot._V702_R39_SUBMIT_ENTRY_GUARD(object(), "BTC/USDT", 1.0, 100.0, is_paper=False)
