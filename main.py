@@ -1277,6 +1277,19 @@ def _build_logger() -> logging.Logger:
 
 logger = _build_logger()
 
+# Boot self-tests deliberately exercise synthetic losses, failures and Telegram
+# paths. Their diagnostics must remain visible without being misclassified as
+# live operational alerts. ContextVar confines this to the calling thread/task;
+# a concurrent live worker can never inherit a global severity downgrade.
+V702_SELFTEST_LOG_CONTEXT = contextvars.ContextVar("V702_SELFTEST_LOG_CONTEXT", default=False)
+
+
+def _v702_selftest_log_context_active() -> bool:
+    try:
+        return bool(V702_SELFTEST_LOG_CONTEXT.get())
+    except Exception:
+        return False
+
 logger.info(
     "[ENV-BOOT] dotenv_file_present=%s dotenv_loaded=%s mexc_api_key_present=%s "
     "mexc_api_secret_present=%s telegram_token_present=%s telegram_chat_present=%s",
@@ -6769,7 +6782,8 @@ class DailyCircuitBreaker:
                     cd = max(0.0, float(CONFIG.get("V702_LOSS_STREAK_FIRST_LOSS_COOLDOWN_SEC", 180.0)))
                 if cd > 0.0:
                     cls._loss_streak_block_until = float(WALL_NOW()) + cd
-                logger.warning(
+                _loss_log = logger.info if _v702_selftest_log_context_active() else logger.warning
+                _loss_log(
                     f"[DailyCB-R5] realized loss {x:+.3f}R; streak={cls._consecutive_losses} "
                     f"cooldown={cd:.0f}s"
                 )
@@ -12275,6 +12289,7 @@ def _v702_r4_loss_streak_self_test() -> Dict[str, Any]:
     checks: Dict[str, bool] = {}
     details: Dict[str, Any] = {}
     old_db = CONFIG.get("DB_PATH")
+    _selftest_log_context_token = V702_SELFTEST_LOG_CONTEXT.set(True)
     old_state = {
         "date": DailyCircuitBreaker._date,
         "realized_r": DailyCircuitBreaker._realized_r,
@@ -12345,6 +12360,7 @@ def _v702_r4_loss_streak_self_test() -> Dict[str, Any]:
         DailyCircuitBreaker._consecutive_losses = old_state["consecutive_losses"]
         DailyCircuitBreaker._loss_streak_block_until = old_state["loss_streak_block_until"]
         CONFIG["DB_PATH"] = old_db
+        V702_SELFTEST_LOG_CONTEXT.reset(_selftest_log_context_token)
         if tmp_path:
             for suffix in ("", "-wal", "-shm"):
                 try:
@@ -13370,7 +13386,8 @@ class OpportunityTelegramNotifier:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             STATS["telegram_tracked_schedule_no_loop"] = int(STATS.get("telegram_tracked_schedule_no_loop", 0) or 0) + 1
-            logger.error("[TG-LIFECYCLE-UNSCHEDULED] event=%s symbol=%s trace=%s reason=no_running_loop", event, symbol or "-", trace_id or "-")
+            _schedule_log = logger.debug if _v702_selftest_log_context_active() else logger.error
+            _schedule_log("[TG-LIFECYCLE-UNSCHEDULED] event=%s symbol=%s trace=%s reason=no_running_loop", event, symbol or "-", trace_id or "-")
             return False
         try:
             loop.create_task(cls._enqueue_tracked_message(message, event=event, symbol=symbol, trace_id=trace_id))
@@ -35156,6 +35173,8 @@ def _v455_record_prequal_reason(symbol: str, reason: str, *, stage: str = "",
             STATS["v455_prequal_last_exception"] = rec
             lvl_name = str(CONFIG.get("V455_PREQUAL_EXCEPTION_LOG_LEVEL", "WARNING")).upper()
             lvl = getattr(logging, lvl_name, logging.WARNING)
+            if str(rec.get("stage") or "").strip().lower() == "selftest" or _v702_selftest_log_context_active():
+                lvl = logging.INFO
             logger.log(lvl,
                        f"[V455-PREQUAL-EXCEPTION] symbol={rec['symbol']} stage={rec['stage'] or 'unknown'} "
                        f"type={rec['exception_type']} reason={rec['reason']} "
@@ -42328,6 +42347,7 @@ def _v517_install_tp_reconciliation_source_patch() -> None:
 def _v523_opportunity_telegram_self_test() -> Dict[str, Any]:
     report = {"pass": True, "checks": {}}
     _old_live_state = None
+    _selftest_log_context_token = V702_SELFTEST_LOG_CONTEXT.set(True)
     try:
         try:
             _old_live_state = getattr(LIVE_STATE, "current", None)
@@ -42416,6 +42436,7 @@ def _v523_opportunity_telegram_self_test() -> Dict[str, Any]:
                 LIVE_STATE.current = _old_live_state
         except Exception:
             _v647_record_suppressed_exception()
+        V702_SELFTEST_LOG_CONTEXT.reset(_selftest_log_context_token)
     return report
 
 

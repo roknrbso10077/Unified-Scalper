@@ -828,3 +828,53 @@ def test_opportunity_hunter_telegram_includes_reference_levels_and_no_profit_gua
     assert "مستويات السيناريو" in message and "TP1" in message and "TP3" in message
     assert "ليست أوامر أو ضمانًا للربح" in message
     assert "MONITOR ONLY" in message
+
+
+def test_boot_selftest_synthetic_events_do_not_emit_live_error_or_warning_logs(caplog, monkeypatch):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="unified_scalper")
+    old_context = bot._v702_selftest_log_context_active()
+    # A synthetic self-test context must not leak into concurrent worker threads.
+    context_token = bot.V702_SELFTEST_LOG_CONTEXT.set(True)
+    worker_context = []
+    worker = bot.threading.Thread(
+        target=lambda: worker_context.append(bot._v702_selftest_log_context_active()),
+        name="selftest-context-isolation-regression",
+    )
+    worker.start()
+    worker.join(timeout=2.0)
+    bot.V702_SELFTEST_LOG_CONTEXT.reset(context_token)
+    assert not worker.is_alive()
+    assert worker_context == [False]
+    old_live_state = bot.LIVE_STATE.current
+
+    def _no_running_loop():
+        raise RuntimeError("no running event loop")
+
+    monkeypatch.setattr(bot.asyncio, "get_running_loop", _no_running_loop)
+    try:
+        streak = bot._v702_r4_loss_streak_self_test()
+        assert streak.get("pass") is True
+
+        telegram = bot._v523_opportunity_telegram_self_test()
+        assert telegram.get("pass") is True
+
+        bot._v455_record_prequal_reason(
+            "SELFTEST/USDT", "exception.selftest:ValueError", stage="selftest",
+            exception_type="ValueError",
+        )
+    finally:
+        assert bot._v702_selftest_log_context_active() == old_context
+        assert bot.LIVE_STATE.current == old_live_state
+
+    synthetic_markers = (
+        "[DailyCB-R5]", "[TG-LIFECYCLE-UNSCHEDULED]", "[V455-PREQUAL-EXCEPTION]",
+    )
+    synthetic_records = [
+        record for record in caplog.records
+        if any(marker in record.getMessage() for marker in synthetic_markers)
+    ]
+    assert synthetic_records
+    assert all(record.levelno < logging.WARNING for record in synthetic_records)
+    assert bot._v702_selftest_log_context_active() is old_context

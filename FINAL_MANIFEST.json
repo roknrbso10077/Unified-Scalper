@@ -112,9 +112,9 @@
     ".git metadata and developer-local caches"
   ],
   "canonical_executable": "main.py",
-  "canonical_main_sha256": "857e0922d124664bf09292f2aca0367ff2965c16f332a7afe1d33946e0a83240",
+  "canonical_main_sha256": "58ddbebb14a90b7c190c398e9e8f234926a7a84226feeaf1a926ff80dfb22381",
   "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
-  "canonical_source_sha256": "857e0922d124664bf09292f2aca0367ff2965c16f332a7afe1d33946e0a83240",
+  "canonical_source_sha256": "58ddbebb14a90b7c190c398e9e8f234926a7a84226feeaf1a926ff80dfb22381",
   "created_utc_date": "2026-11-15",
   "dependency_lock_status": {
     "complete_lockfile": false,
@@ -406,14 +406,14 @@
     "a66_runtime_contract": "PASS (PositionManager/heartbeat retained; preflight deferred without verified universe; empty-universe retry bounded; scan pipeline skipped while empty)",
     "a66_self_test": "PASS (7/7 source and fail-closed startup continuity checks)",
     "a66_source_checks": "PASS (19/19 merged source invariants)",
-    "archive_crc": "PASS (verified final ZIP: 99/99 entries; ZipFile.testzip() returned None; names match FINAL_MANIFEST.archive_contents)",
+    "archive_crc": "PASS (final canonical ZIP: 99/99 entries; ZipFile.testzip() returned None; names match FINAL_MANIFEST.archive_contents)",
     "archive_inventory": "99 files exactly; all paths match FINAL_MANIFEST.archive_contents; generated caches, databases and secrets excluded.",
     "audit_runtime_python": "3.13.5; Python 3.12 executable unavailable locally; Python 3.12/Linux amd64 CI and Docker build remain unrun.",
     "compileall": "PASS (python -m compileall -q .; Python 3.13.5)",
     "docker_build_tested": false,
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
-    "focused_regression_tests": "PASS: 56 focused cost/shadow/safety tests; release-contract and extended closure batch 108 passed, 1 historical fixture skipped; all 58 active test modules covered in partitioned runs.",
-    "full_pytest": "PASS: 497 passed, 1 skipped, 0 failed; Python 3.13.5; single process; 30.29 seconds",
+    "focused_regression_tests": "PASS: synthetic self-test log severity and ContextVar thread-isolation regression; original A67 OpportunityHunter regression set retained.",
+    "full_pytest": "PASS: 506 passed, 1 skipped, 0 failed; Python 3.13.5; single process (final audit closure)",
     "live_authority": false,
     "live_mexc_api_tested": false,
     "live_network_tested": false,
@@ -423,12 +423,12 @@
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "profitability_verified": false,
     "py_compile": "PASS (all packaged Python modules; Python 3.13.5)",
-    "pytest_collection": "58 active test modules; single-process collection exceeded 300-second environment limit, so no aggregate node count is claimed.",
-    "pytest_partition_coverage": "Not used for final result; final single-process run covers the complete suite.",
-    "pytest_partition_result": "Not used for final result; final single-process run covers the complete suite.",
-    "pytest_single_process": "PASS (498 collected; 497 passed, 1 historical A51 fixture skipped; 0 failed; 30.29 seconds)",
+    "pytest_collection": "507 tests collected and executed in single process; all packaged tests covered.",
+    "pytest_partition_coverage": "Not required for the final result; complete single-process test suite passed.",
+    "pytest_partition_result": "Not used for final result.",
+    "pytest_single_process": "PASS (507 collected; 506 passed, 1 historical A51 fixture skipped; 0 failed; final audit closure)",
     "python_312_linux_amd64_ci_tested": false,
-    "sha256_verification": "PASS (98/98 files verified against A66_SHA256SUMS.txt; checksum file intentionally excludes itself)",
+    "sha256_verification": "PASS (98/98 non-self entries match A66_SHA256SUMS.txt; checksum file intentionally excludes itself)",
     "skipped_tests": "1 historical A51 runtime-log fixture skipped because that log is not packaged in this clean source distribution.",
     "target_platform_linux_amd64_tested": false,
     "target_python_312_tested": false,
@@ -436,19 +436,22 @@
     "telegram_outbox": "IMPLEMENTED (SQLite; at-least-once; callbacks not durable)",
     "test_runner_shutdown": "PASS (A58_THREADS_AFTER_SESSION=[(MainThread, False)] in final verbose run).",
     "transitive_dependencies_hash_locked": false,
-    "validate_only": "PASS (exit=0; A66 active validator; 19/19 source checks; bot_started=false; live_threads=[]; MONITOR_ONLY_NO_NEW_BUYS; NO_GO_UNATTENDED_LIVE)",
-    "validate_only_elapsed_seconds": null,
-    "validate_only_peak_rss_kib": null
+    "validate_only": "PASS (exit=0; A66/A67 active validator; source checks 23/23; bot_started=false; live_threads=[]; monitor-only policy unchanged)",
+    "validate_only_elapsed_seconds": 11.12,
+    "validate_only_peak_rss_kib": 549504,
+    "post_packaging_closure": "A66-SELFTEST-LOG-CONTEXT-ISOLATION-AND-RAILWAY-STARTUP-DIAGNOSTICS-2026-11-15",
+    "selftest_log_context_isolation": "PASS (ContextVar; synthetic boot self-test severity isolated to caller context; worker threads do not inherit it)",
+    "railway_startup_diagnosis": "Runbook added; exact Railway root cause NOT PROVEN because supplied screenshots omit terminal validator marker / complete crash traceback and deployment settings."
   },
   "verification": {
-    "pytest": "PASS (505 passed, 1 skipped, 0 failed; full suite)",
+    "pytest": "PASS (506 passed, 1 skipped, 0 failed; full suite; Python 3.13.5)",
     "opportunity_hunter_regressions": "PASS (8/8 focused tests)",
     "python_compile": "PASS (73/73 Python files)",
     "compileall": "PASS (package root; Python 3.13.5)",
-    "validate_only": "PASS (exit 0; A66/A67 source checks 23/23; bot_started=false; live_threads=[])",
+    "validate_only": "PASS (exit=0; A66/A67 source checks 23/23; bot_started=false; live_threads=[]; 11.12 seconds; peak RSS 549504 KiB)",
     "archive_inventory": "99 package files; exact inherited A66 path inventory preserved",
-    "archive_crc": "PASS (final ZIP: 99/99 entries; ZipFile.testzip() returned None)",
-    "sha256_checksums": "PASS (98/98 non-self entries match final ZIP contents)",
+    "archive_crc": "PASS (final canonical ZIP: 99/99 entries; ZipFile.testzip() returned None)",
+    "sha256_checksums": "PASS (98/98 non-self entries match final package contents)",
     "target_python_312_linux_amd64": false,
     "docker_build_tested": false,
     "live_network_tested": false,
@@ -464,7 +467,10 @@
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "opportunity_hunter_revision": "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
-    "opportunity_hunter_execution_authority": false
+    "opportunity_hunter_execution_authority": false,
+    "selftest_log_context_isolation": "PASS (synthetic loss/Prequal/Telegram self-test records demoted only in ContextVar scope; concurrent thread remains outside test context)",
+    "railway_startup_runbook": "PASS (README documents persistent command and validation-only markers; deployment root cause remains unproven without terminal Railway log/settings)",
+    "canonical_zip_name": "UNIFIED_SCALPER_V702_A66_A67_CANONICAL_FINAL_AUDIT_CLOSED.zip"
   },
   "active_package_revision_current": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
   "active_audit_revision_current": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
@@ -526,5 +532,27 @@
     "MEAN_REVERSION",
     "RELATIVE_STRENGTH_LEADER"
   ],
-  "opportunity_hunter_max_symbols_per_cycle": 240
+  "opportunity_hunter_max_symbols_per_cycle": 240,
+  "supplemental_post_packaging_closure": "A66-SELFTEST-LOG-CONTEXT-ISOLATION-AND-RAILWAY-STARTUP-DIAGNOSTICS-2026-11-15",
+  "supplemental_post_packaging_scope": [
+    "ContextVar-scoped boot self-test diagnostics; no global severity downgrade across worker threads/tasks",
+    "Regression test proves synthetic log isolation and thread-context isolation",
+    "Railway runbook: persistent Start Command, validate-only environment controls, and diagnostic evidence requirements"
+  ],
+  "railway_startup_diagnosis": {
+    "observed_in_supplied_screenshots": "Repeated boot sequence from 2026-11-15 19:29:56 to 19:30:29; Railway status Crashed",
+    "one_shot_validate_only_possible": true,
+    "one_shot_validate_only_proven": false,
+    "proof_marker": "[V702-VALIDATE-EXIT] one_shot=true bot_started=false",
+    "expected_persistent_start_command": "python -u main.py",
+    "validate_only_environment_variables": [
+      "UNIFIED_V699_VALIDATE_ONLY",
+      "UNIFIED_V702_VALIDATE_ONLY",
+      "UNIFIED_VALIDATE_ONLY"
+    ],
+    "missing_evidence": "Complete terminal deployment log including any final [V702-CRASH] traceback and exact Railway Start Command/environment settings",
+    "local_validate_only_elapsed_seconds": 11.12,
+    "local_validate_only_peak_rss_kib": 549504,
+    "note": "Local validator peak memory is an environment-specific observation, not a measurement of Railway. Compare against the service memory limit before inferring OOM."
+  }
 }

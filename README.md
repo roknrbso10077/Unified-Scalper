@@ -89,7 +89,30 @@ python main.py --validate-only
 python -u main.py
 ```
 
-`--validate-only` must exit with code 0, report `bot_started=false`, and leave no background threads. The normal command starts the existing monitor/Paper/Shadow runtime; it does not override live-off defaults.
+`--validate-only` must exit with code 0, report `bot_started=false`, and leave no background threads. It is a **one-shot diagnostic command**, never a persistent service command. The normal command starts the existing monitor/Paper/Shadow runtime; it does not override live-off defaults.
+
+### Railway persistent-service settings
+
+Set the Railway **Start Command** to exactly:
+
+```bash
+python -u main.py
+```
+
+Do not add `--validate-only`. Ensure these variables are absent or set to `0` in the Railway service:
+
+```dotenv
+UNIFIED_V699_VALIDATE_ONLY=0
+UNIFIED_V702_VALIDATE_ONLY=0
+UNIFIED_VALIDATE_ONLY=0
+```
+
+Any one of those variables set to `1` deliberately switches the process to the one-shot validator, which exits instead of starting the bot. The terminal marker
+`[V702-VALIDATE-EXIT] one_shot=true bot_started=false` proves that the service was started in validation mode. A repeated boot cycle without that marker is **not enough** to establish the cause; inspect the last complete log lines and the full traceback, if any. In particular, a terminal `[V702-CRASH]` block must be diagnosed from its actual exception and stack, not from the synthetic self-test messages above it.
+
+The deployment screenshots supplied for this audit show repeated boot sequences around 19:29:56–19:30:29 on 2026-11-15, but do not include the terminal `[V702-VALIDATE-EXIT]` marker or a complete `[V702-CRASH]` traceback. Therefore the one-shot Start Command / environment mismatch is a strong, testable hypothesis—not a proven Railway root cause. The ZIP does not contain Railway project settings and cannot establish which commit (`9591cebf` in the screenshot) Railway actually executed.
+
+For durable state, attach a Railway Volume at `/data` and set `SCALPER_DB=/data/unified_scalper.db` (plus the documented knowledge/export paths). Temporary files named `/tmp/v702_r4_streak_*.db` or `/tmp/v702_a42_selftest_*.db` are isolated, disposable self-test databases; they are not evidence that the production ledger is configured to `/tmp`.
 
 ## Dependencies and deployment
 
