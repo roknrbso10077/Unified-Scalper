@@ -56,7 +56,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("canonical_package_revision"), bot.V702_A10_CANONICAL_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_package_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("package_audit_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
-        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A65-CANONICAL-FINAL")
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL")
 
 
     def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):

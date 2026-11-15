@@ -478,3 +478,16 @@ def test_a63_setup_identity_collapses_repeated_scan_of_same_closed_bar(tmp_path,
     assert notes["setup_id"]
     assert notes["attempt_id"]
     assert notes["setup_bar_ts_ms"] == bar_ts
+
+
+def test_a66_universe_boot_failure_preserves_position_manager_runtime():
+    audit = bot._v702_a66_startup_recovery_source_check()
+    assert audit["pass"], audit
+    assert audit["checks"]["universe_failure_does_not_close_exchange"]
+    assert audit["checks"]["universe_failure_does_not_return_from_run_bot"]
+    assert audit["checks"]["universe_failure_keeps_protection_tasks"]
+    assert audit["checks"]["preflight_requires_verified_universe"]
+    assert audit["checks"]["empty_universe_retry_is_bounded"]
+    assert audit["checks"]["empty_universe_skips_scan_pipeline"]
+    assert audit["checks"]["no_live_policy_relaxation"]
+    assert bot.FINAL_CANONICAL_RUNTIME["active_release_tag"] == bot.V702_A66_RELEASE_TAG

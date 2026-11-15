@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A65 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A66 CANONICAL FINAL
 
-**Release ID:** `UNIFIED-SCALPER-V702-A65-CANONICAL-FINAL`  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL`  
 **Release date:** 2026-11-15  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
@@ -8,7 +8,7 @@
 
 ## Operational status
 
-This distribution is for offline validation, monitoring, and supervised Paper/Shadow research only. It is **not approved for unattended live trading**. A65 does not claim profitability and does not authorize real orders through the new research strategy.
+This distribution is for offline validation, monitoring, and supervised Paper/Shadow research only. It is **not approved for unattended live trading**. A66 does not claim profitability and does not authorize real orders through the research-only strategy lanes.
 
 Live-pilot configuration remains off by default. لا يكفي المفتاح الأول وحده لتفعيل التداول؛ يجب أن يكون الإعداد الداخلي مفعّلًا ومفتاحا المشغّل موجودين، مع اجتياز كل بوابات التنفيذ وEdge والرصيد والحماية والمخاطر. التفعيل اليدوي يتطلب ضبط `UNIFIED_LIVE_PILOT_ENABLE=1` و`UNIFIED_A55_LIVE_ARM=1` صراحةً، إلى جانب الإعداد الداخلي؛ القيم الافتراضية في المثال أدناه تظل `0`. CI وبيئة النشر لا ينبغي أن تفعّلا هذه المفاتيح تلقائيًا:
 
@@ -17,16 +17,24 @@ UNIFIED_LIVE_PILOT_ENABLE=0
 UNIFIED_A55_LIVE_ARM=0
 ```
 
-A65 also fixes the runtime guard's stale CONFIG reference: authorization reads the current guarded CONFIG object at decision time. That fixes an inconsistent authorization read; it does not loosen a gate. The effective default remains `MONITOR_ONLY_NO_NEW_BUYS`.
+The inherited A65 runtime guard also fixes the stale CONFIG reference: authorization reads the current guarded CONFIG object at decision time. That fixes an inconsistent authorization read; it does not loosen a gate. The effective default remains `MONITOR_ONLY_NO_NEW_BUYS`.
 
-## A65 changes
+## A66 startup-safety closure
+
+1. **Protect open positions through a market-universe boot outage.** If the initial MEXC market/universe request fails after the PositionManager and runtime heartbeat tasks are started, the runtime no longer closes the exchange and returns from `run_bot`. It remains alive in fail-closed monitor mode, preserving the independent protection and heartbeat tasks.
+2. **Bounded universe recovery.** An empty universe is retried on a configurable interval (`V702_A66_UNIVERSE_EMPTY_RETRY_SEC`, default 60 seconds, clamped to 30–300 seconds). An empty CCXT market cache is reloaded once through the existing safe API wrapper before rebuilding the liquidity universe.
+3. **No scan on an unverified universe.** If no manually supplied or ranked symbols are available, the scanner skips BTC context, multi-timeframe fetches, candidate generation, Builder, queue, and execution plumbing. The PositionManager, heartbeat, Supervisor and Telegram runtime remain independent.
+4. **Recovery never grants live authority.** A recovered universe does not clear the initial `LIVE_BLOCKED` latch or enable buys. The distribution remains `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE`.
+5. **Validation-chain continuity.** `--validate-only` now loads and executes the A66 validator before the one-shot validation dispatch; the historical A65 → A64 → A63 → ... validator chain remains intact.
+
+## A65 inherited changes
 
 1. **Unified round-trip cost model.** Production Shadow PreSend and the research studies now share one estimator. A valid measured all-in result (order-book/VWAP friction plus the symbol's available taker-fee metadata) takes precedence and receives a configurable 0.05 percentage-point safety buffer. The fallback is observed spread when available, otherwise a conservative configured spread, plus two-sided slippage and round-trip fee estimate. No measured cost is added to the fallback a second time, and the old unconditional minimum floor is set to zero. The conservative fallback remains in place whenever measurement is missing or invalid. A fee rate is not assumed identical for every MEXC market.
 2. **Adaptive Relative-Strength Pullback — Shadow only.** A new experimental lane ranks closed 4H relative returns against BTC, requires BTC 4H regime/efficiency and asset 1H trend alignment, waits for a 15M structural pullback, then requires a closed 5M resumption break, volume confirmation, and a chase limit. Its research geometry uses a structural stop constrained to 1.5–3.5 ATR(15M), a 1.5R first target, a modeled 50% reduction at 1.5R, and a later 15M confirmed-pivot trail. It sends no orders.
 3. **Closed-candle truth.** Shadow studies no longer discard the last DataFrame row blindly. They use each candle's timeframe close time and an explicit `as_of_ms`/grace when supplied; a still-forming candle is excluded.
 4. **Partial-exit cost coherence.** One all-in round-trip estimate already prices the full original position. Splitting a modeled exit into 50% plus 50% no longer creates a second artificial full round-trip cost. The 15M trailing stop cannot use a pivot confirmed before the virtual entry.
 5. **Default live-pilot safety.** `V702_LIVE_PILOT_ENABLE` defaults to false. The emergency-off variable, two operator keys, Spot/Long-only rules, Edge/Builder eligibility, score/liquidity/risk/protection gates and KillSwitch remain in force.
-6. **Release identity.** Distribution metadata now identifies A65 while explicitly preserving A64 as the base runtime lineage. The source version labels are coherent with the A65 distribution.
+6. **Release identity.** A65 introduced its own distribution identity while preserving A64 as base runtime lineage; A66 appends the startup-protection closure without changing that lineage.
 
 ## Strategy coverage and what was deliberately not added
 
@@ -35,7 +43,7 @@ A65 also fixes the runtime guard's stale CONFIG reference: authorization reads t
 - A separate RSI-only mean-reversion engine and an external “Xiznit Scalper” clone were not added. An oversold RSI value alone is not a reversal signal, and the package has no verified specification or licensed source for the external named system.
 - Futures/short selling was not added. The product remains Spot LONG_ONLY; futures require a separate risk, execution, liquidation, and protection design.
 - MEXC native OCO/stop automation was not enabled. The package must not assume that an exchange feature is available for every symbol/account or correctly wired through the deployed CCXT adapter. Software-SL operational risk remains a live blocker until native protection is verified end to end.
-- A durable Telegram Outbox was not introduced in A65. A64's digest queue and ACK/callback restoration remains; that is not represented as a transactional, crash-safe Outbox. This requires a separate idempotent persistence/reconciliation change and Telegram integration tests.
+- A durable Telegram Outbox was not introduced in A65 or A66. A64's digest queue and ACK/callback restoration remains; that is not represented as a transactional, crash-safe Outbox. This requires a separate idempotent persistence/reconciliation change and Telegram integration tests.
 - A full historical Backtester and Walk-Forward proof were not fabricated. The supplied archive contains no historical OHLCV/book/fill dataset. A faithful replay must use timestamped exchange candles and book snapshots, and should exercise the same Candidate → Prequal → Score → Builder → Shadow PreSend → exit code paths. Until those inputs and replay parity tests exist, profitability remains unverified.
 
 ## Risk and operating boundaries
@@ -73,11 +81,11 @@ Mount persistent storage at `/data` and set the documented `SCALPER_DB` and know
 From the package root, verify:
 
 ```bash
-sha256sum -c A65_SHA256SUMS.txt
+sha256sum -c A66_SHA256SUMS.txt
 ```
 
-`A65_RELEASE_MANIFEST.json` records the final archive inventory and the A65 release decision. `FINAL_MANIFEST.json` remains the machine-readable canonical source manifest. `A64_*` files are retained as historical base-release evidence; they are not the A65 checksum authority.
+`A66_RELEASE_MANIFEST.json` records the final archive inventory and A66 release decision. `FINAL_MANIFEST.json` is the machine-readable canonical source manifest. `A64_*` and `A65_*` files are retained as historical release evidence; `A66_SHA256SUMS.txt` is the current checksum authority.
 
 ## Production decision
 
-**NO_GO_UNATTENDED_LIVE** remains the only supported decision. A65's Adaptive RS results are Shadow observations, not an edge certification. Before considering a supervised pilot, collect real timestamped costs and execution observations, run a production-parity historical replay with walk-forward/holdout periods across market regimes, prove stop behavior and restart recovery on the target exchange/account, test Telegram delivery durability, and complete Python 3.12/Linux amd64 CI plus the Docker build.
+**NO_GO_UNATTENDED_LIVE** remains the only supported decision. A65's Adaptive RS results remain Shadow observations, not an edge certification. Before considering a supervised pilot, correct and verify the deployed MEXC API credentials, collect real timestamped costs and execution observations, run a production-parity historical replay with walk-forward/holdout periods across market regimes, prove stop behavior and restart recovery on the target exchange/account, test Telegram delivery durability, and complete Python 3.12/Linux amd64 CI plus the Docker build.

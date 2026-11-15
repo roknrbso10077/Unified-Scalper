@@ -6330,20 +6330,26 @@ class StrategyPerformanceMemory:
     @classmethod
     def _ensure_db(cls) -> None:
         if cls._db_ready: return
+        conn = None
         try:
             table=str(CONFIG.get("STRATEGY_EXPECTANCY_DB_TABLE","strategy_expectancy_v44"))
             conn=sqlite3.connect(str(CONFIG.get("DB_PATH","./unified_scalper.db")),timeout=3)
             conn.execute(f"CREATE TABLE IF NOT EXISTS {table} (strategy TEXT NOT NULL, regime TEXT NOT NULL, session TEXT NOT NULL, style TEXT NOT NULL, trades INTEGER NOT NULL, sum_r REAL NOT NULL, sum_r2 REAL NOT NULL, updated_ts REAL NOT NULL, PRIMARY KEY(strategy,regime,session,style))")
             stable=str(CONFIG.get("SYMBOL_STRATEGY_EXPECTANCY_DB_TABLE","symbol_strategy_expectancy_v44"))
             conn.execute(f"CREATE TABLE IF NOT EXISTS {stable} (symbol TEXT NOT NULL, strategy TEXT NOT NULL, trades INTEGER NOT NULL, sum_r REAL NOT NULL, updated_ts REAL NOT NULL, PRIMARY KEY(symbol,strategy))")
-            conn.commit(); conn.close(); cls._db_ready=True
+            conn.commit(); cls._db_ready=True
         except Exception as exc:
             logger.debug(f"[V44.Expectancy] DB init suppressed: {exc}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     @classmethod
     def _load_once(cls) -> None:
         if cls._loaded: return
         cls._ensure_db()
+        conn = None
         try:
             if cls._db_ready:
                 table=str(CONFIG.get("STRATEGY_EXPECTANCY_DB_TABLE","strategy_expectancy_v44"))
@@ -6354,9 +6360,12 @@ class StrategyPerformanceMemory:
                 stable=str(CONFIG.get("SYMBOL_STRATEGY_EXPECTANCY_DB_TABLE","symbol_strategy_expectancy_v44"))
                 for symbol,strategy,trades,sum_r in conn.execute(f"SELECT symbol,strategy,trades,sum_r FROM {stable} ORDER BY updated_ts DESC LIMIT ?",(int(CONFIG.get("STRATEGY_EXPECTANCY_MAX_KEYS",128))*8,)).fetchall():
                     _SYM_STRAT_EXP_MEM[(str(symbol),str(strategy))]={"n":float(trades),"sum":float(sum_r)}
-                conn.close()
         except Exception as exc:
             logger.debug(f"[V44.Expectancy] load suppressed: {exc}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
         cls._loaded=True
 
     @classmethod
@@ -6378,15 +6387,20 @@ class StrategyPerformanceMemory:
             cls._ensure_db()
             if cls._db_ready:
                 table=str(CONFIG.get("STRATEGY_EXPECTANCY_DB_TABLE","strategy_expectancy_v44"))
+                conn = None
                 try:
                     conn=sqlite3.connect(str(CONFIG.get("DB_PATH","./unified_scalper.db")),timeout=3)
                     conn.execute(f"INSERT INTO {table}(strategy,regime,session,style,trades,sum_r,sum_r2,updated_ts) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(strategy,regime,session,style) DO UPDATE SET trades=excluded.trades,sum_r=excluded.sum_r,sum_r2=excluded.sum_r2,updated_ts=excluded.updated_ts",(s,r,se,st,int(rec["n"]),rec["sum"],rec["sum2"],WALL_NOW()))
                     if symbol and CONFIG.get("SYMBOL_STRATEGY_EXPECTANCY_ENABLE",True):
                         stable=str(CONFIG.get("SYMBOL_STRATEGY_EXPECTANCY_DB_TABLE","symbol_strategy_expectancy_v44")); sr=_SYM_STRAT_EXP_MEM.get((str(symbol),s),{"n":0.0,"sum":0.0})
                         conn.execute(f"INSERT INTO {stable}(symbol,strategy,trades,sum_r,updated_ts) VALUES(?,?,?,?,?) ON CONFLICT(symbol,strategy) DO UPDATE SET trades=excluded.trades,sum_r=excluded.sum_r,updated_ts=excluded.updated_ts",(str(symbol),s,int(sr["n"]),sr["sum"],WALL_NOW()))
-                    conn.commit(); conn.close()
+                    conn.commit()
                 except Exception as exc:
                     logger.debug(f"[V44.Expectancy] persist suppressed: {exc}")
+                finally:
+                    if conn is not None:
+                        try: conn.close()
+                        except Exception: pass
         except Exception as exc:
             logger.debug(f"[V44.Expectancy] record suppressed: {exc}")
 
@@ -11702,53 +11716,59 @@ class DBManager:
                 raise RuntimeError(f"SCALPER_DB parent is not a directory: {db_parent}")
             if not os.access(db_parent, os.W_OK):
                 raise PermissionError(f"SCALPER_DB parent is not writable by runtime UID: {db_parent}")
-        conn = sqlite3.connect(path, timeout=5)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS active_trades (
-            symbol TEXT PRIMARY KEY,
-            trade_id TEXT,
-            snapshot_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS finalized_trade_ids (
-            trade_id TEXT PRIMARY KEY,
-            symbol TEXT,
-            reason TEXT,
-            finalized_at TEXT NOT NULL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS daily_state (
-            date TEXT PRIMARY KEY,
-            realized_r REAL NOT NULL DEFAULT 0,
-            daily_trades INTEGER NOT NULL DEFAULT 0,
-            blocked INTEGER NOT NULL DEFAULT 0,
-            snapshot_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS rejection_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL, stage TEXT, symbol TEXT,
-            reason TEXT, score REAL, trace_id TEXT, context_json TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS execution_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL, event_type TEXT NOT NULL,
-            symbol TEXT, trace_id TEXT, details_json TEXT)""")
-        # Durable pre-wire journal. SUBMISSION_STARTED survives process death and
-        # blocks new entries until exchange outcome is reconciled explicitly.
-        c.execute("""CREATE TABLE IF NOT EXISTS execution_intents (
-            intent_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, trace_id TEXT,
-            side TEXT NOT NULL, order_type TEXT NOT NULL,
-            requested_qty REAL NOT NULL, planned_price REAL NOT NULL,
-            status TEXT NOT NULL, venue_order_id TEXT,
-            details_json TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_status ON execution_intents(status)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_symbol ON execution_intents(symbol)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_ts ON rejection_events(ts)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_symbol ON rejection_events(symbol)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_execevt_ts ON execution_events(ts)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_execevt_symbol ON execution_events(symbol)")
-        conn.commit()
-        conn.close()
-        logger.info(f"[DB] Schema initialized at {path}")
+        conn = None
+        try:
+            conn = sqlite3.connect(path, timeout=5)
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            c = conn.cursor()
+            c.execute("""CREATE TABLE IF NOT EXISTS active_trades (
+                symbol TEXT PRIMARY KEY,
+                trade_id TEXT,
+                snapshot_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS finalized_trade_ids (
+                trade_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                reason TEXT,
+                finalized_at TEXT NOT NULL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS daily_state (
+                date TEXT PRIMARY KEY,
+                realized_r REAL NOT NULL DEFAULT 0,
+                daily_trades INTEGER NOT NULL DEFAULT 0,
+                blocked INTEGER NOT NULL DEFAULT 0,
+                snapshot_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS rejection_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL, stage TEXT, symbol TEXT,
+                reason TEXT, score REAL, trace_id TEXT, context_json TEXT)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS execution_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL, event_type TEXT NOT NULL,
+                symbol TEXT, trace_id TEXT, details_json TEXT)""")
+            # Durable pre-wire journal. SUBMISSION_STARTED survives process death and
+            # blocks new entries until exchange outcome is reconciled explicitly.
+            c.execute("""CREATE TABLE IF NOT EXISTS execution_intents (
+                intent_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, trace_id TEXT,
+                side TEXT NOT NULL, order_type TEXT NOT NULL,
+                requested_qty REAL NOT NULL, planned_price REAL NOT NULL,
+                status TEXT NOT NULL, venue_order_id TEXT,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_status ON execution_intents(status)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_symbol ON execution_intents(symbol)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_ts ON rejection_events(ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_symbol ON rejection_events(symbol)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_execevt_ts ON execution_events(ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_execevt_symbol ON execution_events(symbol)")
+            conn.commit()
+            conn.close()
+            logger.info(f"[DB] Schema initialized at {path}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     @staticmethod
     def begin_execution_intent(symbol: str, trace_id: str, side: str, order_type: str,
@@ -11953,6 +11973,7 @@ class DBManager:
     @staticmethod
     def recover_active_trades() -> Dict[str, TradeState]:
         out: Dict[str, TradeState] = {}
+        conn = None
         try:
             finalized_ids = DBManager.recover_finalized_trade_ids()
             path = CONFIG["DB_PATH"]
@@ -11970,11 +11991,14 @@ class DBManager:
                     out[t.symbol] = t
                 except Exception:
                     continue
-            conn.close()
             if out:
                 logger.info(f"[DB] Recovered {len(out)} active trades")
         except Exception as e:
             logger.warning(f"[DB] recover_active_trades: {e}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
         return out
 
     @staticmethod
@@ -12013,6 +12037,7 @@ class DBManager:
     @staticmethod
     def recover_finalized_trade_ids() -> set:
         out = set()
+        conn = None
         try:
             path = CONFIG["DB_PATH"]
             conn = sqlite3.connect(path)
@@ -12021,11 +12046,14 @@ class DBManager:
             for (trade_id,) in c.fetchall():
                 if trade_id:
                     out.add(str(trade_id))
-            conn.close()
             if out:
                 logger.info(f"[DB] Recovered {len(out)} finalized trade ids")
         except Exception as e:
             logger.debug(f"[DB] recover_finalized_trade_ids: {e}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
         return out
 
     # ---------------------------------------------------------------------
@@ -12070,6 +12098,7 @@ class DBManager:
     @staticmethod
     def save_daily_state(date: str, realized_r: float, daily_trades: int, blocked_reason: Optional[str],
                          consecutive_losses: int = 0, loss_streak_block_until: float = 0.0) -> None:
+        conn = None
         try:
             path = CONFIG["DB_PATH"]
             conn = sqlite3.connect(path)
@@ -12089,12 +12118,16 @@ class DBManager:
                       (date, float(realized_r), int(daily_trades),
                        1 if blocked_reason else 0, json.dumps(payload), now))
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.debug(f"[DB] save_daily_state: {e}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     @staticmethod
     def load_daily_state(date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        conn = None
         try:
             target = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             path = CONFIG["DB_PATH"]
@@ -12102,7 +12135,6 @@ class DBManager:
             c = conn.cursor()
             c.execute("SELECT date, realized_r, daily_trades, blocked, snapshot_json FROM daily_state WHERE date = ?", (target,))
             row = c.fetchone()
-            conn.close()
             if not row:
                 return None
             d = {"date": row[0], "realized_r": row[1], "daily_trades": row[2], "blocked": row[3]}
@@ -12116,6 +12148,10 @@ class DBManager:
         except Exception as e:
             logger.debug(f"[DB] load_daily_state: {e}")
             return None
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
 
 def _v702_r4_loss_streak_self_test() -> Dict[str, Any]:
@@ -23311,6 +23347,7 @@ class KnowledgeOutcomeLedger:
     def ensure_schema() -> None:
         if not bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_ENABLE", True)):
             return
+        conn = None
         try:
             conn=sqlite3.connect(str(CONFIG.get("DB_PATH","./unified_scalper.db")),timeout=5)
             conn.execute("PRAGMA busy_timeout=5000")
@@ -23390,10 +23427,16 @@ class KnowledgeOutcomeLedger:
                 "CREATE INDEX IF NOT EXISTS idx_ko_alerted ON knowledge_outcomes(alerted_at)",
             ):
                 conn.execute(q)
-            conn.commit(); conn.close(); STATS["v702_knowledge_schema_ok"]=True
+            conn.commit(); STATS["v702_knowledge_schema_ok"]=True
         except Exception as exc:
             STATS["v702_knowledge_schema_ok"]=False
             logger.warning("[V702-KNOWLEDGE] schema init failed: %s: %s",exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _connect():
@@ -23420,6 +23463,7 @@ class KnowledgeOutcomeLedger:
     @classmethod
     def register_alert(cls,candidate,snapshot=None,source="DISCOVERY",assume_fill=False,delivery_failed=False):
         if not bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_ENABLE",True)): return None
+        conn = None
         try:
             source = str(source or "DISCOVERY").strip().upper()
             if source not in {"DISCOVERY", "DISCOVERY_DELIVERY_FAILED", "SELECTED_ROUTE_PAPER"}:
@@ -23511,7 +23555,6 @@ class KnowledgeOutcomeLedger:
                 # is the hard upper bound across all paper-ledger layers.
                 _max_paper_active = cls.max_active()
                 if _active_selected >= _max_paper_active:
-                    conn.close()
                     STATS["v702_paper_sim_capacity_blocks"] = int(STATS.get("v702_paper_sim_capacity_blocks", 0) or 0) + 1
                     return None
             conn.execute("""INSERT OR IGNORE INTO knowledge_outcomes
@@ -23561,7 +23604,7 @@ class KnowledgeOutcomeLedger:
                     "UPDATE knowledge_outcomes SET status='IN_POSITION', entry_triggered_at=?, last_bar_ts=? WHERE alert_id=?",
                     (now, int(now * 1000), aid),
                 )
-            conn.commit(); conn.close()
+            conn.commit()
             if not _inserted:
                 return None
             STATS["v702_knowledge_alert_registered"]=int(STATS.get("v702_knowledge_alert_registered",0) or 0)+1
@@ -23579,6 +23622,12 @@ class KnowledgeOutcomeLedger:
             return aid
         except Exception as exc:
             STATS["v702_knowledge_register_errors"]=int(STATS.get("v702_knowledge_register_errors",0) or 0)+1; logger.debug("[V702-KNOWLEDGE] register suppressed: %s",exc); return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @classmethod
     def annotate_paper_edge(cls, alert_id, shadow_result=None, builder_completed=False,
@@ -24219,24 +24268,26 @@ class KnowledgeOutcomeLedger:
             db_bytes = int(Path(db_path).stat().st_size)
         except Exception:
             pass
-        conn=cls._connect()
-        rows=conn.execute("SELECT * FROM knowledge_outcomes WHERE status NOT IN ('WAITING_ENTRY','IN_POSITION') ORDER BY alerted_at ASC").fetchall()
+        conn = cls._connect()
         try:
-            db_total_rows = int(conn.execute("SELECT COUNT(*) FROM knowledge_outcomes").fetchone()[0])
-            db_active_rows = int(conn.execute("SELECT COUNT(*) FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION')").fetchone()[0])
-            _active_notes = conn.execute("SELECT notes FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION')").fetchall()
-            paper_selected_active = 0
-            for _active_note in _active_notes:
-                try:
-                    if str((json.loads(_active_note[0] or "{}") or {}).get("record_source", "DISCOVERY")).upper() == "SELECTED_ROUTE_PAPER":
-                        paper_selected_active += 1
-                except Exception:
-                    continue
-        except Exception:
-            db_total_rows = len(rows)
-            db_active_rows = 0
-            paper_selected_active = 0
-        conn.close()
+            rows=conn.execute("SELECT * FROM knowledge_outcomes WHERE status NOT IN ('WAITING_ENTRY','IN_POSITION') ORDER BY alerted_at ASC").fetchall()
+            try:
+                db_total_rows = int(conn.execute("SELECT COUNT(*) FROM knowledge_outcomes").fetchone()[0])
+                db_active_rows = int(conn.execute("SELECT COUNT(*) FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION')").fetchone()[0])
+                _active_notes = conn.execute("SELECT notes FROM knowledge_outcomes WHERE status IN ('WAITING_ENTRY','IN_POSITION')").fetchall()
+                paper_selected_active = 0
+                for _active_note in _active_notes:
+                    try:
+                        if str((json.loads(_active_note[0] or "{}") or {}).get("record_source", "DISCOVERY")).upper() == "SELECTED_ROUTE_PAPER":
+                            paper_selected_active += 1
+                    except Exception:
+                        continue
+            except Exception:
+                db_total_rows = len(rows)
+                db_active_rows = 0
+                paper_selected_active = 0
+        finally:
+            conn.close()
         min_samples=max(100, int(CONFIG.get("V702_KNOWLEDGE_EDGE_MIN_SAMPLES",100) or 100))
         def _record_source(row):
             try:
@@ -24827,7 +24878,7 @@ class KnowledgeOutcomeLedger:
                 "enabled":bool(CONFIG.get("V702_KNOWLEDGE_OUTCOME_ENABLE",True)),
                 "read_only":True,
                 "closed_1m":str(CONFIG.get("V702_KNOWLEDGE_OUTCOME_TIMEFRAME","1m"))=="1m",
-                "max_active_bounded":1<=cls.max_active()<=120 and cls.max_active()==20,
+                "max_active_bounded":1<=KnowledgeOutcomeLedger.max_active()<=120 and KnowledgeOutcomeLedger.max_active()==20,
                 "horizon_positive":float(CONFIG.get("V702_KNOWLEDGE_OUTCOME_HORIZON_SCALP_SEC",21600.0))>0,
                 "min_samples":int(CONFIG.get("V702_KNOWLEDGE_EDGE_MIN_SAMPLES",30))>=20,
                 "register_only_after_telegram_success":bool(CONFIG.get("V702_KNOWLEDGE_REGISTER_ON_TELEGRAM_SUCCESS",True)),
@@ -25087,34 +25138,59 @@ async def run_bot(universe: List[str]):
         live_entries_block("startup_protection_task_unavailable", where="A58.startup_protection_before_scan")
         logger.critical("[A58-PM-START] protection task could not start: %s", _a58_pm_task_exc)
 
-    # Resolve the actual production universe BEFORE the live preflight.
-    # Default mode is dynamic TOP-500 source SPOT/USDT by 24h quote volume;
-    # SCALPER_UNIVERSE remains an explicit manual override.
+    # A66-STARTUP-UNIVERSE-RECOVERY: resolving the scan universe is NOT a
+    # prerequisite for protecting already-open positions. Keep the authenticated
+    # exchange and the early PositionManager/heartbeat tasks alive on failure.
+    # The state remains fail-closed for entries; an empty universe is retried on
+    # a bounded cadence from the monitor loop below.
     if not universe:
         try:
             await safe_api_call("load_markets_for_universe", exchange.load_markets)
             universe = await build_top_liquidity_universe(
                 exchange, int(CONFIG.get("TOP_LIQUIDITY_SYMBOLS", 500))
             )
+            if not isinstance(universe, (list, tuple)) or not universe:
+                raise RuntimeError("top_liquidity_universe_empty")
+            universe = list(universe)
+            STATS["v702_a66_universe_boot_degraded"] = False
         except Exception as _univ_boot_e:
             logger.critical(
-                f"[Universe] initial TOP_LIQUIDITY resolution failed: {_univ_boot_e} — "
-                "LIVE startup blocked")
+                "[Universe] initial TOP_LIQUIDITY resolution failed: %s — "
+                "new entries remain blocked; retaining exchange and protection tasks",
+                _univ_boot_e,
+            )
+            LiveStateMachine.block("liquidity_universe_boot_failed", where="run_bot.universe")
+            universe = []
+            STATS["v702_a66_universe_boot_degraded"] = True
+            STATS["v702_a66_universe_boot_last_error"] = (
+                f"{type(_univ_boot_e).__name__}:{str(_univ_boot_e)[:240]}"
+            )
             try:
-                LiveStateMachine.block("liquidity_universe_boot_failed", where="run_bot.universe")
-            finally:
-                await exchange.close()
-            return
+                run_bot._liq_universe_last_attempt_ts = MONO_NOW()
+            except Exception:
+                pass
+            logger.critical(
+                "[A66-BOOT] PositionManager and runtime heartbeat remain active; "
+                "scanner will wait for bounded universe recovery; LIVE entry remains blocked"
+            )
 
     logger.info(
         f"[Universe] ACTIVE scan universe size={len(universe)} "
         f"mode={'TOP_LIQUIDITY' if not os.environ.get('SCALPER_UNIVERSE','').strip() else 'MANUAL'}")
 
-    # Boot preflight (fail-closed)
-    ok = await BootOrchestrator.run_preflight(exchange, universe)
-    if not ok:
-        logger.critical(f"[Bot] Preflight FAILED — {LIVE_STATE.blocked_reason}. "
-                        "Bot will REMAIN in LIVE_BLOCKED state until operator intervenes.")
+    # An unresolved/empty universe is not allowed to pass preflight. Do not
+    # attempt a balance/venue capability transition on an incomplete market set.
+    if universe:
+        ok = await BootOrchestrator.run_preflight(exchange, universe)
+        if not ok:
+            logger.critical(f"[Bot] Preflight FAILED — {LIVE_STATE.blocked_reason}. "
+                            "Bot will REMAIN in LIVE_BLOCKED state until operator intervenes.")
+    else:
+        STATS["v702_a66_preflight_deferred_no_universe"] = True
+        logger.critical(
+            "[A66-BOOT] preflight deferred: no verified spot universe; "
+            "monitor/protection runtime continues without live-entry authorization"
+        )
 
     # v4.5.23 — explicit Telegram configuration telemetry. Missing Telegram
     # credentials never blocks trading, but is now visible in logs/stats.
@@ -25293,27 +25369,75 @@ async def run_bot(universe: List[str]):
             # without a fresh valid liquidity ranking.
             if not hasattr(run_bot, "_liq_universe"):
                 run_bot._liq_universe = list(universe)
-                run_bot._liq_universe_ts = 0.0
+                # The boot fetch is already fresh. Avoid an immediate duplicate
+                # TOP-500 request on the first scanner cycle.
+                _boot_mono = MONO_NOW()
+                run_bot._liq_universe_ts = _boot_mono if run_bot._liq_universe else 0.0
+                run_bot._liq_universe_last_attempt_ts = _boot_mono
+            _empty_retry_sec = 60.0
             try:
                 _manual_env = str(os.environ.get("SCALPER_UNIVERSE", "")).strip()
                 _refresh_sec = float(CONFIG.get("LIQUIDITY_UNIVERSE_REFRESH_SEC", 900))
                 _top_n = int(CONFIG.get("TOP_LIQUIDITY_SYMBOLS", 500))
-                _need_refresh = (not run_bot._liq_universe) or ((MONO_NOW() - run_bot._liq_universe_ts) >= _refresh_sec)
+                try:
+                    _empty_retry_sec = max(
+                        30.0,
+                        min(300.0, float(CONFIG.get("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0))),
+                    )
+                except Exception:
+                    _empty_retry_sec = 60.0
+                if not run_bot._liq_universe:
+                    _last_attempt = float(getattr(run_bot, "_liq_universe_last_attempt_ts", 0.0) or 0.0)
+                    _need_refresh = (_last_attempt <= 0.0) or ((MONO_NOW() - _last_attempt) >= _empty_retry_sec)
+                else:
+                    _need_refresh = (MONO_NOW() - run_bot._liq_universe_ts) >= _refresh_sec
                 if not _manual_env and _need_refresh:
+                    run_bot._liq_universe_last_attempt_ts = MONO_NOW()
                     try:
+                        # CCXT may have left an empty market cache after a failed
+                        # loadMarkets call. Reload only in this degraded state.
+                        if not (getattr(exchange, "markets", None) or {}):
+                            await safe_api_call(
+                                "load_markets_empty_universe_retry",
+                                lambda: exchange.load_markets(reload=True),
+                                retry_safe=True,
+                            )
                         _new_universe = await build_top_liquidity_universe(exchange, _top_n)
-                        run_bot._liq_universe = _new_universe
+                        if not isinstance(_new_universe, (list, tuple)) or not _new_universe:
+                            raise RuntimeError("top_liquidity_universe_empty")
+                        run_bot._liq_universe = list(_new_universe)
                         run_bot._liq_universe_ts = MONO_NOW()
+                        run_bot._liq_universe_last_attempt_ts = run_bot._liq_universe_ts
+                        STATS["v702_a66_universe_boot_degraded"] = False
+                        STATS["v702_a66_universe_recovered_ts"] = WALL_NOW()
                         STATS["liquidity_universe_refresh_ok"] = STATS.get("liquidity_universe_refresh_ok", 0) + 1
                     except Exception as _ue:
                         STATS["liquidity_universe_refresh_error"] = STATS.get("liquidity_universe_refresh_error", 0) + 1
+                        STATS["v702_a66_universe_retry_last_error"] = f"{type(_ue).__name__}:{str(_ue)[:240]}"
                         logger.warning(
-                            f"[Universe] TOP_LIQUIDITY refresh failed: {_ue} — "
-                            f"keeping last valid universe size={len(run_bot._liq_universe)}")
+                            "[A66-UNIVERSE-RETRY] failed: %s — retry_after_sec=%.0f last_valid_size=%d",
+                            _ue, _empty_retry_sec, len(run_bot._liq_universe),
+                        )
                 scan_universe = [s.strip() for s in _manual_env.split(",") if s.strip()] if _manual_env else list(run_bot._liq_universe)
             except Exception as _u_outer:
                 logger.warning(f"[Universe] selector error: {_u_outer} — keeping previous universe")
                 scan_universe = list(getattr(run_bot, "_liq_universe", universe))
+
+            if not scan_universe:
+                # Never spin through BTC/4TF/candidate plumbing with no symbols.
+                # PositionManager, Telegram and heartbeat tasks remain independent.
+                STATS["v702_a66_scan_deferred_no_universe"] = int(
+                    STATS.get("v702_a66_scan_deferred_no_universe", 0) or 0
+                ) + 1
+                _no_universe_log_ts = float(STATS.get("v702_a66_no_universe_last_log_ts", 0.0) or 0.0)
+                if WALL_NOW() - _no_universe_log_ts >= 180.0:
+                    logger.warning(
+                        "[A66-MONITOR] no verified universe; no Candidate/Builder/BUY route is entered; "
+                        "PositionManager remains active"
+                    )
+                    STATS["v702_a66_no_universe_last_log_ts"] = WALL_NOW()
+                await asyncio.sleep(max(5.0, min(30.0, _empty_retry_sec / 2.0)))
+                continue
 
             # ---- Fetch BTC context ONCE per scan cycle (shared across ALL symbols) ----
             btc_pair = "BTC/USDT"
@@ -33795,11 +33919,11 @@ class V45GlobalFunnelState:
         if cls._persist_loaded or not CONFIG.get("V453_CYCLE_PERSIST_ENABLE", True):
             return
         cls._persist_loaded = True
+        conn = None
         try:
             conn = sqlite3.connect(CONFIG["DB_PATH"]); c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS kv_meta (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT)")
             row = c.execute("SELECT v FROM kv_meta WHERE k='v453_cycle_meta'").fetchone()
-            conn.close()
             if row and row[0]:
                 d = json.loads(row[0])
                 cls._cumulative_cycles = max(0, int(d.get("cumulative_cycles", 0) or 0))
@@ -33811,11 +33935,16 @@ class V45GlobalFunnelState:
                 logger.debug(f"[V453.cycle-persist] restore suppressed: {_e}")
             except Exception:
                 _v647_record_suppressed_exception()
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     @classmethod
     def _persist_store(cls):
         if not CONFIG.get("V453_CYCLE_PERSIST_ENABLE", True):
             return
+        conn = None
         try:
             now = MONO_NOW()
             if now - cls._last_persist_ts < 60.0:
@@ -33828,12 +33957,16 @@ class V45GlobalFunnelState:
                        json.dumps({"cumulative_cycles": int(cls._cumulative_cycles),
                                    "last_successful_global_cycle_ts": float(cls._last_successful_global_cycle_ts)}),
                        datetime.now(timezone.utc).isoformat()))
-            conn.commit(); conn.close()
+            conn.commit()
         except Exception as _e:
             try:
                 logger.debug(f"[V453.cycle-persist] store suppressed: {_e}")
             except Exception:
                 _v647_record_suppressed_exception()
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     @classmethod
     def note_cycle(cls, generated: int, eligible: int, ranked: int, winners: int, top_score: float = 0.0,
@@ -100855,7 +100988,7 @@ def _v702_a65_self_test():
             "a64_base_self_test_passes": bool(_v702_a64_self_test().get("pass")),
             "unified_cost_model_is_callable": callable(cost_model),
             "adaptive_intraday_lane_is_shadow_only": bool(intraday.get("pass")) and bool(intraday.get("checks", {}).get("shadow_only", False)),
-            "distribution_identity_is_a65": FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A65_RELEASE_TAG,
+            "distribution_identity_is_a65_or_monotonic_a66": FINAL_CANONICAL_RUNTIME.get("active_release_tag") in {V702_A65_RELEASE_TAG, globals().get("V702_A66_RELEASE_TAG", V702_A65_RELEASE_TAG)},
             "base_runtime_identity_is_a64": FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag") == V702_A64_RELEASE_TAG,
             "monitor_only_default_preserved": bool(CONFIG.get("V702_MONITOR_ONLY_MODE", True)) and not bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", False)),
             "no_live_policy_relaxation": FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE" and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS" and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False,
@@ -100890,6 +101023,109 @@ def _v702_a65_validate_config():
 
 
 globals()["validate_config"] = _v702_a65_validate_config
+
+
+# =============================================================================
+# V702 A66 — STARTUP POSITION-PROTECTION CONTINUITY + BOUNDED UNIVERSE RECOVERY
+# This closes an observed boot failure: a universe fetch error previously
+# closed the exchange and returned from run_bot after spawning PositionManager.
+# asyncio.run() then cancelled the still-needed protection task. A66 keeps the
+# exchange and protection/heartbeat runtime alive in fail-closed monitor mode,
+# defers preflight until a verified universe exists, and retries empty-universe
+# recovery on a bounded interval. An initial boot failure still blocks LIVE and
+# does not auto-clear the LIVE_BLOCKED latch after data recovers.
+# =============================================================================
+V702_A66_RELEASE_REVISION = "A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15"
+V702_A66_RELEASE_TAG = "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A66_RELEASE_REVISION
+CONFIG.setdefault("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0)
+STATS["v702_a66_release_revision"] = V702_A66_RELEASE_REVISION
+STATS["v702_a66_release_tag"] = V702_A66_RELEASE_TAG
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A66_RELEASE_REVISION,
+    "active_distribution_release_tag": V702_A66_RELEASE_TAG,
+    "active_release_tag": V702_A66_RELEASE_TAG,
+    "a66_startup_protection_continuity": True,
+})
+FINAL_CANONICAL_RUNTIME["a66_bounded_empty_universe_retry_sec"] = float(CONFIG["V702_A66_UNIVERSE_EMPTY_RETRY_SEC"])
+FINAL_CANONICAL_RUNTIME["production_decision"] = "NO_GO_UNATTENDED_LIVE"
+FINAL_CANONICAL_RUNTIME["effective_entry_policy"] = "MONITOR_ONLY_NO_NEW_BUYS"
+FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] = False
+FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] = False
+
+
+def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
+    """Verify critical boot-continuity invariants against the active source."""
+    checks: Dict[str, bool] = {}
+    try:
+        with open(__file__, "r", encoding="utf-8") as _fh:
+            _src = _fh.read()
+        _start = _src.index("# A66-STARTUP-UNIVERSE-RECOVERY")
+        _end = _src.index("# v4.5.23 — explicit Telegram configuration telemetry.", _start)
+        _boot = _src[_start:_end]
+        _handler_start = _boot.index("except Exception as _univ_boot_e:")
+        _handler = _boot[_handler_start:]
+        checks["universe_failure_does_not_close_exchange"] = "await exchange.close()" not in _handler
+        checks["universe_failure_does_not_return_from_run_bot"] = "return" not in _handler
+        checks["universe_failure_keeps_protection_tasks"] = "retaining exchange and protection tasks" in _handler
+        checks["preflight_requires_verified_universe"] = "if universe:" in _boot and "preflight deferred" in _boot
+        _loop_start = _src.index("_liq_universe_last_attempt_ts", _end)
+        _loop_end = _src.index("# ---- Fetch BTC context ONCE per scan cycle", _loop_start)
+        _loop = _src[_loop_start:_loop_end]
+        checks["empty_universe_retry_is_bounded"] = (
+            "V702_A66_UNIVERSE_EMPTY_RETRY_SEC" in _loop
+            and "load_markets_empty_universe_retry" in _loop
+            and "_empty_retry_sec" in _loop
+        )
+        checks["empty_universe_skips_scan_pipeline"] = (
+            "if not scan_universe:" in _loop
+            and "await asyncio.sleep" in _loop
+            and "continue" in _loop
+        )
+        checks["no_live_policy_relaxation"] = (
+            FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
+            and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+            and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+            and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+        )
+        failed = [k for k, v in checks.items() if not bool(v)]
+        return {"pass": not failed, "checks": checks, "failed": failed,
+                "retry_interval_sec": float(CONFIG.get("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0)),
+                "release": V702_A66_RELEASE_TAG}
+    except Exception as _exc:
+        return {"pass": False, "checks": checks, "failed": ["source_check_exception"],
+                "error": f"{type(_exc).__name__}:{str(_exc)[:200]}",
+                "release": V702_A66_RELEASE_TAG}
+
+
+_V702_A66_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a66_validate_config() -> bool:
+    try:
+        _base_ok = bool(callable(_V702_A66_PREVIOUS_VALIDATE_CONFIG) and _V702_A66_PREVIOUS_VALIDATE_CONFIG())
+        _audit = _v702_a66_startup_recovery_source_check()
+        _result = {"pass": bool(_base_ok and _audit.get("pass")),
+                   "base_previous": _base_ok, **_audit}
+        STATS["v702_a66_final_validation"] = _result
+        if _result["pass"]:
+            logger.info("[V702-A66-VALIDATION] PASS checks=%d retry_sec=%.0f",
+                        len(_audit.get("checks", {})), float(_audit.get("retry_interval_sec", 60.0)))
+        else:
+            logger.critical("[V702-A66-VALIDATION] FAIL base=%s failed=%s",
+                            _base_ok, _audit.get("failed", []))
+        return bool(_result["pass"])
+    except Exception as _exc:
+        STATS["v702_a66_final_validation"] = {"pass": False,
+            "error": f"{type(_exc).__name__}:{str(_exc)[:200]}",
+            "release": V702_A66_RELEASE_TAG}
+        return False
+
+
+globals()["validate_config"] = _v702_a66_validate_config
+
 
 
 if _V699_VALIDATE_ONLY_REQUEST:
@@ -101650,6 +101886,9 @@ if _V699_VALIDATE_ONLY_REQUEST:
     except Exception:
         pass
     raise SystemExit(0 if _ok else 1)
+
+
+
 
 
 

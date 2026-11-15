@@ -27,13 +27,17 @@ def test_a26_terminal_contract_preserves_policy_and_revision_lineage():
     assert report["checks"]["hard_gate_bypass_disabled"] is True
 
 
-def test_final_validator_integrates_a64_over_the_historical_a63_to_a48_chain():
-    # A64 adds an outer validation wrapper but must preserve the complete
-    # A64 -> A63 -> A62 -> A61 -> A60 -> A59 -> A58 -> A57 -> A56 -> A55/A54 -> A49/A48 chain.
+def test_final_validator_integrates_a66_over_the_historical_a65_to_a48_chain():
+    # A66 wraps A65 without breaking the complete inherited A65 -> A64 -> A63 ->
+    # A62 -> A61 -> A60 -> A59 -> A58 -> A57 -> A56 -> A55/A54 -> A49/A48 chain.
     assert callable(bot.validate_config)
     source = inspect.getsource(bot.validate_config)
-    assert "_V702_A64_PREVIOUS_VALIDATE_CONFIG()" in source
-    assert "_v702_a64_self_test()" in source
+    assert "_V702_A66_PREVIOUS_VALIDATE_CONFIG()" in source
+    assert "_v702_a66_startup_recovery_source_check()" in source
+    assert callable(bot._V702_A66_PREVIOUS_VALIDATE_CONFIG)
+    a65_source = inspect.getsource(bot._V702_A66_PREVIOUS_VALIDATE_CONFIG)
+    assert "_v702_a64_validate_config()" in a65_source
+    assert "_v702_a65_self_test()" in a65_source
     assert callable(bot._V702_A64_PREVIOUS_VALIDATE_CONFIG)
     a63_source = inspect.getsource(bot._V702_A64_PREVIOUS_VALIDATE_CONFIG)
     assert "_V702_A63_PREVIOUS_VALIDATE_CONFIG()" in a63_source
@@ -74,7 +78,7 @@ def test_final_validator_integrates_a64_over_the_historical_a63_to_a48_chain():
     assert "_V702_A36_PREV_VALIDATE_CONFIG()" in inspect.getsource(bot._V702_A44_PREV_VALIDATE_CONFIG)
     assert bot._v702_a33_terminal_self_test()["pass"] is True
     assert "_v702_a32_terminal_self_test()" in inspect.getsource(bot._V702_A33_PREV_VALIDATE_CONFIG)
-    assert bot.STATS["v702_a26_terminal_self_test"]["pass"] is True
+    assert bot._v702_a26_terminal_self_test()["pass"] is True
     assert bot._v702_a49_terminal_self_test()["pass"] is True
     assert bot._v702_a64_self_test()["pass"] is True
     assert bot.FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] is False

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import sqlite3
 
@@ -86,7 +88,7 @@ def test_a61_builder_none_cannot_make_ledger_row_edge_eligible(monkeypatch, tmp_
         live_eligible=False,
         builder_reason="builder_returned_none:score_below_threshold",
     ) is True
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         notes = json.loads(conn.execute(
             "SELECT notes FROM knowledge_outcomes WHERE alert_id=?", ("A61-LEDGER-ROW",)
         ).fetchone()[0])
@@ -122,7 +124,7 @@ def test_a61_same_attempt_shadow_pass_qualifies_market_without_trade_state(monke
         builder_reason="monitor_only_forced_off", market_qualification_completed=True,
         trade_state_created=False, evaluation_attempt_id=attempt_id,
     ) is True
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         notes = json.loads(conn.execute(
             "SELECT notes FROM knowledge_outcomes WHERE alert_id=?", ("A61-LEDGER-ROW",)
         ).fetchone()[0])

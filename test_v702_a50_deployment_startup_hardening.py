@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import sqlite3
 from pathlib import Path
 
@@ -14,7 +16,7 @@ def test_db_schema_initialization_creates_missing_parent_directory(tmp_path, mon
     bot.DBManager.init_schema()
 
     assert db_path.is_file()
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"active_trades", "execution_intents", "daily_state"}.issubset(names)
 

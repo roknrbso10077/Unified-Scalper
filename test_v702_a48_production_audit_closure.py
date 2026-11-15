@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from collections import deque
 from unittest.mock import patch
 
@@ -69,7 +71,7 @@ def test_presend_queue_gap_is_candidate_scoped_and_observability_only():
     assert presend_queue_gap_reason(True, True, same_candidate=True) is None
     assert presend_queue_gap_reason(True, False, same_candidate=False) is None
     assert presend_queue_gap_reason(False, False, same_candidate=True) is None
-    source = open(bot.__file__, encoding="utf-8").read()
+    source = Path(bot.__file__).read_text(encoding="utf-8")
     assert 'source": "V702_A48_QUEUE_RECONCILIATION' in source
     assert '"queued_seen"' not in source or "_v702_presend_queue_gap_reason" in source
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import asyncio
 import os
 import sqlite3
@@ -31,7 +33,7 @@ class ProductionGuardrailTests(unittest.TestCase):
             self.assertFalse(breach["allowed"])
             self.assertEqual(breach["halt_reason"], "peak_drawdown_5.1000_pct_ge_5.0000_pct")
             self.assertFalse(recovery["allowed"], "breach must remain latched after equity recovers")
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 self.assertEqual(conn.execute("SELECT halted FROM v702_portfolio_drawdown_state").fetchone()[0], 1)
 
     def test_pipeline_digest_exposes_monitor_only_entry_policy(self):
@@ -201,7 +203,7 @@ class ProductionGuardrailTests(unittest.TestCase):
                     bot.__dict__, FakeExchange(), "operator checked account equity"))
             self.assertFalse(refused["ok"])
             self.assertTrue(reset["ok"])
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 row = conn.execute("SELECT halted,last_reset_reason FROM v702_portfolio_drawdown_state").fetchone()
             self.assertEqual(row, (0, "operator checked account equity"))
 
@@ -270,7 +272,7 @@ class ProductionGuardrailTests(unittest.TestCase):
                 # Both SL and TP1 are touched inside the same closed candle.
                 bar = [bar_ts, 100.0, 103.0, 97.0, 101.0, 1000.0]
                 shadow._track_sync_rows([(row, [bar])])
-                with sqlite3.connect(db) as conn:
+                with closing(sqlite3.connect(db)) as conn:
                     final = conn.execute(f"SELECT status,final_outcome,net_r FROM {shadow.TABLE} WHERE sample_id=?", (sample_id,)).fetchone()
             self.assertEqual(final[0], "CLOSED")
             self.assertEqual(final[1], "SL")
