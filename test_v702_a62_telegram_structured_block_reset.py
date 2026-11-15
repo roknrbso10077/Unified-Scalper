@@ -87,7 +87,7 @@ async def test_a62_failed_digest_delivery_keeps_structured_rows_for_retry(monkey
 def test_a62_release_self_test_keeps_live_entry_policy_fail_closed():
     report = bot._v702_a62_self_test()
     assert report["pass"] is True, report
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL"
     assert bot.FINAL_CANONICAL_RUNTIME["production_decision"] == "NO_GO_UNATTENDED_LIVE"
     assert bot.FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] is False
     assert bot.FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] is False

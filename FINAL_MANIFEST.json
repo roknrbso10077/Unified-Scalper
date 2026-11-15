@@ -1,12 +1,12 @@
 {
-  "release": "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL",
-  "release_revision": "A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
-  "active_package_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
+  "release": "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL",
+  "release_revision": "A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
+  "active_package_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
   "canonical_executable": "main.py",
-  "canonical_main_sha256": "7ccb7285bfe842454003fe85b37f10c07b40e6a4b97ea0b8d8e78a987edd6e14",
+  "canonical_main_sha256": "de8b6b6dd7ea6b287aa428e0a09d2a3248c0d64a48705fa4fdc8cee1cfcb927e",
   "archive_contents": [
     ".dockerignore",
-    ".github/workflows/a63-production-audit.yml",
+    ".github/workflows/a64-production-audit.yml",
     ".gitignore",
     "A57_FINAL_AUDIT_REPORT_AR.md",
     "A58_FINAL_AUDIT_REPORT_AR.md",
@@ -24,6 +24,9 @@
     "A63_FINAL_PRODUCTION_AUDIT_AR.md",
     "A63_RELEASE_MANIFEST.json",
     "A63_SHA256SUMS.txt",
+    "A64_FINAL_PRODUCTION_AUDIT_AR.md",
+    "A64_RELEASE_MANIFEST.json",
+    "A64_SHA256SUMS.txt",
     "CHANGELOG.md",
     "DOCS__architecture__V702_A44_MODULARIZATION_AND_RELEASE_GATES_AR.md",
     "DOCS__audits__V702_A48_CANONICAL_PRODUCTION_AUDIT_2026-10-19_AR.md",
@@ -118,7 +121,7 @@
     "v702_counterfactual_shadow.py",
     "v702_intraday_shadow.py"
   ],
-  "file_count": 112,
+  "file_count": 115,
   "python_source_count": 71,
   "live_enabled_by_default": false,
   "required_live_operator_keys": [
@@ -145,16 +148,21 @@
       "sha256": "f9322bab59d3f525b5eb44626028e26ba24fa894e0b356d76f991e0f6b2fb4d0",
       "modified": false,
       "role": "canonical input archive for A63"
+    },
+    "UNIFIED_SCALPER_V702_A63_CANONICAL_FINAL.zip": {
+      "sha256": "9f4b809475d1a24eb1bfd1fec5eda4c4093b836ffdd236977ba810a20a025e37",
+      "modified": false,
+      "role": "canonical input archive for A64"
     }
   },
   "validation": {
-    "py_compile": "PASS (main.py, healthcheck.py, changed/new test modules; see A63 verification)",
-    "compileall": "PASS (python -m compileall -q .; exit=0)",
-    "validate_only": "PASS (exit=0; machine result pass=true; bot_started=false; live_threads=[]; A63 identity; Python 3.13.5)",
+    "py_compile": "PASS (compileall includes all packaged Python sources)",
+    "compileall": "PASS (python -m compileall -q .; exit=0; Python 3.13.5)",
+    "validate_only": "PASS (current run; pass=true; A64 self-test 8/8; bot_started=false; live_threads=[]; MONITOR_ONLY_NO_NEW_BUYS; NO_GO_UNATTENDED_LIVE)",
     "validate_only_peak_rss_kib": null,
     "validate_only_elapsed_seconds": null,
-    "focused_regression_tests": "PASS (91 passed in focused release, edge, paper, PM, health and Telegram groups; includes a historical fixture skip in the larger A62/A61 mixed set)",
-    "full_pytest": "PASS (474 passed, 1 skipped, 0 failed; 31.34 seconds)",
+    "focused_regression_tests": "PASS: focused A64/A63/A62/A61/A58/A55 44/44; release-contract and workflow batch 75 passed, 1 historical fixture skipped; all 479 unique tests subsequently covered by partition runs.",
+    "full_pytest": "PASS BY PARTITION (479 unique tests from 57 modules all covered; 478 passed, 1 skipped, 0 failures in final module-batch runs; monolithic run exceeded 240-second environment timeout)",
     "skipped_tests": "1 historical A51 runtime-log fixture skipped because that log is not packaged in this clean source distribution.",
     "test_runner_shutdown": "PASS (A58_THREADS_AFTER_SESSION=[('MainThread', False)]; no worker threads left after pytest session)",
     "live_network_tested": false,
@@ -166,18 +174,26 @@
     "transitive_dependencies_hash_locked": false,
     "profitability_verified": false,
     "production_decision": "NO_GO_UNATTENDED_LIVE",
-    "audit_runtime_python": "3.13.5; Python 3.12 executable unavailable locally. Dockerfile and A63 CI target Python 3.12/linux amd64 and were not executed here.",
+    "audit_runtime_python": "3.13.5; Python 3.12 executable unavailable locally. Python 3.12/linux amd64 CI is specified but not run here.",
     "a61_self_test": "PASS (inherited Builder/Shadow/Edge attempt-attribution contract)",
     "a62_self_test": "PASS (inherited structured digest queue reset contract)",
     "a63_self_test": "PASS (14/14 checks)",
     "live_authority": false,
-    "archive_crc": "PASS (ZipFile.testzip() returned None; 112/112 archive entries match FINAL_MANIFEST.archive_contents)",
-    "sha256_verification": "PASS (111/111 files covered by A63_SHA256SUMS.txt; checksum file excludes itself)"
+    "archive_crc": "PASS (ZipFile.testzip() returned None; 115/115 final A64 archive entries match FINAL_MANIFEST.archive_contents)",
+    "sha256_verification": "PASS (114/114 files covered by A64_SHA256SUMS.txt; checksum file excludes itself)",
+    "a64_self_test": "PASS (8/8 checks)",
+    "a64_telegram_digest_contract": "PASS (callback aggregation, queue-vs-ACK, restore and callback merge covered by focused regression tests)",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "pytest_collection": "479 unique tests collected across 57 test modules",
+    "pytest_partition_coverage": "479/479 unique test nodes covered by successful final independent module batches",
+    "pytest_partition_result": "478 passed; 1 skipped; 0 final failures; 34 repeated executions across overlapping batches are not double-counted",
+    "pytest_single_process": "NOT COMPLETED (python -X dev -m pytest -q exceeded 240-second tool timeout; not represented as a successful one-shot run)",
+    "archive_inventory": "115 package files; 71 Python source files; runtime DB and generated caches excluded"
   },
-  "active_release_tag": "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL",
-  "package_audit_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
-  "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
-  "canonical_source_sha256": "7ccb7285bfe842454003fe85b37f10c07b40e6a4b97ea0b8d8e78a987edd6e14",
+  "active_release_tag": "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL",
+  "package_audit_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
+  "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
+  "canonical_source_sha256": "de8b6b6dd7ea6b287aa428e0a09d2a3248c0d64a48705fa4fdc8cee1cfcb927e",
   "archive_files_excluded": [
     ".env and LIVE_RELEASE_ENV (secrets and private operator settings)",
     "unified_scalper.db and all runtime SQLite databases/WAL/SHM files",
@@ -192,7 +208,7 @@
     "pip_require_hashes_ready": false,
     "target_python": "3.12",
     "target_platform": "linux/amd64",
-    "notes": "requirements-lock.txt remains a direct-pin seed. The A63 workflow resolves transitive SHA-256 locks and runs strict Docker in CI, but those resolved locks were not committed into this archive and Docker defaults still require separate strict-lock configuration. No hashes are fabricated."
+    "notes": "requirements-lock.txt is a direct-pin seed. A64 CI resolves Python 3.12 linux/amd64 transitive SHA-256 locks and uses pip --require-hashes in CI; that workflow was not run here and resolved locks are not included as final release evidence. No hashes are fabricated."
   },
   "runtime": {
     "entry_policy": {
@@ -279,20 +295,32 @@
     "paper_coverage_contract": "CLOSED_CANDLE_SEQUENCE_V1",
     "runner_live_behavior_preserved": true,
     "paper_tp3_fixed_exit_excluded_when_runner_enabled": true,
-    "telegram_digest_flush_semantics": "QUEUED_NOT_DELIVERED_ACK",
+    "telegram_digest_flush_semantics": "QUEUED_NOT_DELIVERED_ACK; DISCOVERY_CALLBACKS_AFTER_ALL_PART_ACKS",
     "telegram_durable_outbox_implemented": false,
-    "position_manager_healthy_state": "RUNNING with healthy_ticks >= 1 and fresh heartbeat"
+    "position_manager_healthy_state": "RUNNING with healthy_ticks >= 1 and fresh heartbeat",
+    "telegram_digest_delivery_contract": {
+      "snapshot_swap_preserved": true,
+      "per_part_delivery_callbacks": true,
+      "discovery_knowledge_requires_all_parts_acked": true,
+      "queue_admission_is_not_delivery_ack": true,
+      "failed_admission_restores_snapshot": true,
+      "periodic_summary_restored_on_failure": true,
+      "same_symbol_old_new_callbacks_merged": true,
+      "durable_outbox_implemented": false,
+      "live_telegram_delivery_tested": false,
+      "live_authority": false
+    }
   },
-  "release_notes": "A63 adds fail-closed clientOrderId propagation and exact UNKNOWN order reconciliation; strict finite/fresh Edge report validation and A63 evidence-version isolation; attempt-scoped market eligibility independent of account/live eligibility; Paper gap/expiry/catch-up and closed-candle coverage hardening; PM health and rate-limiter priority fixes; Telegram snapshot/swap with QUEUED_NOT_DELIVERED_ACK semantics; and a dedicated A63 CI workflow. The archive preserves all strategies and risk gates. Remaining open items and Offline-only limitations are documented in A63_FINAL_PRODUCTION_AUDIT_AR.md. Production decision remains NO_GO_UNATTENDED_LIVE and effective entry policy remains MONITOR_ONLY_NO_NEW_BUYS.",
+  "release_notes": "A64 closes Discovery callback ownership across A63 snapshot/swap Digest generations: callbacks are bound to every emitted Telegram part and settle only after all part-level delivery ACKs; failed queue admission restores the detached event generation and periodic-summary state, and old/new same-symbol callback ownership is merged. A64 exposes its self-test in --validate-only. A63 execution identity, Edge/Paper evidence isolation, Shadow controls, all trading strategies and all risk gates remain unchanged. Durable Telegram outbox, live MEXC/Telegram integration, target Python 3.12/Linux amd64 CI and profitability remain unproven. Regression coverage: 479 unique tests covered in batches, 478 passed and 1 historical fixture skipped; the monolithic pytest invocation exceeded the environment timeout. Production decision remains NO_GO_UNATTENDED_LIVE; effective entry policy remains MONITOR_ONLY_NO_NEW_BUYS.",
   "production_decision": "NO_GO_UNATTENDED_LIVE",
-  "active_audit_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
+  "active_audit_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
   "verification": {
     "python_compile": "PASS",
-    "compileall": "PASS",
-    "validate_only": "PASS (pass=true; bot_started=false; live_threads=[])",
-    "pytest": "PASS (474 passed, 1 skipped, 0 failed; 31.34 seconds)",
-    "focused_regression_tests": "PASS (91 passed in focused groups; see report)",
-    "test_runner_shutdown": "PASS (MainThread only after pytest session)",
+    "compileall": "PASS (current source tree)",
+    "validate_only": "PASS (pass=true; current A64 8/8; bot_started=false; live_threads=[]; policy MONITOR_ONLY_NO_NEW_BUYS)",
+    "pytest": "PASS BY PARTITION (479 unique/479 covered; 478 passed, 1 skipped, 0 final failures; single-process run timed out at 240s)",
+    "focused_regression_tests": "PASS (44/44 focused Telegram/ACK closure; 75 passed and 1 historical fixture skipped in release contract group)",
+    "test_runner_shutdown": "PASS in completed test groups; no background worker threads reported after test sessions",
     "live_mexc_network": false,
     "telegram_delivery": false,
     "native_stop_protection": false,
@@ -304,90 +332,101 @@
     "live_gates_relaxed": false,
     "hard_gate_bypass": false,
     "production_decision": "NO_GO_UNATTENDED_LIVE",
-    "a63_self_test": "PASS (14/14 checks)",
-    "archive_crc": "PASS (112/112 entries; independently verified after packaging)",
-    "sha256_checksums": "PASS (111/111 files; checksum file excludes itself)"
+    "a63_self_test": "PASS (14/14 checks; inherited)",
+    "archive_crc": "PASS (final ZIP CRC verified; 115/115 entries)",
+    "sha256_checksums": "PASS (114/114 files; checksum file excludes itself)",
+    "a64_self_test": "PASS (8/8 checks; current validate-only output)",
+    "telegram_delivery_contract": "PASS (offline mock-based regression; real Telegram delivery not tested)"
   },
-  "distribution_tag": "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL",
+  "distribution_tag": "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL",
   "post_audit_patch": {
-    "id": "V702-A63-SAFETY-EDGE-PAPER-TELEMETRY",
+    "id": "V702-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE",
     "scope": [
-      "F01-F05 critical execution and edge eligibility",
-      "F06-F10 evidence and paper model hardening",
-      "F11-F14 protection and API scheduling",
-      "F15-F17 Telegram digest durability semantics",
-      "F18-F24 CI, identity, performance and live acceptance gates"
+      "A63 Telegram Digest Snapshot/Swap callback ownership",
+      "all-parts Telegram delivery ACK aggregation for Discovery/Knowledge",
+      "failed queue admission and partial-enqueue snapshot restoration",
+      "periodic-summary preservation and same-symbol callback merge",
+      "A64 self-test exposed in validate-only"
     ],
     "changes": [
-      "strict exchange order identity and clientOrderId propagation",
-      "finite/fresh Edge proof validation and A63 evidence schema isolation",
-      "market/account eligibility separation with evaluation attempt identity",
-      "Paper replay gap/expiry/catch-up/fairness and runner exclusion guard",
-      "PositionManager health and API priority validation",
-      "Telegram snapshot/swap and queued-not-delivered status",
-      "A63 tests, CI workflow and production audit"
+      "bind on_success/on_failure to each Digest part",
+      "settle Discovery success only after all Digest parts are ACKed",
+      "settle terminal failure once and ignore late ACKs",
+      "do not report Queue admission as Telegram delivery",
+      "restore old and new generation data/callback ownership when queue admission fails",
+      "preserve periodic summary through failed flush restore"
     ],
     "live_authority": false,
     "hard_gate_bypass": false,
     "live_gates_relaxed": false,
-    "previous": "A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14"
+    "previous": "A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14"
   },
-  "post_audit_patch_revision": "A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
+  "post_audit_patch_revision": "A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
   "post_audit_patch_scope": [
-    "P0: F01-F04 exchange identity, UNKNOWN reconciliation, Edge numeric validation and precision fail-closed",
-    "P1: F05-F10 Shadow eligibility separation and Paper evidence/model correctness",
-    "P1/P2: F11-F17 PositionManager, API scheduling and Telegram digest semantics",
-    "P1/P2: F18-F24 CI, immutable setup identity, release provenance, ledger and live acceptance"
+    "P1: preserve Discovery/Knowledge callback ownership through Telegram Digest snapshot/swap",
+    "P1: require Telegram delivery ACK for every Digest part before success callback",
+    "P1: restore failed Digest generations including periodic summary and same-symbol callbacks",
+    "P2: expose A64 validation contract in machine-readable validate-only output",
+    "All trading, risk and execution policies remain unchanged"
   ],
   "created_utc_date": "2026-11-14",
   "post_audit_patch_previous": {
     "current": {
-      "id": "V702-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH",
-      "scope": "Exact-candidate Builder/Shadow/Edge evidence attribution only; no trade admission or execution changes.",
-      "changes": [
-        "Give exact-candidate BUILDER_RETURNED_NONE diagnostics precedence over any same-key stored Shadow result.",
-        "Set builder_completed from the actual Builder result rather than treating a normal None return as completed.",
-        "Require Builder completion before live/account readiness deltas can qualify the Paper evidence row.",
-        "Add fail-closed resolver, SQLite ledger, positive-path and startup self-tests."
-      ],
+      "id": "V702-A63-SAFETY-EDGE-PAPER-TELEMETRY",
+      "scope": "A63 execution identity, Edge/Paper evidence separation, Telegram Snapshot/Swap and safety closure.",
       "live_authority": false,
       "hard_gate_bypass": false,
       "live_gates_relaxed": false
     },
     "previous": {
       "current": {
-        "id": "V702-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE",
-        "scope": "Paper outcome-model coherence and truthful Edge evidence reporting.",
+        "id": "V702-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH",
+        "scope": "Exact-candidate Builder/Shadow/Edge evidence attribution only; no trade admission or execution changes.",
         "changes": [
-          "Check the selected Paper buffered-fill candle against the original protective stop and do not award target touches on the fill candle.",
-          "Match the Paper residual stop after TP1 to the live fee-covered break-even contract.",
-          "Mark same-candle TP1 plus fee-covered BE stop as ambiguous and exclude it from realized expectancy.",
-          "Separate exploratory selected-route Paper outcomes from current-version Builder plus actual Shadow PreSend Edge evidence."
+          "Give exact-candidate BUILDER_RETURNED_NONE diagnostics precedence over any same-key stored Shadow result.",
+          "Set builder_completed from the actual Builder result rather than treating a normal None return as completed.",
+          "Require Builder completion before live/account readiness deltas can qualify the Paper evidence row.",
+          "Add fail-closed resolver, SQLite ledger, positive-path and startup self-tests."
         ],
         "live_authority": false,
         "hard_gate_bypass": false,
         "live_gates_relaxed": false
       },
       "previous": {
-        "id": "V702-A59-BEARISH-AND-HTF-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE",
-        "shadow_lanes": [
-          "BEARISH_POLICY_REJECT_OBSERVATION",
-          "HTF_POLICY_REJECT_OBSERVATION"
-        ],
-        "scope": "Read-only counterfactual observation of raw LONG/BUY candidates rejected by explicit macro-family and HTF-strength policies; bounded asynchronous persistence and digest counters; no downstream admission claim and no execution authority.",
-        "live_authority": false,
-        "bearish_recovery_policy_explicit": true,
-        "ordinary_pullback_bearish_still_blocked": true,
-        "telegram_digest_truncation_fixed": true,
-        "digest_compaction_layers": [
-          "base_digest_builder",
-          "outer_pipeline_digest_wrapper"
-        ],
-        "live_gates_relaxed": false,
-        "hard_gate_bypass": false
+        "current": {
+          "id": "V702-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE",
+          "scope": "Paper outcome-model coherence and truthful Edge evidence reporting.",
+          "changes": [
+            "Check the selected Paper buffered-fill candle against the original protective stop and do not award target touches on the fill candle.",
+            "Match the Paper residual stop after TP1 to the live fee-covered break-even contract.",
+            "Mark same-candle TP1 plus fee-covered BE stop as ambiguous and exclude it from realized expectancy.",
+            "Separate exploratory selected-route Paper outcomes from current-version Builder plus actual Shadow PreSend Edge evidence."
+          ],
+          "live_authority": false,
+          "hard_gate_bypass": false,
+          "live_gates_relaxed": false
+        },
+        "previous": {
+          "id": "V702-A59-BEARISH-AND-HTF-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE",
+          "shadow_lanes": [
+            "BEARISH_POLICY_REJECT_OBSERVATION",
+            "HTF_POLICY_REJECT_OBSERVATION"
+          ],
+          "scope": "Read-only counterfactual observation of raw LONG/BUY candidates rejected by explicit macro-family and HTF-strength policies; bounded asynchronous persistence and digest counters; no downstream admission claim and no execution authority.",
+          "live_authority": false,
+          "bearish_recovery_policy_explicit": true,
+          "ordinary_pullback_bearish_still_blocked": true,
+          "telegram_digest_truncation_fixed": true,
+          "digest_compaction_layers": [
+            "base_digest_builder",
+            "outer_pipeline_digest_wrapper"
+          ],
+          "live_gates_relaxed": false,
+          "hard_gate_bypass": false
+        }
       }
     }
   },
-  "active_post_audit_patch_revision_current": "A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14",
+  "active_post_audit_patch_revision_current": "A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14",
   "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS"
 }

@@ -154,7 +154,7 @@ def test_a63_shadow_store_rejects_candidate_or_attempt_mismatch():
 
 
 def test_a61_self_test_and_release_identity():
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL"
     report = bot._v702_a61_self_test()
     assert report["pass"] is True, report.get("failed")
     assert report["live_authority"] is False

@@ -1,4 +1,4 @@
-# Canonical direct dependency inputs for Unified Scalper V702 A63.
+# Canonical direct dependency inputs for Unified Scalper V702 A64.
 # CI resolves the complete transitive Python 3.12 Linux/amd64 hash lock.
 ccxt==4.5.81
 python-dotenv==1.2.4

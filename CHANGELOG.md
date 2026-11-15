@@ -1,3 +1,13 @@
+# V702 A64 — Telegram Digest delivery-ACK and callback-ownership closure (2026-11-14)
+
+- Fix the A63 snapshot/swap Digest path dropping Discovery success/failure callbacks when the captured generation was detached. Each emitted Digest part now carries delivery callbacks, and Discovery/Knowledge success is settled only after every Digest part receives Telegram's message-level delivery ACK.
+- Keep Queue admission separate from Telegram delivery: `QUEUED_NOT_DELIVERED_ACK` remains the reported state; an enqueue rejection does not create a false delivery failure and the detached generation is restored for retry.
+- Preserve the periodic summary on failed enqueue/restore, and merge old/new same-symbol Discovery callback ownership instead of overwriting callbacks recorded during an in-flight flush.
+- Add regression coverage for multi-part ACK aggregation, terminal failure idempotence/late ACKs, failed-admission restoration, same-symbol callback merging, and A64 release safety.
+- Keep all trading strategies, score/policy/HTF/liquidity/PreSend/risk/execution/protection gates unchanged. The runtime remains `MONITOR_ONLY_NO_NEW_BUYS`; production decision remains `NO_GO_UNATTENDED_LIVE`.
+
+---
+
 # V702 A63 — execution identity, Edge/Paper evidence and telemetry closure (2026-11-14)
 
 - Preserve A62 as the canonical baseline and carry forward all existing strategies, policy gates, Spot/Long-only constraints, two-key arming, KillSwitch, execution intents, recovery, software/native protection and Runner behavior.

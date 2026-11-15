@@ -56,12 +56,12 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("canonical_package_revision"), bot.V702_A10_CANONICAL_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_package_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("package_audit_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
-        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL")
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL")
 
 
     def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL")
+        self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL")
         self.assertIn("BEARISH_POLICY_REJECT_OBSERVATION", source)
         self.assertIn("CF_SHADOW_POLICY_REJECT enabled=", source)
         self.assertTrue(bot.CONFIG.get("V702_CF_SHADOW_POLICY_REJECT_OBSERVE_ENABLE"))
@@ -324,7 +324,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn("--require-hashes -r /app/requirements-lock.txt", docker)
         self.assertIn("grep -q -- \"--hash=sha256:\" /app/requirements-lock.txt", docker)
         self.assertIn("ARG STRICT_HASH_LOCK=0", docker)
-        self.assertIn("STRICT_HASH_LOCK=1", (ROOT / ".github/workflows/a63-production-audit.yml").read_text(encoding="utf-8"))
+        self.assertIn("STRICT_HASH_LOCK=1", (ROOT / ".github/workflows/a64-production-audit.yml").read_text(encoding="utf-8"))
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("-r requirements.in", requirements)
 

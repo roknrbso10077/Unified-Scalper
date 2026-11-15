@@ -98379,6 +98379,7 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
             "route_blocks": list(cls._route_blocks),
             "shadow_events": list(cls._shadow_events),
             "discovery_by_symbol": copy.deepcopy(cls._discovery_by_symbol),
+            "periodic_summary": str(getattr(cls, "_periodic_summary", "") or ""),
             "last_flush_ts": last_flush,
             "structured": {
                 name: list(queue)
@@ -98388,6 +98389,92 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
         }
         cls.reset_after_flush()
     restored = False
+
+    def _row_callbacks(row):
+        if not isinstance(row, dict):
+            return []
+        existing = row.get("_v702_a64_delivery_callbacks")
+        pairs = list(existing) if isinstance(existing, (list, tuple)) else []
+        if not pairs and (callable(row.get("on_success")) or callable(row.get("on_failure"))):
+            pairs.append((row.get("on_success"), row.get("on_failure")))
+        return [(ok, fail) for ok, fail in pairs if callable(ok) or callable(fail)]
+
+    def _unique_callback_pairs(rows):
+        out = []
+        for row in rows:
+            for pair in _row_callbacks(row):
+                if not any(pair[0] is old[0] and pair[1] is old[1] for old in out):
+                    out.append(pair)
+        return out
+
+    delivery_callbacks = _unique_callback_pairs(
+        list((snapshot.get("discovery_by_symbol") or {}).values())
+    )
+
+    async def _invoke_one_callback(callback, reason):
+        if not callable(callback):
+            return
+        if asyncio.iscoroutinefunction(callback):
+            result = await callback(reason)
+        else:
+            result = await asyncio.to_thread(callback, reason)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result) or hasattr(result, "__await__"):
+                await result
+
+    async def _settle_discovery_callbacks(delivered: bool, reason: str):
+        fired = 0
+        for success_cb, failure_cb in delivery_callbacks:
+            callback = success_cb if delivered else failure_cb
+            if not callable(callback):
+                continue
+            try:
+                await _invoke_one_callback(callback, reason)
+                fired += 1
+            except Exception as callback_exc:
+                STATS["v702_a64_digest_callback_errors"] = int(
+                    STATS.get("v702_a64_digest_callback_errors", 0) or 0
+                ) + 1
+                STATS["v702_a64_digest_callback_last_error"] = type(callback_exc).__name__
+                # Preserve the existing R29 fallback contract: a failed
+                # success callback is recorded through its failure callback.
+                if delivered and callable(failure_cb):
+                    try:
+                        await _invoke_one_callback(failure_cb, "digest_callback_error")
+                    except Exception:
+                        STATS["v702_a64_digest_callback_errors"] = int(
+                            STATS.get("v702_a64_digest_callback_errors", 0) or 0
+                        ) + 1
+        key = "v702_a64_digest_callbacks_delivered" if delivered else "v702_a64_digest_callbacks_failed"
+        STATS[key] = int(STATS.get(key, 0) or 0) + fired
+
+    # Queue acceptance is deliberately not delivery. When Discovery rows have
+    # callbacks, each digest part gets an ACK hook; the aggregate settles only
+    # after every part has been delivered, or one part has terminally failed.
+    delivery_group = {"acked": 0, "settled": False}
+    delivery_group_lock = threading.RLock()
+
+    def _part_success(_reason="delivered"):
+        with delivery_group_lock:
+            if delivery_group["settled"]:
+                return None
+            delivery_group["acked"] += 1
+            if delivery_group["acked"] < max(1, len(chunks)):
+                return None
+            delivery_group["settled"] = True
+        return _settle_discovery_callbacks(True, "digest_delivered")
+
+    def _part_failure(reason="permanent_failure"):
+        with delivery_group_lock:
+            if delivery_group["settled"]:
+                return None
+            delivery_group["settled"] = True
+        return _settle_discovery_callbacks(False, str(reason or "permanent_failure"))
+
+    def _cancel_delivery_group():
+        # An enqueue rejection is retryable at the Digest layer. Do not emit
+        # a delivery-failure outcome for a message that never entered Queue.
+        with delivery_group_lock:
+            delivery_group["settled"] = True
 
     def _restore_failed_snapshot():
         nonlocal restored
@@ -98411,6 +98498,12 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
                     setattr(cls, attr, combined[-2400:])
                 elif older and not newer:
                     setattr(cls, attr, older[-2400:])
+            old_summary = str(snapshot.get("periodic_summary", "") or "").strip()
+            new_summary = str(getattr(cls, "_periodic_summary", "") or "").strip()
+            if old_summary and new_summary and old_summary != new_summary:
+                cls._periodic_summary = (new_summary + "\n[PREVIOUS DIGEST WINDOW] " + old_summary)[-2400:]
+            elif old_summary and not new_summary:
+                cls._periodic_summary = old_summary[-2400:]
             cls._rejection_captured = int(cls._rejection_captured or 0) + int(snapshot.get("rejection_captured", 0) or 0)
             for attr, key in (("_selected_blocks", "selected_blocks"), ("_scorer_blocks", "scorer_blocks"),
                               ("_route_blocks", "route_blocks"), ("_shadow_events", "shadow_events")):
@@ -98421,11 +98514,24 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
                     q.appendleft(item)
                 for item in reversed(new_items):
                     q.appendleft(item)
-            merged_discovery = copy.deepcopy(snapshot.get("discovery_by_symbol", {}))
-            merged_discovery.update(copy.deepcopy(cls._discovery_by_symbol))
+
+            old_discovery = copy.deepcopy(snapshot.get("discovery_by_symbol", {}))
+            new_discovery = copy.deepcopy(cls._discovery_by_symbol)
+            merged_discovery = dict(old_discovery)
+            for key, new_row in new_discovery.items():
+                old_row = merged_discovery.get(key)
+                if isinstance(old_row, dict) and isinstance(new_row, dict):
+                    callback_pairs = _unique_callback_pairs([old_row, new_row])
+                    merged_row = dict(old_row)
+                    merged_row.update(new_row)
+                    if callback_pairs:
+                        merged_row["_v702_a64_delivery_callbacks"] = callback_pairs
+                    merged_discovery[key] = merged_row
+                else:
+                    merged_discovery[key] = new_row
             if len(merged_discovery) > 40:
-                ordered = sorted(merged_discovery.values(), key=lambda x: float(x.get("ts", 0.0) or 0.0), reverse=True)[:40]
-                merged_discovery = {str(x.get("symbol", "UNKNOWN")): x for x in ordered}
+                ordered = sorted(merged_discovery.items(), key=lambda item: float(item[1].get("ts", 0.0) or 0.0), reverse=True)[:40]
+                merged_discovery = {str(k): v for k, v in ordered}
             cls._discovery_by_symbol = merged_discovery
             cls._last_flush_ts = min(float(cls._last_flush_ts or 0.0), float(snapshot.get("last_flush_ts", 0.0) or 0.0))
             structured = globals().get("_V702_A37_STRUCTURED_BLOCKS", {})
@@ -98453,8 +98559,21 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
             tagged = f"DIGEST {index}/{len(chunks)}\n{part}"
             if len(tagged) > limit:
                 raise ValueError(f"digest_part_over_limit:{index}:{len(tagged)}>{limit}")
-            ok = await _V702_R28_RAW_ENQUEUE(tagged)
+            if delivery_callbacks:
+                admission = {"accepted": False}
+                def _on_part_success(reason="delivered", _admission=admission):
+                    return _part_success(reason) if _admission["accepted"] else None
+                def _on_part_failure(reason="permanent_failure", _admission=admission):
+                    return _part_failure(reason) if _admission["accepted"] else None
+                ok = await _V702_R28_RAW_ENQUEUE(
+                    tagged, on_success=_on_part_success, on_failure=_on_part_failure
+                )
+                if ok is not False:
+                    admission["accepted"] = True
+            else:
+                ok = await _V702_R28_RAW_ENQUEUE(tagged)
             if ok is False:
+                _cancel_delivery_group()
                 STATS["v702_r28_digest_send_fail"] = int(STATS.get("v702_r28_digest_send_fail", 0) or 0) + 1
                 STATS["v702_a44_digest_send_failed_part"] = index
                 STATS["v702_a63_digest_partial_enqueue_possible"] = bool(index > 1)
@@ -98464,18 +98583,20 @@ async def _v702_a63_flush_digest(cls, force: bool = False) -> bool:
         STATS["v702_r28_digest_last_event_count"] = events
         STATS["v702_a44_digest_parts_sent_total"] = int(STATS.get("v702_a44_digest_parts_sent_total", 0) or 0) + len(chunks)
         STATS["v702_a63_digest_generation_flushes"] = int(STATS.get("v702_a63_digest_generation_flushes", 0) or 0) + 1
-        # Raw enqueue confirms QUEUED only. Telegram delivery is acknowledged
-        # asynchronously by TelegramDispatcher, never inferred from this return.
+        # Raw enqueue confirms QUEUED only. The aggregate ACK hooks above fire
+        # knowledge callbacks only after every digest part is Telegram-ACKed.
         STATS["v702_a63_digest_delivery_state"] = "QUEUED_NOT_DELIVERED_ACK"
         return True
     except Exception as exc:
+        _cancel_delivery_group()
         _restore_failed_snapshot()
         STATS["v702_r28_digest_send_fail"] = int(STATS.get("v702_r28_digest_send_fail", 0) or 0) + 1
         STATS["v702_a44_digest_flush_error"] = f"{type(exc).__name__}:{str(exc)[:160]}"
-        logger.warning("[V702-A63-TG] digest generation retained for retry: %s: %s", type(exc).__name__, exc)
+        logger.warning("[V702-A64-TG] digest generation retained for retry: %s: %s", type(exc).__name__, exc)
         return False
 
 _v702_a63_flush_digest.__func__._v702_a63_snapshot_swap = True
+_v702_a63_flush_digest.__func__._v702_a64_delivery_callbacks = True
 _V702R28TelegramDigest.flush = _v702_a63_flush_digest
 
 # Extend heartbeat with the actionable latch, current-cycle safety count, shadow
@@ -100240,6 +100361,7 @@ def _v702_a61_self_test():
                     V702_A61_RELEASE_TAG,
                     str(globals().get("V702_A62_RELEASE_TAG", "")),
                     str(globals().get("V702_A63_RELEASE_TAG", "")),
+                    str(globals().get("V702_A64_RELEASE_TAG", "")),
                 }
                 and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
             ),
@@ -100381,6 +100503,7 @@ def _v702_a62_self_test():
             V702_FINAL_CANONICAL_RELEASE in {
                 V702_A62_RELEASE_TAG,
                 str(globals().get("V702_A63_RELEASE_TAG", "")),
+                str(globals().get("V702_A64_RELEASE_TAG", "")),
             }
             and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
         ),
@@ -100467,10 +100590,13 @@ def _v702_a63_self_test():
         checks = {
             "a61_builder_shadow_inherited_contract": bool(_v702_a61_self_test().get("pass")),
             "a62_structured_digest_reset_inherited_contract": bool(_v702_a62_self_test().get("pass")),
-            "a63_release_identity_current": (
-                V702_FINAL_CANONICAL_RELEASE == V702_A63_RELEASE_TAG
-                and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A63_RELEASE_TAG
-                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A63_RELEASE_TAG
+            "a63_release_identity_current_or_ancestor": (
+                V702_FINAL_CANONICAL_RELEASE in {
+                    V702_A63_RELEASE_TAG,
+                    str(globals().get("V702_A64_RELEASE_TAG", "")),
+                }
+                and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_FINAL_CANONICAL_RELEASE
+                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
             ),
             "order_identity_matching_is_fail_closed": (
                 "def _v517_match_order(" in source
@@ -100559,6 +100685,123 @@ def _v702_a63_validate_config():
 
 
 globals()["validate_config"] = _v702_a63_validate_config
+
+
+# =============================================================================
+# V702 A64 — Telegram Digest delivery-ACK closure.
+# A63 detached Digest generations safely but dropped R29 discovery callbacks
+# when the compacted window was swapped. A64 binds the original callbacks to
+# each queued digest part and settles them only after every part is Telegram-ACKed.
+# Failed queue admission remains retryable; old/new Discovery callbacks and
+# periodic-summary state are merged back on snapshot restoration.
+# This patch is telemetry/knowledge lifecycle only and does not change trading.
+# =============================================================================
+V702_A64_CANONICAL_REVISION = V702_A63_CANONICAL_REVISION + "-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14"
+V702_A64_RELEASE_REVISION = "A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14"
+V702_A64_RELEASE_TAG = "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A64_CANONICAL_REVISION
+V702_FINAL_CANONICAL_RELEASE = V702_A64_RELEASE_TAG
+CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] = V702_A64_RELEASE_TAG
+STATS["v702_a64_release_revision"] = V702_A64_RELEASE_REVISION
+
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A64_RELEASE_REVISION,
+    "active_release_tag": V702_A64_RELEASE_TAG,
+    "active_post_audit_patch_revision_current": V702_A64_RELEASE_REVISION,
+    "a64_release_revision": V702_A64_RELEASE_REVISION,
+    "telegram_digest_contract": "SNAPSHOT_SWAP_WITH_PER_PART_DELIVERY_ACK",
+    "telegram_digest_knowledge_callbacks": "ALL_PARTS_ACK_REQUIRED",
+    "telegram_delivery_ack_proven": False,
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "operator_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a64_self_test():
+    try:
+        source = _v702_read_source_text()
+        flush_func = getattr(_V702R28TelegramDigest.flush, "__func__", None)
+        checks = {
+            "a63_safety_and_paper_contract_inherited": bool(_v702_a63_self_test().get("pass")),
+            "a64_release_identity_current": (
+                V702_FINAL_CANONICAL_RELEASE == V702_A64_RELEASE_TAG
+                and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A64_RELEASE_TAG
+                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A64_RELEASE_TAG
+            ),
+            "snapshot_swap_retained": bool(getattr(flush_func, "_v702_a63_snapshot_swap", False)),
+            "discovery_callbacks_are_bound_to_delivery_ack": (
+                bool(getattr(flush_func, "_v702_a64_delivery_callbacks", False))
+                and "on_success=_on_part_success" in source
+                and "on_failure=_on_part_failure" in source
+                and "digest_delivered" in source
+            ),
+            "queue_acceptance_not_misreported_as_delivery": (
+                "QUEUED_NOT_DELIVERED_ACK" in source
+                and FINAL_CANONICAL_RUNTIME.get("telegram_delivery_ack_proven") is False
+            ),
+            "failed_digest_restores_periodic_summary": (
+                '"periodic_summary": str(getattr(cls, "_periodic_summary", "") or "")' in source
+                and 'cls._periodic_summary = old_summary[-2400:]' in source
+            ),
+            "failed_digest_merges_discovery_callback_ownership": (
+                "_v702_a64_delivery_callbacks" in source
+                and "_unique_callback_pairs" in source
+            ),
+            "no_live_gate_relaxation": (
+                FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
+                and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                and FINAL_CANONICAL_RUNTIME.get("operator_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+                and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+                and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+            ),
+        }
+        failed = [name for name, passed in checks.items() if not bool(passed)]
+        return {
+            "pass": not failed,
+            "revision": V702_A64_RELEASE_REVISION,
+            "checks": checks,
+            "failed": failed,
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+    except Exception as exc:
+        return {
+            "pass": False,
+            "revision": V702_A64_RELEASE_REVISION,
+            "error": f"{type(exc).__name__}:{str(exc)[:180]}",
+            "live_authority": False,
+            "hard_gate_bypass": False,
+            "live_gates_relaxed": False,
+            "production_decision": "NO_GO_UNATTENDED_LIVE",
+        }
+
+
+_V702_A64_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a64_validate_config():
+    base_ok = bool(_V702_A64_PREVIOUS_VALIDATE_CONFIG()) if callable(_V702_A64_PREVIOUS_VALIDATE_CONFIG) else False
+    report = _v702_a64_self_test()
+    STATS["v702_a64_validation"] = report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a64_validation": report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+    })
+    return bool(base_ok and report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a64_validate_config
 
 
 if _V699_VALIDATE_ONLY_REQUEST:
@@ -100761,7 +101004,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
     }
     _v702_a48_self_test["pass"] = all(bool(v) for k, v in _v702_a48_self_test.items() if k not in {"score_floor_min", "score_floor_max_configurable", "hard_gate_bypass", "live_gates_relaxed"}) and _v702_a48_self_test["hard_gate_bypass"] is False and _v702_a48_self_test["live_gates_relaxed"] is False
     STATS["v702_a48_terminal_self_test"] = _v702_a48_self_test
-    _ok = bool(STATS.get("v702_a38_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a37_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a33_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a33_validation", {}).get("pass", False) and _v702_base_validate_ok and _v702_a16_validation.get("pass", False) and _v702_a16_report.get("pass", False) and _v702_r39_guardrails_installed and _v702_r39_symbol_attribution_fix_installed and _v702_cf_shadow_installed and _v702_cf_shadow_selftest.get("pass", False) and _v702_intraday_shadow_installed and _v702_intraday_shadow_selftest.get("pass", False) and not bool(CONFIG.get("V702_INTRADAY_SHADOW_LIVE_ENABLE", True)) and _v702_r40_small_net_report["pass"] and STATS.get("v702_a40_diagnostics_self_test", {}).get("pass", False) and STATS.get("v702_a41_reconciliation_self_test", {}).get("pass", False) and STATS.get("v702_a42_mock_intent_isolation_self_test", {}).get("pass", False) and STATS.get("v702_a42_selftest_db_isolation", {}).get("pass", False) and STATS.get("v702_a43_crash_depth_self_test", {}).get("pass", False) and STATS.get("v702_a44_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a45_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a46_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a47_terminal_self_test", {}).get("pass", False) and _v702_a3_report["pass"] and _v702_a4_window_report["pass"] and _v702_a6_contract["pass"] and _v702_a7_cli_report.get("pass", False) and _v702_a8_cli_report.get("pass", False) and _v702_a9_debug_validation.get("pass", False) and _v702_a10_htf_report.get("pass", False) and _v702_a12_report.get("pass", False) and _v702_a13_report.get("pass", False) and _v702_a14_report.get("pass", False) and _v702_a15_report.get("pass", False) and _v702_a23_report.get("pass", False) and _v702_a24_report.get("pass", False) and STATS.get("v702_a39_balance_closure_self_test", {}).get("pass", False) and STATS.get("v702_a48_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a49_terminal_self_test", {}).get("pass", False))
+    _ok = bool(STATS.get("v702_a38_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a37_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a33_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a33_validation", {}).get("pass", False) and _v702_base_validate_ok and STATS.get("v702_a64_validation", {}).get("pass", False) and _v702_a16_validation.get("pass", False) and _v702_a16_report.get("pass", False) and _v702_r39_guardrails_installed and _v702_r39_symbol_attribution_fix_installed and _v702_cf_shadow_installed and _v702_cf_shadow_selftest.get("pass", False) and _v702_intraday_shadow_installed and _v702_intraday_shadow_selftest.get("pass", False) and not bool(CONFIG.get("V702_INTRADAY_SHADOW_LIVE_ENABLE", True)) and _v702_r40_small_net_report["pass"] and STATS.get("v702_a40_diagnostics_self_test", {}).get("pass", False) and STATS.get("v702_a41_reconciliation_self_test", {}).get("pass", False) and STATS.get("v702_a42_mock_intent_isolation_self_test", {}).get("pass", False) and STATS.get("v702_a42_selftest_db_isolation", {}).get("pass", False) and STATS.get("v702_a43_crash_depth_self_test", {}).get("pass", False) and STATS.get("v702_a44_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a45_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a46_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a47_terminal_self_test", {}).get("pass", False) and _v702_a3_report["pass"] and _v702_a4_window_report["pass"] and _v702_a6_contract["pass"] and _v702_a7_cli_report.get("pass", False) and _v702_a8_cli_report.get("pass", False) and _v702_a9_debug_validation.get("pass", False) and _v702_a10_htf_report.get("pass", False) and _v702_a12_report.get("pass", False) and _v702_a13_report.get("pass", False) and _v702_a14_report.get("pass", False) and _v702_a15_report.get("pass", False) and _v702_a23_report.get("pass", False) and _v702_a24_report.get("pass", False) and STATS.get("v702_a39_balance_closure_self_test", {}).get("pass", False) and STATS.get("v702_a48_terminal_self_test", {}).get("pass", False) and STATS.get("v702_a49_terminal_self_test", {}).get("pass", False))
     if not _v702_r39_guardrails_installed:
         logger.critical("[V702-R39] guardrail module is not installed; validate-only must fail")
     if not _v702_r39_symbol_attribution_fix_installed:
@@ -100795,6 +101038,22 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "v702_a59_release_revision": V702_A59_RELEASE_REVISION,
         "v702_a60_validation": STATS.get("v702_a60_validation", {}),
         "v702_a60_release_revision": V702_A60_RELEASE_REVISION,
+        "v702_a61_validation": STATS.get("v702_a61_validation", {}),
+        "v702_a62_validation": STATS.get("v702_a62_validation", {}),
+        "v702_a63_validation": STATS.get("v702_a63_validation", {}),
+        "v702_a64_validation": STATS.get("v702_a64_validation", {}),
+        "v702_a64_release_revision": V702_A64_RELEASE_REVISION,
+        "telegram_digest_delivery_contract": {
+            "queue_acceptance_is_delivery_ack": False,
+            "discovery_knowledge_requires_all_digest_parts_acked": True,
+            "failed_queue_admission_restores_snapshot": True,
+            "periodic_summary_restored_on_failure": True,
+            "durable_outbox_proven": False,
+        },
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
         "active_release_tag": V702_FINAL_CANONICAL_RELEASE,
         "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
         "active_package_revision": V702_PACKAGE_AUDIT_REVISION,

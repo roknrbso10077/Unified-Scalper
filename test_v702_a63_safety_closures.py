@@ -269,10 +269,136 @@ async def test_a63_digest_failed_enqueue_merges_old_and_new_generations(monkeypa
     assert {row.get("symbol") for row in structured["scorer_block"]} == {"OLD", "NEW/USDT"}
 
 
+@pytest.mark.asyncio
+async def test_a64_digest_knowledge_callbacks_wait_for_all_part_delivery_acks(monkeypatch):
+    digest = _seed_digest(monkeypatch, {
+        "scorer_block": deque(), "route_block": deque(), "builder_block": deque()
+    })
+    callback_events = []
+    accepted = []
+
+    def on_success(reason=""):
+        callback_events.append(("success", reason))
+
+    def on_failure(reason=""):
+        callback_events.append(("failure", reason))
+
+    monkeypatch.setattr(digest, "_discovery_by_symbol", {
+        "ABC/USDT": {
+            "symbol": "ABC/USDT", "projected": 82.0, "ts": bot.WALL_NOW(),
+            "on_success": on_success, "on_failure": on_failure,
+        }
+    })
+    monkeypatch.setattr(bot, "_v702_a44_partition_digest_lines", lambda *_a, **_k: ["part one", "part two"])
+
+    async def enqueue(message, on_success=None, on_failure=None):
+        accepted.append({"message": message, "on_success": on_success, "on_failure": on_failure})
+        return True
+
+    monkeypatch.setattr(bot, "_V702_R28_RAW_ENQUEUE", enqueue)
+    result = await digest.flush(force=True)
+    assert result is True
+    assert len(accepted) == 2
+    assert callback_events == []  # Queue admission must not equal Telegram delivery.
+    assert bot.STATS.get("v702_a63_digest_delivery_state") == "QUEUED_NOT_DELIVERED_ACK"
+
+    first_ack = accepted[0]["on_success"]("delivered")
+    if hasattr(first_ack, "__await__"):
+        await first_ack
+    assert callback_events == []  # One of two parts is insufficient.
+
+    second_ack = accepted[1]["on_success"]("delivered")
+    if hasattr(second_ack, "__await__"):
+        await second_ack
+    assert callback_events == [("success", "digest_delivered")]
+    assert bot.STATS.get("v702_a64_digest_callbacks_delivered", 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_a64_digest_terminal_part_failure_fires_failure_callback_once(monkeypatch):
+    digest = _seed_digest(monkeypatch, {
+        "scorer_block": deque(), "route_block": deque(), "builder_block": deque()
+    })
+    callback_events = []
+    accepted = []
+
+    def on_success(reason=""):
+        callback_events.append(("success", reason))
+
+    def on_failure(reason=""):
+        callback_events.append(("failure", reason))
+
+    monkeypatch.setattr(digest, "_discovery_by_symbol", {
+        "ABC/USDT": {"symbol": "ABC/USDT", "on_success": on_success, "on_failure": on_failure}
+    })
+    monkeypatch.setattr(bot, "_v702_a44_partition_digest_lines", lambda *_a, **_k: ["one", "two"])
+
+    async def enqueue(message, on_success=None, on_failure=None):
+        accepted.append({"on_success": on_success, "on_failure": on_failure})
+        return True
+
+    monkeypatch.setattr(bot, "_V702_R28_RAW_ENQUEUE", enqueue)
+    assert await digest.flush(force=True) is True
+    failed = accepted[0]["on_failure"]("retry_exhausted")
+    if hasattr(failed, "__await__"):
+        await failed
+    late_success = accepted[1]["on_success"]("delivered")
+    if hasattr(late_success, "__await__"):
+        await late_success
+    assert callback_events == [("failure", "retry_exhausted")]
+
+
+@pytest.mark.asyncio
+async def test_a64_failed_digest_restores_periodic_summary_and_merges_same_symbol_callbacks(monkeypatch):
+    structured = {"scorer_block": deque(), "route_block": deque(), "builder_block": deque()}
+    digest = _seed_digest(monkeypatch, structured)
+    monkeypatch.setattr(digest, "_periodic_summary", "summary=old-window")
+    seen = []
+
+    def old_success(reason=""):
+        seen.append(("old", reason))
+
+    def new_success(reason=""):
+        seen.append(("new", reason))
+
+    monkeypatch.setattr(digest, "_discovery_by_symbol", {
+        "ABC/USDT": {"symbol": "ABC/USDT", "projected": 75.0, "on_success": old_success}
+    })
+    injected = False
+
+    async def enqueue(_message, on_success=None, on_failure=None):
+        nonlocal injected
+        if not injected:
+            injected = True
+            digest._periodic_summary = "summary=new-window"
+            digest._discovery_by_symbol["ABC/USDT"] = {
+                "symbol": "ABC/USDT", "projected": 80.0, "on_success": new_success
+            }
+        return False
+
+    monkeypatch.setattr(bot, "_V702_R28_RAW_ENQUEUE", enqueue)
+    assert await digest.flush(force=True) is False
+    assert "summary=old-window" in digest._periodic_summary
+    assert "summary=new-window" in digest._periodic_summary
+    merged = digest._discovery_by_symbol["ABC/USDT"]
+    pairs = merged.get("_v702_a64_delivery_callbacks", [])
+    assert any(pair[0] is old_success for pair in pairs)
+    assert any(pair[0] is new_success for pair in pairs)
+
+
+def test_a64_self_test_and_release_identity_are_current_and_remain_no_go():
+    report = bot._v702_a64_self_test()
+    assert report["pass"] is True, report.get("failed")
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL"
+    assert report["hard_gate_bypass"] is False
+    assert report["live_gates_relaxed"] is False
+    assert report["production_decision"] == "NO_GO_UNATTENDED_LIVE"
+
+
 def test_a63_release_self_test_is_current_and_remains_no_go():
     report = bot._v702_a63_self_test()
     assert report["pass"] is True, report.get("failed")
-    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A63-CANONICAL-FINAL"
+    assert bot.V702_FINAL_CANONICAL_RELEASE == "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL"
     assert report["hard_gate_bypass"] is False
     assert report["live_gates_relaxed"] is False
     assert report["production_decision"] == "NO_GO_UNATTENDED_LIVE"
