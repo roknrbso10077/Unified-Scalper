@@ -1039,3 +1039,42 @@ def test_boot_selftest_synthetic_events_do_not_emit_live_error_or_warning_logs(c
     assert synthetic_records
     assert all(record.levelno < logging.WARNING for record in synthetic_records)
     assert bot._v702_selftest_log_context_active() is old_context
+
+def test_dotenv_backed_runtime_config_is_applied_after_config_construction(monkeypatch):
+    keys = (
+        "DB_PATH", "TELEGRAM_OPPORTUNITY_PUBLIC_URL",
+        "TELEGRAM_PUBLIC_CHAT_USERNAME", "TELEGRAM_BOT_USERNAME",
+        "TELEGRAM_PUBLIC_URL", "TELEGRAM_CHANNEL_USERNAME",
+    )
+    previous = {key: bot.CONFIG.get(key) for key in keys}
+    try:
+        monkeypatch.setenv("SCALPER_DB", "/tmp/unified-scalper-dotenv.sqlite3")
+        monkeypatch.setenv("TELEGRAM_OPPORTUNITY_PUBLIC_URL", "https://t.me/opportunity-feed")
+        monkeypatch.setenv("TELEGRAM_PUBLIC_CHAT_USERNAME", "@public_feed")
+        monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "@scalper_bot")
+        monkeypatch.setenv("TELEGRAM_CHANNEL_URL", "https://t.me/channel_feed")
+        monkeypatch.setenv("TELEGRAM_USERNAME", "@channel_feed")
+
+        bot._apply_loaded_environment_config()
+
+        assert bot.CONFIG["DB_PATH"] == "/tmp/unified-scalper-dotenv.sqlite3"
+        assert bot.CONFIG["TELEGRAM_OPPORTUNITY_PUBLIC_URL"] == "https://t.me/opportunity-feed"
+        assert bot.CONFIG["TELEGRAM_PUBLIC_CHAT_USERNAME"] == "public_feed"
+        assert bot.CONFIG["TELEGRAM_BOT_USERNAME"] == "scalper_bot"
+        assert bot.CONFIG["TELEGRAM_PUBLIC_URL"] == "https://t.me/channel_feed"
+        assert bot.CONFIG["TELEGRAM_CHANNEL_USERNAME"] == "channel_feed"
+    finally:
+        bot.CONFIG.update(previous)
+
+def test_exchange_client_missing_credentials_fails_fast_with_actionable_boot_marker(caplog):
+    import logging
+
+    caplog.set_level(logging.CRITICAL, logger="unified_scalper")
+    with patch.dict(bot.ENV, {"MEXC_API_KEY": None, "MEXC_API_SECRET": None}, clear=False):
+        with patch.object(bot, "_CCXT_OK", True):
+            with pytest.raises(SystemExit) as exc:
+                bot.ExchangeFactory.create_mexc_async()
+    assert exc.value.code == "missing_exchange_secrets"
+    assert any("[V702-BOOT-STOP]" in record.getMessage() for record in caplog.records)
+    assert all("MEXC_API_KEY=" not in record.getMessage() for record in caplog.records)
+

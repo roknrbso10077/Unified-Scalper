@@ -132,7 +132,9 @@ Any one of those variables set to `1` deliberately switches the process to the o
 
 The deployment screenshots supplied for this audit show repeated boot sequences around 19:29:56–19:30:29 on 2026-11-15, but do not include the terminal `[V702-VALIDATE-EXIT]` marker or a complete `[V702-CRASH]` traceback. Therefore the one-shot Start Command / environment mismatch is a strong, testable hypothesis—not a proven Railway root cause. The ZIP does not contain Railway project settings and cannot establish which commit (`9591cebf` in the screenshot) Railway actually executed.
 
-For durable state, attach a Railway Volume at `/data` and set `SCALPER_DB=/data/unified_scalper.db` (plus the documented knowledge/export paths). Temporary files named `/tmp/v702_r4_streak_*.db` or `/tmp/v702_a42_selftest_*.db` are isolated, disposable self-test databases; they are not evidence that the production ledger is configured to `/tmp`.
+**Required runtime credentials:** this release creates an authenticated MEXC CCXT client even in `MONITOR_ONLY_NO_NEW_BUYS` mode. Both `MEXC_API_KEY` and `MEXC_API_SECRET` must therefore be present in Railway Variables/Secrets or the project-root `.env`; otherwise startup stops with `[V702-BOOT-STOP]` / `missing_exchange_secrets`. The startup log reports presence booleans only and never prints secret values. Keep withdrawal permission disabled. Telegram credentials are optional; missing Telegram credentials disable alert delivery but do not authorize or block exchange execution.
+
+For durable state, attach a Railway Volume at `/data` and set `SCALPER_DB=/data/unified_scalper.db` (plus the documented knowledge/export paths). `SCALPER_DB` and Telegram display/link aliases supplied in `.env` are applied after dotenv loading; process-injected variables retain precedence. Temporary files named `/tmp/v702_r4_streak_*.db` or `/tmp/v702_a42_selftest_*.db` are isolated, disposable self-test databases; they are not evidence that the production ledger is configured to `/tmp`.
 
 ## Dependencies and deployment
 

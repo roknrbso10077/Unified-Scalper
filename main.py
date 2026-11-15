@@ -1245,6 +1245,46 @@ def _env_first(*keys: str) -> Optional[str]:
     return None
 
 
+def _apply_loaded_environment_config() -> None:
+    """Apply dotenv-backed settings after .env has actually been loaded.
+
+    CONFIG is constructed before the dotenv loader runs. Values read directly
+    into CONFIG during construction therefore miss settings that exist only in
+    the project .env file (notably SCALPER_DB and Telegram display links).
+    Process-injected environment variables keep precedence because load_dotenv
+    uses override=False and _env_first checks the primary name first.
+    """
+    _db_path = _env_first("SCALPER_DB")
+    if _db_path:
+        CONFIG["DB_PATH"] = _db_path
+
+    _value = _env_first("TELEGRAM_OPPORTUNITY_PUBLIC_URL")
+    if _value is not None:
+        CONFIG["TELEGRAM_OPPORTUNITY_PUBLIC_URL"] = _value
+
+    _value = _env_first("TELEGRAM_PUBLIC_CHAT_USERNAME")
+    if _value is not None:
+        CONFIG["TELEGRAM_PUBLIC_CHAT_USERNAME"] = _value.lstrip("@")
+
+    _value = _env_first("TELEGRAM_BOT_USERNAME")
+    if _value is not None:
+        CONFIG["TELEGRAM_BOT_USERNAME"] = _value.lstrip("@")
+
+    _value = _env_first("TELEGRAM_PUBLIC_URL", "TELEGRAM_CHANNEL_URL")
+    if _value is not None:
+        CONFIG["TELEGRAM_PUBLIC_URL"] = _value
+
+    _value = _env_first("TELEGRAM_CHANNEL_USERNAME", "TELEGRAM_USERNAME")
+    if _value is not None:
+        CONFIG["TELEGRAM_CHANNEL_USERNAME"] = _value.lstrip("@")
+
+
+# Apply settings after load_dotenv and before the runtime snapshots any config
+# or credentials. This keeps host-injected env values and local .env behavior
+# consistent for persistence and Telegram routing.
+_apply_loaded_environment_config()
+
+
 ENV: Dict[str, Optional[str]] = {
     "MEXC_API_KEY":    _env_first("MEXC_API_KEY", "MEXC_KEY"),
     "MEXC_API_SECRET": _env_first("MEXC_API_SECRET", "MEXC_SECRET"),
@@ -23079,6 +23119,11 @@ class ExchangeFactory:
             logger.critical(f"[Exchange] ccxt not available: {_CCXT_IMPORT_ERR}")
             raise SystemExit("ccxt_missing")
         if not ENV.get("MEXC_API_KEY") or not ENV.get("MEXC_API_SECRET"):
+            logger.critical(
+                "[V702-BOOT-STOP] MEXC_API_KEY and MEXC_API_SECRET are required to create the authenticated MEXC client; "
+                "monitor-only mode still requires these credentials in this release. "
+                "Set both through the host secret manager; values are never logged."
+            )
             raise SystemExit("missing_exchange_secrets")
         ex = ccxt_async.mexc({
             "apiKey": ENV["MEXC_API_KEY"],
@@ -102821,6 +102866,20 @@ FINAL_CANONICAL_RUNTIME["active_package_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["canonical_runtime_revision"] = V702_PACKAGE_AUDIT_REVISION
 STATS["v702_opportunity_hunter_revision"] = V702_A67_HUNTER_REVISION
 STATS["v702_opportunity_outcome_revision"] = V702_A68_OUTCOME_REVISION
+
+# A69 operational config closure: the dotenv file is loaded after CONFIG is
+# initially built, so its DB/Telegram display settings must be applied again.
+V702_A69_DOTENV_CONFIG_REVISION = "A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15"
+FINAL_CANONICAL_RUNTIME["supplemental_config_closure"] = V702_A69_DOTENV_CONFIG_REVISION
+FINAL_CANONICAL_RUNTIME["dotenv_config_applied_after_load"] = True
+STATS["v702_a69_dotenv_config_closure"] = {
+    "revision": V702_A69_DOTENV_CONFIG_REVISION,
+    "db_path_applied_after_dotenv": True,
+    "telegram_display_aliases_applied_after_dotenv": True,
+    "mexc_credentials_required_for_runtime_client": True,
+    "live_authority_changed": False,
+    "hard_gate_bypass": False,
+}
 
 
 def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:

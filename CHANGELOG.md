@@ -1,3 +1,13 @@
+# V702 A69 — dotenv runtime config and boot-stop diagnostics (2026-11-15)
+
+- Reapply `SCALPER_DB` and Telegram display/link aliases after `load_dotenv`, fixing configuration values that were captured before the `.env` file was loaded. Host-injected environment values retain precedence.
+- Make the mandatory MEXC key/secret requirement explicit in the startup log with `[V702-BOOT-STOP]`; never log secret values and do not weaken authenticated position-management requirements.
+- Preserve `MONITOR_ONLY_NO_NEW_BUYS`, all strategy and execution gates, and the `NO_GO_UNATTENDED_LIVE` decision.
+- Add regression tests for dotenv configuration propagation and actionable missing-credential boot diagnosis.
+- Railway root cause remains unproven until the complete terminal deployment log and service settings are inspected.
+
+---
+
 # V702 A66 — merged Production Audit closure (2026-11-15)
 
 - Correct the final validator so a successful A66 source audit cannot overwrite a failed inherited validator; all previous-chain and active-audit checks must pass.

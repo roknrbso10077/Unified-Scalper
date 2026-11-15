@@ -16,7 +16,8 @@ UNIFIED_MONITOR_ONLY_SCAN_ENABLE=1
 UNIFIED_PAPER_SIM_ENABLE=1
 UNIFIED_PAPER_SIM_NOTIONAL_USDT=75
 
-# Supply MEXC credentials through your hosting platform's secret manager.
+# MEXC credentials are required to create the authenticated client even in MONITOR_ONLY mode.
+# Supply both through your hosting platform's secret manager; keep withdrawals disabled.
 # Do NOT put real keys into this example file or the ZIP archive.
 # MEXC_API_KEY=...
 # MEXC_API_SECRET=...
