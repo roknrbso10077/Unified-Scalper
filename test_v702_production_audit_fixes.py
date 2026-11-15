@@ -632,3 +632,199 @@ def test_cost_model_never_clips_high_measured_cost_and_rejects_nan_fee():
     assert model["measured_cost_pct"] == pytest.approx(25.0)
     with pytest.raises(ValueError):
         unified_round_trip_cost_model({}, spread_pct=0.2, fee_cost_pct=float("nan"))
+
+
+def _make_hunter_frame(interval_sec: int, *, closed_count: int = 80, incomplete_spike: bool = False):
+    """Deterministic rising OHLCV series with an unfinished last exchange bar."""
+    now = time.time()
+    current_open = int(now // interval_sec) * interval_sec
+    stamps = [current_open - (closed_count - i) * interval_sec for i in range(closed_count)]
+    stamps.append(current_open)  # current/incomplete bar; must never drive a trigger
+    closes = [100.0 + i * 0.03 for i in range(closed_count)]
+    last_incomplete = closes[-1] + (4.0 if incomplete_spike else 0.02)
+    closes.append(last_incomplete)
+    frame = pd.DataFrame({
+        "open": [x - 0.02 for x in closes],
+        "high": [x + 0.15 for x in closes],
+        "low": [x - 0.15 for x in closes],
+        "close": closes,
+        "volume": [100.0] * closed_count + ([10000.0] if incomplete_spike else [100.0]),
+    }, index=pd.to_datetime(stamps, unit="s", utc=True))
+    return frame
+
+
+def test_opportunity_hunter_pipeline_states_are_monotonic_and_read_only(tmp_path):
+    db_path = tmp_path / "hunter_states.sqlite3"
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": False,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": False,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        item = {
+            "candidate_key": "hunter-test|AAA/USDT|BREAKOUT|1",
+            "symbol": "AAA/USDT", "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION",
+            "source": "TEST", "status": "WATCH", "score": 72.0, "candle_ts": int(time.time()),
+            "entry_ref": 100.0, "sl_price": 99.0, "tp1": 101.0, "tp2": 102.0, "tp3": 103.0,
+            "last_price": 100.0, "invalidation_price": 99.0, "reason": "test evidence",
+            "missing_conditions": ["canonical prequal"], "evidence": {"closed_bar": True},
+        }
+        row, created = bot.OpportunityHunter._upsert(item, notify=False)
+        assert created and row["status"] == "WATCH"
+        bot.OpportunityHunter.on_pipeline_event("PREQUAL_PASS", item["candidate_key"], "AAA/USDT", "BREAKOUT")
+        row = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert row["status"] == "CONFIRMED"
+        assert row["confirmation_type"] == "CANONICAL_PREQUAL"
+        bot.OpportunityHunter.on_pipeline_event("SCORE_BLOCK", item["candidate_key"], "AAA/USDT", "BREAKOUT", {"reason": "score_floor"})
+        row = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert row["status"] == "CONFIRMED"
+        assert any("SCORE_BLOCK" in x for x in row["blockers"])
+        bot.OpportunityHunter.on_pipeline_event("PRESEND_PASS", item["candidate_key"], "AAA/USDT", "BREAKOUT")
+        row = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert row["status"] == "TRADEABLE"
+        bot.OpportunityHunter.on_pipeline_event("PREQUAL_REJECT", item["candidate_key"], "AAA/USDT", "BREAKOUT")
+        row = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert row["status"] == "TRADEABLE"  # never regress from a later gate
+        assert bot.OpportunityHunter.execution_authority is False
+        assert bot.FINAL_CANONICAL_RUNTIME["effective_entry_policy"] == "MONITOR_ONLY_NO_NEW_BUYS"
+        assert bot.FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] is False
+
+
+def test_opportunity_hunter_ignores_unclosed_breakout_spike_and_uses_closed_candles():
+    now = time.time()
+    df5 = _make_hunter_frame(300, incomplete_spike=True)
+    closed, candle_ts = bot.OpportunityHunter._closed_frame(df5, 300, now=now)
+    assert closed is not None and candle_ts > 0
+    assert float(closed["close"].iloc[-1]) == pytest.approx(float(df5["close"].iloc[-2]))
+    assert float(closed["close"].iloc[-1]) != float(df5["close"].iloc[-1])
+    df15 = _make_hunter_frame(900, incomplete_spike=True)
+    btc15 = _make_hunter_frame(900, incomplete_spike=False)
+    results = bot.OpportunityHunter._evaluate_snapshot("AAA/USDT", {
+        "df_5m": df5, "df_15m": df15, "df_btc_15m": btc15,
+        "quote_vol_24h": 8_000_000.0, "spread_pct": 0.05,
+    }, now=now)
+    # The unfinished spike cannot be the reason for a CONFIRMED breakout.
+    assert all(not (r["pattern"] == "BREAKOUT_CONTINUATION" and r["status"] == "CONFIRMED") for r in results)
+
+
+def test_opportunity_hunter_rejects_invalid_ohlc_and_duplicate_timestamps():
+    good = _make_hunter_frame(300)
+    bad = good.copy()
+    bad.iloc[-2, bad.columns.get_loc("high")] = bad.iloc[-2]["close"] - 1.0
+    closed, _ = bot.OpportunityHunter._closed_frame(bad, 300)
+    assert closed is None
+    duplicated = pd.concat([good, good.iloc[[-2]]]).sort_index()
+    closed, _ = bot.OpportunityHunter._closed_frame(duplicated, 300)
+    assert closed is None
+
+
+def test_opportunity_hunter_scan_persists_watch_and_expires_without_orders(tmp_path):
+    db_path = tmp_path / "hunter_scan.sqlite3"
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": False,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": False,
+        "V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE": 10,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        df5 = _make_hunter_frame(300, incomplete_spike=False)
+        df15 = _make_hunter_frame(900, incomplete_spike=False)
+        btc15 = _make_hunter_frame(900, incomplete_spike=False)
+        summary = asyncio.run(bot.OpportunityHunter.scan_market_map({"AAA/USDT": {
+            "df_5m": df5, "df_15m": df15, "df_btc_15m": btc15,
+            "quote_vol_24h": 8_000_000.0, "spread_pct": 0.05,
+        }}))
+        assert summary["status"] == "OK" and summary["scanned"] == 1
+        rows = bot.OpportunityHunter._active_rows(20)
+        assert any(r["symbol"] == "AAA/USDT" and r["status"] in ("WATCH", "CONFIRMED") for r in rows)
+        target = next(r for r in rows if r["symbol"] == "AAA/USDT")
+        bot.OpportunityHunter._update_row(target["opportunity_id"], {"expires_at": time.time() - 1})
+        # A non-empty but unusable snapshot still lets the lifecycle monitor
+        # expire prior ideas; no exchange or order route is called.
+        asyncio.run(bot.OpportunityHunter.scan_market_map({"OTHER/USDT": {}}))
+        expired = bot.OpportunityHunter._get_by_id(target["opportunity_id"])
+        assert expired["status"] == "EXPIRED"
+        assert bot.OpportunityHunter.execution_authority is False
+
+
+def test_opportunity_hunter_terminal_record_cannot_be_resurrected(tmp_path):
+    db_path = tmp_path / "hunter_terminal.sqlite3"
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": False,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": False,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        item = {
+            "candidate_key": "hunter-terminal|AAA/USDT|PULLBACK|1", "symbol": "AAA/USDT",
+            "family": "PULLBACK", "pattern": "PULLBACK_RECLAIM", "status": "WATCH",
+            "candle_ts": int(time.time()), "entry_ref": 100.0, "sl_price": 99.0,
+            "invalidation_price": 99.0, "last_price": 100.0, "reason": "test",
+        }
+        row, _ = bot.OpportunityHunter._upsert(item, notify=False)
+        bot.OpportunityHunter._update_row(row["opportunity_id"], {"status": "INVALIDATED"})
+        replay, created = bot.OpportunityHunter._upsert(item, notify=False)
+        assert created is False
+        assert replay["status"] == "INVALIDATED"
+
+
+def test_opportunity_hunter_upgrades_technical_confirmation_to_canonical_prequal(tmp_path, monkeypatch):
+    db_path = tmp_path / "hunter_upgrade.sqlite3"
+    queued = []
+    monkeypatch.setattr(bot.OpportunityHunter, "_queue_alert",
+                        lambda row, state, variant="": queued.append((state, variant)) or True)
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db_path), "TELEGRAM_ENABLED": False}, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        item = {
+            "candidate_key": "hunter-upgrade|AAA/USDT|BREAKOUT|1", "symbol": "AAA/USDT",
+            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
+            "confirmation_type": "CLOSED_BAR_BREAKOUT", "candle_ts": int(time.time()),
+            "entry_ref": 100.0, "sl_price": 99.0, "invalidation_price": 99.0,
+            "last_price": 100.0, "reason": "technical trigger",
+        }
+        row, _ = bot.OpportunityHunter._upsert(item, notify=False)
+        bot.OpportunityHunter.on_pipeline_event("PREQUAL_PASS", item["candidate_key"], "AAA/USDT", "BREAKOUT")
+        updated = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert updated["status"] == "CONFIRMED"
+        assert updated["confirmation_type"] == "CANONICAL_PREQUAL"
+        assert ("CONFIRMED", "CANONICAL_PREQUAL") in queued
+
+
+@pytest.mark.asyncio
+async def test_opportunity_hunter_does_not_overwrite_synchronous_telegram_ack(tmp_path, monkeypatch):
+    db_path = tmp_path / "hunter_ack_race.sqlite3"
+    async def _immediate_ack(message, on_success=None, on_failure=None):
+        if callable(on_success):
+            on_success("test_ack")
+        return True
+    monkeypatch.setattr(bot.TelegramDispatcher, "enqueue", _immediate_ack)
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": True,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": True,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        item = {
+            "candidate_key": "hunter-ack|AAA/USDT|BREAKOUT|1", "symbol": "AAA/USDT",
+            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "WATCH",
+            "score": 68.0, "candle_ts": int(time.time()), "entry_ref": 100.0,
+            "sl_price": 99.0, "invalidation_price": 99.0, "last_price": 100.0,
+            "reason": "forming setup", "missing_conditions": ["closed bar confirmation"],
+        }
+        row, _ = bot.OpportunityHunter._upsert(item, notify=False)
+        await bot.OpportunityHunter._deliver_alert(row, "WATCH", "WATCH")
+        updated = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert updated["last_alert_delivery"] == "DELIVERED"
+        assert "WATCH" in updated["alerted_states"]
+
+
+def test_opportunity_hunter_telegram_includes_reference_levels_and_no_profit_guarantee():
+    row = {
+        "opportunity_id": "hunter-message", "symbol": "AAA/USDT", "family": "BREAKOUT",
+        "status": "WATCH", "score": 67.0, "timeframe": "5m+15m", "last_price": 100.0,
+        "entry_ref": 100.0, "invalidation_price": 99.0, "tp1": 101.0, "tp2": 101.5,
+        "tp3": 102.0, "reason": "closed-candle resistance compression",
+        "confirmation_type": "WATCH_SETUP", "missing_conditions": ["breakout close"],
+        "blockers": [], "evidence": {"relative_volume": 1.2},
+    }
+    message = bot.OpportunityHunter._message(row, "WATCH", "WATCH")
+    assert "مرجع الدخول التحليلي" in message
+    assert "مستويات السيناريو" in message and "TP1" in message and "TP3" in message
+    assert "ليست أوامر أو ضمانًا للربح" in message
+    assert "MONITOR ONLY" in message

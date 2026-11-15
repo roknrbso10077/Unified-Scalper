@@ -1,6 +1,6 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 OPPORTUNITY HUNTER
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL`  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only feature closure)  
 **Release date:** 2026-11-15  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
@@ -18,6 +18,27 @@ UNIFIED_A55_LIVE_ARM=0
 ```
 
 The inherited A65 runtime guard also fixes the stale CONFIG reference: authorization reads the current guarded CONFIG object at decision time. That fixes an inconsistent authorization read; it does not loosen a gate. The effective default remains `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## A67 — Intelligent Opportunity Hunter (read-only)
+
+A67 adds an independent opportunity-discovery and follow-up layer without changing the canonical BUY authority. It consumes the **existing bounded `market_data_map` only** (no added exchange requests), observes actual candidates from the existing 18 strategy engines, and records canonical pipeline transitions.
+
+### Opportunity states
+
+- **WATCH:** a measured setup is forming. The Telegram message names the measured evidence and the conditions still required.
+- **CONFIRMED:** either a named technical trigger from closed candles (explicitly labelled *technical-only*, not Prequal) or a canonical `PREQUAL_PASS` / `SCORE_PASS` event.
+- **TRADEABLE:** emitted only after canonical `PRESEND_PASS`. This means the candidate passed the existing pre-send checks; it does **not** mean an order was sent, accepted, or filled.
+- **INVALIDATED / EXPIRED:** the stored thesis is closed when a closed price crosses its invalidation level or its bounded lifetime expires.
+
+States move forward only. Terminal rows are not resurrected by stale candidate events. Records persist in the SQLite `opportunity_hunter` table. Telegram state alerts are rate-limited and include analytical entry reference, invalidation level and scenario TP1/TP2/TP3 levels (not executable orders or guaranteed targets), with delivery status callbacks; they never grant execution authority.
+
+### Pattern lanes and evidence
+
+The bounded closed-candle scanner evaluates **BREAKOUT_CONTINUATION**, **PULLBACK_RECLAIM**, **MEAN_REVERSION**, and **RELATIVE_STRENGTH_LEADER**. It uses closed 5m/15m bars, validates OHLC relationships, rejects duplicate timestamps and stale/short history, and compares relative strength with BTC when the BTC 15m snapshot is present. The layer also observes genuine long Spot USDT candidates emitted by the existing strategy engines; it does not fabricate engine invocations or change their scoring.
+
+Default resource limits: 240 symbols per cycle, 6 new pattern alerts per scan, 10 alerts per minute, 55/100 internal ranking floor, 3,600-second opportunity TTL, and 1,200 active records. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
+
+The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
 
 ## A66 startup-safety closure
 

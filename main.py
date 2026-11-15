@@ -27119,6 +27119,17 @@ async def run_bot(universe: List[str]):
                     except Exception:
                         _v647_record_suppressed_exception()
 
+            # A67 read-only Opportunity Hunter: inspect the same bounded market
+            # snapshots used by this cycle. It is independent of BUY permission,
+            # performs no new exchange reads, and never invokes an order route.
+            try:
+                _v702_hunter_summary = await OpportunityHunter.scan_market_map(market_data_map)
+                STATS["v702_opportunity_hunter_last_scan_summary"] = dict(_v702_hunter_summary or {})
+            except Exception as _v702_hunter_scan_exc:
+                STATS["v702_opportunity_hunter_scan_errors"] = int(STATS.get("v702_opportunity_hunter_scan_errors", 0) or 0) + 1
+                logger.warning("[OPPORTUNITY-HUNTER] read-only scan failed closed: %s:%s",
+                               type(_v702_hunter_scan_exc).__name__, str(_v702_hunter_scan_exc)[:180])
+
             # Fail-closed choice: a brain failure does NOT execute all symbols.
             # It falls back to no-new-entry for this cycle rather than bypassing
             # the global arbitration contract. Existing open trades are still
@@ -101585,6 +101596,965 @@ FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] = False
 FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] = False
 
 
+# =============================================================================
+# V702 A67 — READ-ONLY INTELLIGENT OPPORTUNITY HUNTER
+# This layer observes strategy candidates and the existing canonical pipeline,
+# plus scans already-fetched market snapshots for bounded near-miss setups.
+# It has NO order-execution authority and never relaxes a gate.
+# =============================================================================
+V702_A67_HUNTER_REVISION = "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15"
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_ENABLE", True)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE", 240)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 10)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_SCAN", 6)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_SCORE_FLOOR", 55.0)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200)
+
+
+class OpportunityHunter:
+    """Evidence-based opportunity discovery, tracking and notification.
+
+    Status meanings are intentionally separate from order execution:
+      WATCH      - a measured setup is forming; one or more conditions remain.
+      CONFIRMED  - canonical Prequal/Score passed, or a named technical trigger
+                   fired (the latter is explicitly labelled technical-only).
+      TRADEABLE  - canonical PreSend passed; this is NOT an order/fill claim.
+      INVALIDATED / EXPIRED - terminal lifecycle states.
+
+    All market scanning consumes the existing market_data_map only. It performs
+    no exchange calls, does not call OrderExecutor, and has no BUY authority.
+    """
+    _lock = threading.RLock()
+    _alert_pending = set()
+    _alert_window_start = 0.0
+    _alert_window_count = 0
+    _last_scan_cycle = -1
+    _DB_LOCK = threading.RLock()
+    _schema_ready_paths = set()
+    _ACTIVE = ("WATCH", "CONFIRMED", "TRADEABLE")
+    _RANK = {"WATCH": 1, "CONFIRMED": 2, "TRADEABLE": 3,
+             "INVALIDATED": 4, "EXPIRED": 4}
+    execution_authority = False
+    source_mode = "READ_ONLY_MARKET_SNAPSHOTS"
+
+    @classmethod
+    def _db_path(cls):
+        return str(CONFIG.get("DB_PATH") or os.environ.get("SCALPER_DB") or "/app/unified_scalper.db")
+
+    @classmethod
+    def _connect(cls):
+        path = cls._db_path()
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=2.5)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=2500")
+        return conn
+
+    @classmethod
+    def _ensure_schema(cls):
+        with cls._DB_LOCK:
+            path = cls._db_path()
+            if path in cls._schema_ready_paths:
+                return
+            conn = cls._connect()
+            try:
+                conn.execute("""CREATE TABLE IF NOT EXISTS opportunity_hunter (
+                    opportunity_id TEXT PRIMARY KEY,
+                    candidate_key TEXT NOT NULL DEFAULT '',
+                    symbol TEXT NOT NULL,
+                    family TEXT NOT NULL,
+                    pattern TEXT NOT NULL,
+                    engine_id TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    score REAL NOT NULL DEFAULT 0,
+                    timeframe TEXT NOT NULL DEFAULT '',
+                    candle_ts INTEGER NOT NULL DEFAULT 0,
+                    entry_ref REAL,
+                    sl_price REAL,
+                    tp1 REAL,
+                    tp2 REAL,
+                    tp3 REAL,
+                    last_price REAL,
+                    invalidation_price REAL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    confirmation_type TEXT NOT NULL DEFAULT '',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    missing_json TEXT NOT NULL DEFAULT '[]',
+                    blockers_json TEXT NOT NULL DEFAULT '[]',
+                    alerted_states_json TEXT NOT NULL DEFAULT '[]',
+                    last_alert_delivery TEXT NOT NULL DEFAULT '',
+                    last_alert_reason TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_active ON opportunity_hunter(status, updated_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_symbol_family ON opportunity_hunter(symbol, family, status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_oh_candidate_key ON opportunity_hunter(candidate_key)")
+                conn.commit()
+                cls._schema_ready_paths.add(path)
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _safe_float(value, default=None):
+        try:
+            result = float(value)
+            return result if math.isfinite(result) else default
+        except Exception:
+            return default
+
+    @classmethod
+    def _json_value(cls, value):
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, dict):
+            return {str(k): cls._json_value(v) for k, v in list(value.items())[:80]}
+        if isinstance(value, (list, tuple, set)):
+            return [cls._json_value(v) for v in list(value)[:80]]
+        try:
+            if hasattr(value, "item"):
+                return cls._json_value(value.item())
+        except Exception:
+            pass
+        return str(value)[:200]
+
+    @classmethod
+    def _loads(cls, value, fallback):
+        try:
+            result = json.loads(value or "")
+            return result if isinstance(result, type(fallback)) else fallback
+        except Exception:
+            return fallback
+
+    @classmethod
+    def _row(cls, raw):
+        if raw is None:
+            return None
+        row = dict(raw)
+        row["evidence"] = cls._loads(row.pop("evidence_json", "{}"), {})
+        row["missing_conditions"] = cls._loads(row.pop("missing_json", "[]"), [])
+        row["blockers"] = cls._loads(row.pop("blockers_json", "[]"), [])
+        row["alerted_states"] = cls._loads(row.pop("alerted_states_json", "[]"), [])
+        return row
+
+    @classmethod
+    def _find_active(cls, conn, symbol, family, pattern):
+        return conn.execute(
+            "SELECT * FROM opportunity_hunter WHERE symbol=? AND family=? AND pattern=? "
+            "AND status IN ('WATCH','CONFIRMED','TRADEABLE') ORDER BY updated_at DESC LIMIT 1",
+            (str(symbol), str(family), str(pattern)),
+        ).fetchone()
+
+    @classmethod
+    def _upsert(cls, item, *, notify=True):
+        """Insert/update one opportunity without status regression or duplicates."""
+        if not isinstance(item, dict) or not item.get("symbol") or not item.get("family"):
+            return None, False
+        now = float(WALL_NOW())
+        symbol = str(item.get("symbol") or "").upper()[:40]
+        family = str(item.get("family") or "UNKNOWN").upper()[:64]
+        pattern = str(item.get("pattern") or family).upper()[:80]
+        requested_status = str(item.get("status") or "WATCH").upper()
+        if requested_status not in cls._RANK:
+            requested_status = "WATCH"
+        candidate_key = str(item.get("candidate_key") or "")[:240]
+        with cls._DB_LOCK:
+            cls._ensure_schema()
+            conn = cls._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                raw = None
+                if candidate_key:
+                    raw = conn.execute(
+                        "SELECT * FROM opportunity_hunter WHERE candidate_key=? ORDER BY updated_at DESC LIMIT 1",
+                        (candidate_key,),
+                    ).fetchone()
+                if raw is None:
+                    raw = cls._find_active(conn, symbol, family, pattern)
+                old = cls._row(raw)
+                if old:
+                    opp_id = old["opportunity_id"]
+                    old_status = str(old.get("status") or "WATCH")
+                    # Status may advance, but can never move backwards. Terminal
+                    # states are never resurrected by stale discovery events.
+                    if old_status in ("INVALIDATED", "EXPIRED"):
+                        conn.rollback()
+                        return old, False
+                    status = requested_status if cls._RANK.get(requested_status, 0) >= cls._RANK.get(old_status, 0) else old_status
+                    evidence = dict(old.get("evidence") or {})
+                    evidence.update(cls._json_value(item.get("evidence") or {}))
+                    if cls._RANK.get(requested_status, 0) > cls._RANK.get(old_status, 0):
+                        missing = list(dict.fromkeys(item.get("missing_conditions") or []))
+                    elif cls._RANK.get(requested_status, 0) < cls._RANK.get(old_status, 0):
+                        missing = list(old.get("missing_conditions") or [])
+                    else:
+                        missing = list(dict.fromkeys(list(old.get("missing_conditions") or []) + list(item.get("missing_conditions") or [])))
+                    blockers = list(dict.fromkeys(list(old.get("blockers") or []) + list(item.get("blockers") or []))) [-20:]
+                    alerted = list(old.get("alerted_states") or [])
+                    created_at = float(old.get("created_at") or now)
+                    expires_at = float(old.get("expires_at") or item.get("expires_at") or now + float(CONFIG.get("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)))
+                    confirmation_type = str(item.get("confirmation_type") or old.get("confirmation_type") or "")
+                    reason = str(item.get("reason") or old.get("reason") or "")[:400]
+                    engine_id = str(item.get("engine_id") or old.get("engine_id") or "")[:80]
+                    source = str(item.get("source") or old.get("source") or "")[:80]
+                    vals = {
+                        "candidate_key": candidate_key or old.get("candidate_key") or "",
+                        "engine_id": engine_id, "source": source, "status": status,
+                        "score": max(float(old.get("score") or 0), float(item.get("score") or 0)),
+                        "timeframe": str(item.get("timeframe") or old.get("timeframe") or "")[:32],
+                        "candle_ts": max(int(old.get("candle_ts") or 0), int(item.get("candle_ts") or 0)),
+                        "entry_ref": item.get("entry_ref") if item.get("entry_ref") is not None else old.get("entry_ref"),
+                        "sl_price": item.get("sl_price") if item.get("sl_price") is not None else old.get("sl_price"),
+                        "tp1": item.get("tp1") if item.get("tp1") is not None else old.get("tp1"),
+                        "tp2": item.get("tp2") if item.get("tp2") is not None else old.get("tp2"),
+                        "tp3": item.get("tp3") if item.get("tp3") is not None else old.get("tp3"),
+                        "last_price": item.get("last_price") if item.get("last_price") is not None else old.get("last_price"),
+                        "invalidation_price": item.get("invalidation_price") if item.get("invalidation_price") is not None else old.get("invalidation_price"),
+                        "reason": reason, "confirmation_type": confirmation_type,
+                        "evidence_json": json.dumps(cls._json_value(evidence), ensure_ascii=False, separators=(",", ":")),
+                        "missing_json": json.dumps(cls._json_value(missing), ensure_ascii=False),
+                        "blockers_json": json.dumps(cls._json_value(blockers), ensure_ascii=False),
+                        "alerted_states_json": json.dumps(alerted),
+                        "last_alert_delivery": old.get("last_alert_delivery") or "",
+                        "last_alert_reason": old.get("last_alert_reason") or "",
+                        "created_at": created_at, "updated_at": now, "expires_at": expires_at,
+                    }
+                else:
+                    seed = candidate_key or f"{symbol}|{family}|{pattern}|{int(item.get('candle_ts') or now)}"
+                    opp_id = hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:28]
+                    existing_id = conn.execute("SELECT * FROM opportunity_hunter WHERE opportunity_id=?", (opp_id,)).fetchone()
+                    if existing_id is not None:
+                        existing_row = cls._row(existing_id)
+                        if existing_row and existing_row.get("status") in ("INVALIDATED", "EXPIRED"):
+                            conn.rollback()
+                            return existing_row, False
+                    evidence = cls._json_value(item.get("evidence") or {})
+                    missing = list(dict.fromkeys(item.get("missing_conditions") or []))
+                    blockers = list(dict.fromkeys(item.get("blockers") or []))[-20:]
+                    alerted = []
+                    created_at = now
+                    expires_at = float(item.get("expires_at") or now + float(CONFIG.get("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)))
+                    vals = {
+                        "candidate_key": candidate_key, "engine_id": str(item.get("engine_id") or "")[:80],
+                        "source": str(item.get("source") or "")[:80], "status": requested_status,
+                        "score": float(item.get("score") or 0), "timeframe": str(item.get("timeframe") or "")[:32],
+                        "candle_ts": int(item.get("candle_ts") or 0), "entry_ref": item.get("entry_ref"),
+                        "sl_price": item.get("sl_price"), "tp1": item.get("tp1"), "tp2": item.get("tp2"),
+                        "tp3": item.get("tp3"), "last_price": item.get("last_price"),
+                        "invalidation_price": item.get("invalidation_price"),
+                        "reason": str(item.get("reason") or "")[:400],
+                        "confirmation_type": str(item.get("confirmation_type") or ""),
+                        "evidence_json": json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+                        "missing_json": json.dumps(cls._json_value(missing), ensure_ascii=False),
+                        "blockers_json": json.dumps(cls._json_value(blockers), ensure_ascii=False),
+                        "alerted_states_json": "[]", "last_alert_delivery": "", "last_alert_reason": "",
+                        "created_at": now, "updated_at": now, "expires_at": expires_at,
+                    }
+                conn.execute("""INSERT INTO opportunity_hunter (
+                    opportunity_id,candidate_key,symbol,family,pattern,engine_id,source,status,score,timeframe,candle_ts,
+                    entry_ref,sl_price,tp1,tp2,tp3,last_price,invalidation_price,reason,confirmation_type,
+                    evidence_json,missing_json,blockers_json,alerted_states_json,last_alert_delivery,last_alert_reason,
+                    created_at,updated_at,expires_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(opportunity_id) DO UPDATE SET
+                    candidate_key=excluded.candidate_key,engine_id=excluded.engine_id,source=excluded.source,
+                    status=excluded.status,score=excluded.score,timeframe=excluded.timeframe,candle_ts=excluded.candle_ts,
+                    entry_ref=excluded.entry_ref,sl_price=excluded.sl_price,tp1=excluded.tp1,tp2=excluded.tp2,tp3=excluded.tp3,
+                    last_price=excluded.last_price,invalidation_price=excluded.invalidation_price,reason=excluded.reason,
+                    confirmation_type=excluded.confirmation_type,evidence_json=excluded.evidence_json,missing_json=excluded.missing_json,
+                    blockers_json=excluded.blockers_json,alerted_states_json=excluded.alerted_states_json,
+                    last_alert_delivery=excluded.last_alert_delivery,last_alert_reason=excluded.last_alert_reason,
+                    updated_at=excluded.updated_at,expires_at=excluded.expires_at""",
+                    (opp_id, candidate_key, symbol, family, pattern, vals["engine_id"], vals["source"], vals["status"],
+                     vals["score"], vals["timeframe"], vals["candle_ts"], vals["entry_ref"], vals["sl_price"],
+                     vals["tp1"], vals["tp2"], vals["tp3"], vals["last_price"], vals["invalidation_price"],
+                     vals["reason"], vals["confirmation_type"], vals["evidence_json"], vals["missing_json"],
+                     vals["blockers_json"], vals["alerted_states_json"], vals["last_alert_delivery"],
+                     vals["last_alert_reason"], vals["created_at"], vals["updated_at"], vals["expires_at"]))
+                raw2 = conn.execute("SELECT * FROM opportunity_hunter WHERE opportunity_id=?", (opp_id,)).fetchone()
+                conn.commit()
+                result = cls._row(raw2)
+            finally:
+                conn.close()
+        if notify and result and result.get("status") in ("WATCH", "CONFIRMED", "TRADEABLE"):
+            if not old or result.get("status") != old.get("status"):
+                cls._queue_alert(result, result.get("status"))
+            elif old and result.get("status") == "WATCH" and not old.get("alerted_states"):
+                cls._queue_alert(result, "WATCH")
+        return result, bool(not old)
+
+    @classmethod
+    def _get_by_id(cls, opportunity_id):
+        with cls._DB_LOCK:
+            cls._ensure_schema()
+            conn = cls._connect()
+            try:
+                raw = conn.execute("SELECT * FROM opportunity_hunter WHERE opportunity_id=?", (str(opportunity_id),)).fetchone()
+                return cls._row(raw)
+            finally:
+                conn.close()
+
+    @classmethod
+    def _get_by_candidate_key(cls, candidate_key, symbol="", family=""):
+        with cls._DB_LOCK:
+            cls._ensure_schema()
+            conn = cls._connect()
+            try:
+                raw = None
+                if candidate_key:
+                    raw = conn.execute("SELECT * FROM opportunity_hunter WHERE candidate_key=? ORDER BY updated_at DESC LIMIT 1", (str(candidate_key),)).fetchone()
+                if raw is None and symbol:
+                    raw = conn.execute("SELECT * FROM opportunity_hunter WHERE symbol=? AND family=? AND status IN ('WATCH','CONFIRMED','TRADEABLE') ORDER BY updated_at DESC LIMIT 1", (str(symbol).upper(), str(family or "").upper())).fetchone()
+                return cls._row(raw)
+            finally:
+                conn.close()
+
+    @classmethod
+    def _update_row(cls, opportunity_id, updates):
+        if not opportunity_id or not isinstance(updates, dict):
+            return None
+        allowed = {"status", "score", "last_price", "invalidation_price", "reason", "confirmation_type",
+                   "evidence_json", "missing_json", "blockers_json", "alerted_states_json",
+                   "last_alert_delivery", "last_alert_reason", "updated_at", "expires_at"}
+        values = {k: v for k, v in updates.items() if k in allowed}
+        values["updated_at"] = float(WALL_NOW())
+        if not values:
+            return None
+        set_sql = ",".join(f"{key}=?" for key in values)
+        with cls._DB_LOCK:
+            cls._ensure_schema()
+            conn = cls._connect()
+            try:
+                conn.execute(f"UPDATE opportunity_hunter SET {set_sql} WHERE opportunity_id=?",
+                             tuple(values.values()) + (str(opportunity_id),))
+                conn.commit()
+                raw = conn.execute("SELECT * FROM opportunity_hunter WHERE opportunity_id=?", (str(opportunity_id),)).fetchone()
+                return cls._row(raw)
+            finally:
+                conn.close()
+
+    @classmethod
+    def observe_strategy_candidate(cls, candidate, snapshot=None):
+        if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_ENABLE", True)) or _V699_VALIDATE_ONLY_REQUEST:
+            return None
+        try:
+            if str(getattr(candidate, "side", "long")).lower() != "long":
+                return None
+            symbol = str(getattr(candidate, "symbol", "") or "").upper()
+            if not symbol.endswith("/USDT"):
+                return None
+            family_raw = str(getattr(candidate, "family", "") or getattr(candidate, "strategy_mode", "UNKNOWN")).upper()
+            engine = str(getattr(candidate, "engine_id", "") or "")
+            if "BREAK" in family_raw: pattern = "BREAKOUT_CONTINUATION"
+            elif "PULL" in family_raw: pattern = "PULLBACK_RECLAIM"
+            elif "MEAN" in family_raw: pattern = "MEAN_REVERSION"
+            elif "RELATIVE" in family_raw or "STRENGTH" in family_raw: pattern = "RELATIVE_STRENGTH_LEADER"
+            else: pattern = ("ENGINE_" + (engine or family_raw))[:80]
+            entry = cls._safe_float(getattr(candidate, "entry_ref", None))
+            stop = cls._safe_float(getattr(candidate, "sl_price", None))
+            if not entry or not stop or entry <= stop or stop <= 0:
+                return None
+            risk = entry - stop
+            rr1 = cls._safe_float(getattr(candidate, "tp1_rr", 1.0), 1.0) or 1.0
+            rr2 = cls._safe_float(getattr(candidate, "tp2_rr", max(1.5, rr1)), max(1.5, rr1)) or max(1.5, rr1)
+            rr3 = cls._safe_float(getattr(candidate, "tp3_rr", max(2.0, rr2)), max(2.0, rr2)) or max(2.0, rr2)
+            fs = dict(getattr(candidate, "features_snapshot", {}) or {})
+            snap = snapshot if isinstance(snapshot, dict) else {}
+            close_frame, candle_ts = cls._closed_frame(snap.get("df_5m"), 300)
+            last_price = float(close_frame["close"].iloc[-1]) if close_frame is not None and len(close_frame) else entry
+            candidate_ms = int(getattr(candidate, "generated_at_ms", 0) or 0)
+            candidate_ts = candidate_ms // 1000 if candidate_ms > 0 else int(candle_ts or WALL_NOW())
+            key = _v702_candidate_wrap(candidate, snap, symbol)
+            score = cls._safe_float(getattr(candidate, "engine_score", 0.0), 0.0) or 0.0
+            item = {
+                "candidate_key": key, "symbol": symbol, "family": family_raw, "pattern": pattern,
+                "engine_id": engine, "source": "STRATEGY_ENGINE", "status": "WATCH",
+                "score": max(0.0, min(100.0, score * 100.0)), "timeframe": str(getattr(candidate, "timeframe_profile", "5m+15m") or "5m+15m"),
+                "candle_ts": int(candidate_ts), "entry_ref": entry, "sl_price": stop,
+                "tp1": entry + risk * rr1, "tp2": entry + risk * rr2, "tp3": entry + risk * rr3,
+                "last_price": last_price, "invalidation_price": stop,
+                "reason": f"استراتيجية {family_raw} أنشأت مرشحًا طويلًا؛ ما زال اجتياز البوابات اللاحقة مطلوبًا.",
+                "missing_conditions": ["CANONICAL_PREQUAL", "FINAL_SCORE_AND_PRESEND_COST_GATES"],
+                "evidence": {
+                    "engine_id": engine, "engine_score_raw_0_1": score,
+                    "rr_ratio_raw": cls._safe_float(getattr(candidate, "rr_ratio", None)),
+                    "liquidity_score": cls._safe_float(getattr(candidate, "liquidity_score", None)),
+                    "regime_fit": cls._safe_float(getattr(candidate, "regime_fit", None)),
+                    "quality_grade": str(getattr(candidate, "quality_grade", "") or ""),
+                    "market_phase": str(getattr(candidate, "market_phase", "") or ""),
+                    "quote_vol_24h": cls._safe_float(snap.get("quote_vol_24h", fs.get("quote_vol_24h"))),
+                    "spread_pct": cls._safe_float(snap.get("spread_pct", fs.get("spread_pct"))),
+                    "features_snapshot": fs,
+                },
+            }
+            return cls._upsert(item, notify=True)[0]
+        except Exception as exc:
+            STATS["v702_opportunity_hunter_candidate_errors"] = int(STATS.get("v702_opportunity_hunter_candidate_errors", 0) or 0) + 1
+            logger.debug("[OPPORTUNITY-HUNTER] candidate observation suppressed: %s:%s", type(exc).__name__, str(exc)[:180])
+            return None
+
+    @classmethod
+    def on_pipeline_event(cls, stage, candidate_key, symbol="", family="", details=None):
+        if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_ENABLE", True)) or _V699_VALIDATE_ONLY_REQUEST:
+            return
+        try:
+            stage = str(stage or "").upper()
+            row = cls._get_by_candidate_key(candidate_key, symbol, family)
+            if not row or row.get("status") in ("INVALIDATED", "EXPIRED"):
+                return
+            evidence = dict(row.get("evidence") or {})
+            evidence["last_pipeline_stage"] = stage
+            evidence["last_pipeline_event_ts"] = float(WALL_NOW())
+            if isinstance(details, dict) and details:
+                evidence["last_pipeline_details"] = cls._json_value(details)
+            updates = {"evidence_json": json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))}
+            new_status = row.get("status")
+            confirmation_type = row.get("confirmation_type") or ""
+            reason = row.get("reason") or ""
+            blockers = list(row.get("blockers") or [])
+            if stage == "PREQUAL_PASS":
+                new_status = "CONFIRMED"
+                confirmation_type = "CANONICAL_PREQUAL"
+                reason = "اجتاز المرشح بوابة Prequal الأساسية؛ ما زالت بوابات التقييم والتكلفة وما قبل الإرسال مطلوبة."
+                updates["missing_json"] = json.dumps(["FINAL_SCORE_AND_PRESEND_COST_GATES"], ensure_ascii=False)
+            elif stage == "SCORE_PASS":
+                if cls._RANK.get(new_status, 0) < cls._RANK["CONFIRMED"]:
+                    new_status = "CONFIRMED"
+                    confirmation_type = "CANONICAL_SCORE_PASS"
+                    reason = "اجتاز المرشح التقييم النهائي؛ ما زالت فحوص ما قبل الإرسال مطلوبة."
+                    updates["missing_json"] = json.dumps(["PRESEND_SPREAD_DEPTH_FEE_AND_RISK_GATES"], ensure_ascii=False)
+            elif stage == "PRESEND_PASS":
+                new_status = "TRADEABLE"
+                confirmation_type = "CANONICAL_PRESEND_PASS"
+                reason = "اجتاز المرشح فحوص ما قبل الإرسال؛ لا يعني ذلك إرسال أمر أو تعبئته."
+                updates["missing_json"] = json.dumps([], ensure_ascii=False)
+            elif stage in ("PREQUAL_REJECT", "PREQUAL_PREFLIGHT_REJECT", "PREEXEC_BLOCK", "SCORE_BLOCK",
+                           "BUILDER_RETURNED_NONE", "BUILDER_EXCEPTION", "ROUTE_DEFERRED"):
+                token = str((details or {}).get("reason") or (details or {}).get("code") or stage)[:180]
+                blockers.append(f"{stage}:{token}")
+                blockers = list(dict.fromkeys(blockers))[-20:]
+                updates["blockers_json"] = json.dumps(blockers, ensure_ascii=False)
+            status_advanced = cls._RANK.get(new_status, 0) > cls._RANK.get(row.get("status"), 0)
+            _old_confirmation = str(row.get("confirmation_type") or "")
+            confirmation_upgraded = (stage == "PREQUAL_PASS" and (
+                _old_confirmation == "TECHNICAL_TRIGGER_ONLY" or _old_confirmation.startswith("CLOSED_BAR_")
+            ))
+            if status_advanced:
+                updates["status"] = new_status
+            if status_advanced or confirmation_upgraded:
+                updates["confirmation_type"] = confirmation_type
+                updates["reason"] = reason
+            updated = cls._update_row(row["opportunity_id"], updates)
+            if updated and updated.get("status") != row.get("status"):
+                cls._queue_alert(updated, updated.get("status"))
+            elif updated and confirmation_upgraded:
+                cls._queue_alert(updated, "CONFIRMED", "CANONICAL_PREQUAL")
+            elif updated and stage in ("PREQUAL_REJECT", "PREEXEC_BLOCK", "SCORE_BLOCK", "BUILDER_RETURNED_NONE", "BUILDER_EXCEPTION", "ROUTE_DEFERRED"):
+                STATS["v702_opportunity_hunter_blocked_candidates"] = int(STATS.get("v702_opportunity_hunter_blocked_candidates", 0) or 0) + 1
+        except Exception as exc:
+            STATS["v702_opportunity_hunter_pipeline_errors"] = int(STATS.get("v702_opportunity_hunter_pipeline_errors", 0) or 0) + 1
+            logger.debug("[OPPORTUNITY-HUNTER] pipeline event suppressed: %s:%s", type(exc).__name__, str(exc)[:160])
+
+    @classmethod
+    def _closed_frame(cls, frame, interval_sec, *, now=None):
+        """Validate OHLCV and return only fully closed, recent rows."""
+        try:
+            if not isinstance(frame, pd.DataFrame) or len(frame) < 56:
+                return None, 0
+            if bool(getattr(frame.index, "has_duplicates", False)):
+                return None, 0
+            required = ("open", "high", "low", "close", "volume")
+            if any(col not in frame.columns for col in required):
+                return None, 0
+            data = frame.loc[:, list(required)].copy()
+            data = data[~data.index.duplicated(keep="last")].sort_index()
+            for col in required:
+                data[col] = pd.to_numeric(data[col], errors="coerce")
+            data = data.replace([float("inf"), float("-inf")], float("nan")).dropna()
+            if len(data) < 56:
+                return None, 0
+            vals = data[list(required)].to_numpy(dtype=float)
+            if not (all(math.isfinite(float(x)) for x in vals[-24:].ravel()) and
+                    (data["low"].tail(24) > 0).all() and (data["volume"].tail(24) >= 0).all() and
+                    (data["high"].tail(24) >= data[["open", "close"]].tail(24).max(axis=1)).all() and
+                    (data["low"].tail(24) <= data[["open", "close"]].tail(24).min(axis=1)).all()):
+                return None, 0
+            last_idx = data.index[-1]
+            try:
+                last_open_ms = int(pd.Timestamp(last_idx).timestamp() * 1000)
+            except Exception:
+                return None, 0
+            now_ms = int((time.time() if now is None else float(now)) * 1000)
+            period_ms = int(interval_sec * 1000)
+            if last_open_ms > now_ms + 1000:
+                return None, 0
+            # Exchange OHLCV timestamps are candle-open times. Do not analyse an
+            # incomplete last bar; use it only when its close boundary has passed.
+            if now_ms < last_open_ms + period_ms:
+                data = data.iloc[:-1]
+                last_open_ms -= period_ms
+            if len(data) < 56:
+                return None, 0
+            candle_close_ms = last_open_ms + period_ms
+            if now_ms - candle_close_ms > int(period_ms * 2.6):
+                return None, 0
+            return data.tail(100), int(last_open_ms // 1000)
+        except Exception:
+            return None, 0
+
+    @classmethod
+    def _indicators(cls, frame):
+        close = frame["close"].astype(float)
+        high = frame["high"].astype(float)
+        low = frame["low"].astype(float)
+        prev = close.shift(1)
+        tr = pd.concat([(high - low), (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
+        atr = float(tr.tail(14).mean())
+        ema9 = float(close.ewm(span=9, adjust=False).mean().iloc[-1])
+        ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+        if not math.isfinite(rsi):
+            rsi = 50.0
+        vol_prev = float(frame["volume"].iloc[-21:-1].mean()) if len(frame) >= 21 else 0.0
+        vol_ratio = float(frame["volume"].iloc[-1] / vol_prev) if vol_prev > 0 else 0.0
+        return {"atr": atr, "ema9": ema9, "ema20": ema20, "ema50": ema50,
+                "rsi14": rsi, "volume_ratio": vol_ratio}
+
+    @classmethod
+    def _evaluate_snapshot(cls, symbol, md, now=None):
+        if not isinstance(md, dict) or not str(symbol).upper().endswith("/USDT"):
+            return []
+        f5, ts5 = cls._closed_frame(md.get("df_5m"), 300, now=now)
+        f15, ts15 = cls._closed_frame(md.get("df_15m"), 900, now=now)
+        if f5 is None or f15 is None:
+            return []
+        i5 = cls._indicators(f5)
+        i15 = cls._indicators(f15)
+        c5 = float(f5["close"].iloc[-1]); o5 = float(f5["open"].iloc[-1])
+        h5 = float(f5["high"].iloc[-1]); l5 = float(f5["low"].iloc[-1])
+        prior_high5 = float(f5["high"].iloc[-2]); prior_low5 = float(f5["low"].iloc[-2])
+        c15 = float(f15["close"].iloc[-1]); l15 = float(f15["low"].iloc[-1])
+        atr5 = max(i5["atr"], c5 * 0.0005)
+        atr15 = max(i15["atr"], c15 * 0.0005)
+        if not all(math.isfinite(x) and x > 0 for x in (c5, c15, atr5, atr15)):
+            return []
+        qv = cls._safe_float(md.get("quote_vol_24h"), 0.0) or 0.0
+        spread = cls._safe_float(md.get("spread_pct"))
+        trend = i15["ema20"] > i15["ema50"] and c15 >= i15["ema20"]
+        volr = max(0.0, min(10.0, i5["volume_ratio"]))
+        candle_ts = max(ts5, ts15)
+        ttl = max(900.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)))
+        out = []
+
+        # 1) Breakout continuation: pre-breakout compression or a closed-bar
+        # range break with relative-volume confirmation. Resistance uses only
+        # the 20 bars BEFORE the trigger bar (no look-ahead).
+        resistance = float(f5["high"].iloc[-21:-1].max())
+        dist_atr = (resistance - c5) / atr5
+        breakout_near = trend and -0.05 <= dist_atr <= 0.60 and volr >= 0.85
+        breakout_trigger = c5 > resistance * 1.0005 and c5 > o5 and volr >= 1.20
+        if breakout_near or breakout_trigger:
+            invalid = max(0.00000001, resistance - 0.65 * atr5)
+            score = 50 + (15 if trend else 0) + (10 if volr >= 1.0 else 0) + (15 if c5 > o5 else 0) + (10 if breakout_trigger else 0)
+            if breakout_trigger: score = max(score, 78)
+            out.append(cls._setup_item(symbol, "BREAKOUT_CONTINUATION", "BREAKOUT", c5, invalid,
+                score, candle_ts, "5m+15m", "إغلاق 5m قرب/فوق مقاومة العشرين شمعة السابقة مع قياس حجم التداول والاتجاه.",
+                ["شمعة 5m مغلقة فوق المقاومة", "Relative volume ≥ 1.20", "فحص السبريد والعمق والتكلفة قبل اعتبارها قابلة للتنفيذ"],
+                {"resistance_20": resistance, "distance_to_resistance_atr": round(dist_atr, 3),
+                 "volume_ratio_5m": round(volr, 3), "trend_15m": bool(trend), "spread_pct": spread,
+                 "quote_vol_24h": qv}, "CLOSED_BAR_BREAKOUT" if breakout_trigger else "WATCH_SETUP", 
+                "CONFIRMED" if breakout_trigger else "WATCH", ttl))
+
+        # 2) Trend pullback: trend intact and the closed 15m candle tested EMA20.
+        pullback_touch = trend and l15 <= i15["ema20"] + 0.20 * atr15 and abs(c15 - i15["ema20"]) <= 0.55 * atr15 and c15 > i15["ema50"]
+        pullback_trigger = pullback_touch and c5 > prior_high5 and c5 > o5
+        if pullback_touch:
+            invalid = max(0.00000001, i15["ema50"] - 0.18 * atr15)
+            score = 58 + (12 if c15 >= i15["ema20"] else 0) + (10 if volr >= 1.0 else 0) + (15 if pullback_trigger else 0)
+            out.append(cls._setup_item(symbol, "PULLBACK_RECLAIM", "PULLBACK", c5, invalid,
+                score, candle_ts, "5m+15m", "اتجاه 15m صاعد وتصحيح اختبر EMA20 مع بقاء السعر أعلى EMA50.",
+                ["إغلاق 5m صاعد يستعيد قمة الشمعة السابقة", "تأكيد الحجم والسيولة والسبريد"],
+                {"ema20_15m": i15["ema20"], "ema50_15m": i15["ema50"],
+                 "atr15": atr15, "volume_ratio_5m": round(volr, 3), "trend_15m": bool(trend)},
+                "CLOSED_BAR_PULLBACK_RECLAIM" if pullback_trigger else "WATCH_SETUP",
+                "CONFIRMED" if pullback_trigger else "WATCH", ttl))
+
+        # 3) Mean reversion: oversold condition is a watch setup, not a buy call.
+        if i15["rsi14"] <= 38.0 and c15 >= i15["ema50"] * 0.985:
+            reversal_trigger = c5 > prior_high5 and c5 > o5 and volr >= 1.05
+            invalid = max(0.00000001, min(l5, prior_low5) - 0.20 * atr5)
+            score = 54 + min(18, max(0, 38 - i15["rsi14"])) + (12 if reversal_trigger else 0) + (6 if volr >= 1.0 else 0)
+            out.append(cls._setup_item(symbol, "MEAN_REVERSION", "MEAN_REVERSION", c5, invalid,
+                score, candle_ts, "5m+15m", "RSI 15m في منطقة ضعف/تشبع بيعي مع مراقبة انعكاس شمعة مغلقة.",
+                ["إغلاق 5m أعلى قمة الشمعة السابقة", "حجم تداول داعم", "عدم كسر قاع الإبطال"],
+                {"rsi14_15m": round(i15["rsi14"], 2), "volume_ratio_5m": round(volr, 3),
+                 "ema50_15m": i15["ema50"]},
+                "CLOSED_BAR_REVERSAL" if reversal_trigger else "WATCH_SETUP",
+                "CONFIRMED" if reversal_trigger else "WATCH", ttl))
+
+        # 4) Relative-strength leader: compare like-for-like closed 15m returns.
+        btc, btc_ts = cls._closed_frame(md.get("df_btc_15m"), 900, now=now)
+        if btc is not None and len(f15) >= 6 and len(btc) >= 6:
+            base = float(f15["close"].iloc[-6]); btc_base = float(btc["close"].iloc[-6])
+            btc_now = float(btc["close"].iloc[-1])
+            if base > 0 and btc_base > 0 and btc_now > 0:
+                sym_ret = c15 / base - 1.0; btc_ret = btc_now / btc_base - 1.0
+                rs_diff_pct = (sym_ret - btc_ret) * 100.0
+                if rs_diff_pct >= 0.30 and c15 >= i15["ema20"]:
+                    rs_trigger = c5 > o5 and c5 > prior_high5 and volr >= 1.15
+                    invalid = max(0.00000001, i15["ema20"] - 0.40 * atr15)
+                    score = 58 + min(16, rs_diff_pct * 10) + (12 if trend else 0) + (12 if rs_trigger else 0)
+                    out.append(cls._setup_item(symbol, "RELATIVE_STRENGTH_LEADER", "RELATIVE_STRENGTH", c5, invalid,
+                        score, max(candle_ts, btc_ts), "5m+15m vs BTC", "أداء 15m للعملة أقوى من BTC مع بقاء السعر فوق EMA20.",
+                        ["تأكيد زخم 5m بإغلاق أعلى القمة السابقة", "Relative volume ≥ 1.15", "فحوص التنفيذ والسبريد"],
+                        {"symbol_return_15m_5bars_pct": round(sym_ret * 100, 3),
+                         "btc_return_15m_5bars_pct": round(btc_ret * 100, 3),
+                         "relative_strength_diff_pct": round(rs_diff_pct, 3),
+                         "volume_ratio_5m": round(volr, 3), "trend_15m": bool(trend)},
+                        "CLOSED_BAR_RS_MOMENTUM" if rs_trigger else "WATCH_SETUP",
+                        "CONFIRMED" if rs_trigger else "WATCH", ttl))
+        floor = float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SCORE_FLOOR", 55.0))
+        out = [x for x in out if float(x.get("score") or 0) >= floor]
+        out.sort(key=lambda x: float(x.get("score") or 0), reverse=True)
+        return out[:2]
+
+    @classmethod
+    def _setup_item(cls, symbol, pattern, family, price, invalidation, score, candle_ts,
+                    timeframe, reason, missing, evidence, confirmation_type, status, ttl):
+        if str(status).upper() == "CONFIRMED":
+            missing = ["CANONICAL_PREQUAL_AND_FINAL_SCORE", "PRE-SEND_SPREAD_DEPTH_FEE_AND_RISK_GATES"]
+        safe_invalidation = min(float(invalidation), float(price) * 0.999)
+        safe_invalidation = max(0.00000001, safe_invalidation)
+        risk = max(float(price) - safe_invalidation, float(price) * 0.001)
+        return {
+            "symbol": str(symbol).upper(), "family": str(family).upper(), "pattern": str(pattern).upper(),
+            "source": "READ_ONLY_MARKET_PATTERN", "status": str(status), "score": max(0.0, min(100.0, float(score))),
+            "timeframe": str(timeframe), "candle_ts": int(candle_ts), "entry_ref": float(price),
+            "sl_price": safe_invalidation, "tp1": float(price) + risk,
+            "tp2": float(price) + 1.5 * risk, "tp3": float(price) + 2.0 * risk,
+            "last_price": float(price), "invalidation_price": safe_invalidation,
+            "reason": str(reason), "missing_conditions": list(missing), "evidence": dict(evidence),
+            "confirmation_type": str(confirmation_type), "expires_at": float(WALL_NOW()) + float(ttl),
+        }
+
+    @classmethod
+    def _active_rows(cls, limit=1200):
+        with cls._DB_LOCK:
+            cls._ensure_schema()
+            conn = cls._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM opportunity_hunter WHERE status IN ('WATCH','CONFIRMED','TRADEABLE') ORDER BY updated_at DESC LIMIT ?",
+                    (max(1, min(int(limit), 3000)),),
+                ).fetchall()
+                return [cls._row(r) for r in rows]
+            finally:
+                conn.close()
+
+    @classmethod
+    def _queue_alert(cls, row, state, variant=""):
+        state = str(state or "").upper()
+        if state not in ("WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"):
+            return False
+        if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)) or not bool(CONFIG.get("TELEGRAM_ENABLED", True)):
+            return False
+        if _V699_VALIDATE_ONLY_REQUEST or not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_ENABLE", True)):
+            return False
+        opp_id = str(row.get("opportunity_id") or "")
+        if not opp_id:
+            return False
+        alert_token = state + (":" + str(variant).upper() if variant else "")
+        key = (opp_id, alert_token)
+        now = float(WALL_NOW())
+        with cls._lock:
+            if key in cls._alert_pending or alert_token in (row.get("alerted_states") or []):
+                return False
+            if now - cls._alert_window_start >= 60.0:
+                cls._alert_window_start = now
+                cls._alert_window_count = 0
+            if cls._alert_window_count >= max(1, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 10))):
+                STATS["v702_opportunity_hunter_alert_rate_limited"] = int(STATS.get("v702_opportunity_hunter_alert_rate_limited", 0) or 0) + 1
+                return False
+            cls._alert_window_count += 1
+            cls._alert_pending.add(key)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(cls._deliver_alert(row, state, alert_token))
+            return True
+        except RuntimeError:
+            with cls._lock:
+                cls._alert_pending.discard(key)
+            STATS["v702_opportunity_hunter_alert_no_loop"] = int(STATS.get("v702_opportunity_hunter_alert_no_loop", 0) or 0) + 1
+            return False
+        except Exception:
+            with cls._lock:
+                cls._alert_pending.discard(key)
+            return False
+
+    @classmethod
+    def _message(cls, row, state, alert_token=""):
+        esc = OpportunityTelegramNotifier._escape
+        symbol = esc(row.get("symbol") or "?")
+        family = esc(row.get("family") or "?")
+        opp_id = esc(row.get("opportunity_id") or "")
+        score = cls._safe_float(row.get("score"), 0.0) or 0.0
+        price = OpportunityTelegramNotifier._fmt_px(row.get("last_price") or row.get("entry_ref"))
+        entry_ref = OpportunityTelegramNotifier._fmt_px(row.get("entry_ref"))
+        invalid = OpportunityTelegramNotifier._fmt_px(row.get("invalidation_price"))
+        tp1 = OpportunityTelegramNotifier._fmt_px(row.get("tp1"))
+        tp2 = OpportunityTelegramNotifier._fmt_px(row.get("tp2"))
+        tp3 = OpportunityTelegramNotifier._fmt_px(row.get("tp3"))
+        timeframe = esc(row.get("timeframe") or "—")
+        status_title = {
+            "WATCH": "🟡 <b>WATCH — فرصة تحت التكوين</b>",
+            "CONFIRMED": "🟢 <b>CONFIRMED — شرط فني تحقق</b>",
+            "TRADEABLE": "🔵 <b>TRADEABLE — اجتازت فحوص ما قبل الإرسال</b>",
+            "INVALIDATED": "🔴 <b>INVALIDATED — الفرضية الفنية أُبطلت</b>",
+            "EXPIRED": "⌛ <b>EXPIRED — انتهت صلاحية الفرصة</b>",
+        }.get(state, "<b>OPPORTUNITY UPDATE</b>")
+        lines = [status_title, f"<b>{symbol}</b> · {family}", f"الإطار: <code>{timeframe}</code>",
+                 f"Hunter score: <b>{score:.1f}/100</b> (ترتيب داخلي وليس احتمال ربح)",
+                 f"مرجع آخر سعر مغلق: <code>{esc(price)}</code>",
+                 f"مرجع الدخول التحليلي: <code>{esc(entry_ref)}</code>",
+                 f"مستوى الإبطال الفني: <code>{esc(invalid)}</code>",
+                 f"مستويات السيناريو: TP1 <code>{esc(tp1)}</code> · TP2 <code>{esc(tp2)}</code> · TP3 <code>{esc(tp3)}</code>",
+                 "المستويات مرجعية مشتقة من مسافة الإبطال وليست أوامر أو ضمانًا للربح؛ صافي التكلفة لا يعتمد إلا عبر بوابات PreSend.",
+                 f"السبب: {esc(row.get('reason') or '—')}"]
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        if evidence:
+            items = []
+            for key, val in list(evidence.items())[:6]:
+                if isinstance(val, (str, int, float, bool)) and val is not None:
+                    items.append(f"• {esc(key)}: <code>{esc(val)}</code>")
+            if items:
+                lines += ["<b>الأدلة المقاسة</b>"] + items
+        missing = list(row.get("missing_conditions") or [])
+        blockers = list(row.get("blockers") or [])[-4:]
+        if state == "WATCH" and missing:
+            lines += ["<b>الشروط التالية المطلوبة</b>"] + [f"• {esc(x)}" for x in missing[:5]]
+        if state == "CONFIRMED":
+            if str(alert_token).endswith(":CANONICAL_PREQUAL"):
+                lines.append("تحديث مهم: الفرصة كانت مؤكدة فنيًا ثم اجتازت الآن بوابة Prequal الأساسية.")
+            ctype = str(row.get("confirmation_type") or "")
+            if ctype == "TECHNICAL_TRIGGER_ONLY" or ctype.startswith("CLOSED_BAR_"):
+                lines.append("التأكيد فني من شمعة مغلقة فقط؛ لا يعني اجتياز Prequal أو فحوص التكلفة والتنفيذ.")
+            else:
+                lines.append(f"نوع التأكيد: <code>{esc(ctype or 'CANONICAL_CONFIRMATION')}</code>")
+            if missing:
+                lines += ["المتبقي قبل قابلية التنفيذ:"] + [f"• {esc(x)}" for x in missing[:5]]
+        if state == "TRADEABLE":
+            lines.append("اجتازت بوابات PreSend المرصودة. هذا ليس أمرًا مرسلًا ولا تعبئة مؤكدة.")
+        if blockers and state in ("WATCH", "CONFIRMED"):
+            lines += ["<b>عوائق مرصودة</b>"] + [f"• {esc(x)}" for x in blockers]
+        if state in ("INVALIDATED", "EXPIRED"):
+            lines.append("تم إغلاق متابعة هذه الفرصة؛ لا تستخدم التنبيه القديم كإشارة دخول.")
+        lines += ["", "<b>MONITOR ONLY — لا يوجد BUY آلي.</b>", f"ID: <code>{opp_id}</code>"]
+        return "\n".join(lines)
+
+    @classmethod
+    async def _deliver_alert(cls, row, state, alert_token=""):
+        opp_id = str(row.get("opportunity_id") or "")
+        alert_token = str(alert_token or state)
+        key = (opp_id, alert_token)
+        try:
+            current = cls._get_by_id(opp_id)
+            if current and alert_token in (current.get("alerted_states") or []):
+                return
+            def on_success(reason="delivered"):
+                cls._update_row(opp_id, {"last_alert_delivery": "DELIVERED", "last_alert_reason": str(reason or "delivered")[:180]})
+                STATS["v702_opportunity_hunter_alert_delivered"] = int(STATS.get("v702_opportunity_hunter_alert_delivered", 0) or 0) + 1
+            def on_failure(reason="delivery_failed"):
+                cls._update_row(opp_id, {"last_alert_delivery": "FAILED", "last_alert_reason": str(reason or "failed")[:180]})
+                STATS["v702_opportunity_hunter_alert_failed"] = int(STATS.get("v702_opportunity_hunter_alert_failed", 0) or 0) + 1
+            queued = await TelegramDispatcher.enqueue(cls._message(current or row, state, alert_token), on_success=on_success, on_failure=on_failure)
+            if queued is False:
+                on_failure("enqueue_returned_false")
+                return
+            current = cls._get_by_id(opp_id) or row
+            alerted = list(current.get("alerted_states") or [])
+            if alert_token not in alerted:
+                alerted.append(alert_token)
+            _delivery = str(current.get("last_alert_delivery") or "")
+            _alert_updates = {"alerted_states_json": json.dumps(alerted)}
+            # The dispatcher may ACK synchronously; never overwrite a terminal ACK with QUEUED.
+            if _delivery not in ("DELIVERED", "FAILED"):
+                _alert_updates["last_alert_delivery"] = "QUEUED"
+            cls._update_row(opp_id, _alert_updates)
+            STATS["v702_opportunity_hunter_alert_enqueued"] = int(STATS.get("v702_opportunity_hunter_alert_enqueued", 0) or 0) + 1
+        except Exception as exc:
+            STATS["v702_opportunity_hunter_alert_errors"] = int(STATS.get("v702_opportunity_hunter_alert_errors", 0) or 0) + 1
+            logger.debug("[OPPORTUNITY-HUNTER] alert enqueue suppressed: %s:%s", type(exc).__name__, str(exc)[:160])
+        finally:
+            with cls._lock:
+                cls._alert_pending.discard(key)
+
+    @classmethod
+    async def scan_market_map(cls, market_data_map):
+        """Evaluate closed-bar setups from already-scanned symbols and track lifecycle."""
+        if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_ENABLE", True)) or _V699_VALIDATE_ONLY_REQUEST:
+            return {"scanned": 0, "created": 0, "errors": 0}
+        if not isinstance(market_data_map, dict) or not market_data_map:
+            STATS["v702_opportunity_hunter_last_scan"] = {"status": "NO_MARKET_SNAPSHOTS", "scanned": 0, "ts": float(WALL_NOW())}
+            return {"scanned": 0, "created": 0, "errors": 0}
+        started = float(MONO_NOW())
+        now = float(WALL_NOW())
+        max_symbols = max(1, min(1000, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE", 500))))
+        max_alerts = max(1, min(20, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_SCAN", 6))))
+        scanned = created = errors = confirmed = 0
+        queued_this_scan = 0
+        try:
+            symbols = list(market_data_map.keys())[:max_symbols]
+        except Exception:
+            symbols = []
+        for symbol in symbols:
+            try:
+                items = cls._evaluate_snapshot(symbol, market_data_map.get(symbol), now=now)
+                for item in items:
+                    row, was_created = cls._upsert(item, notify=False)
+                    if was_created:
+                        created += 1
+                    if row and row.get("status") == "CONFIRMED":
+                        confirmed += 1
+                    if row and max_alerts > 0:
+                        # _upsert(..., notify=False) avoids duplicate notification
+                        # storms; queue only a state not previously alerted.
+                        if (queued_this_scan < max_alerts
+                                and row.get("status") in ("WATCH", "CONFIRMED", "TRADEABLE")):
+                            if cls._queue_alert(row, row.get("status")):
+                                queued_this_scan += 1
+                scanned += 1
+            except Exception as exc:
+                errors += 1
+                STATS["v702_opportunity_hunter_symbol_errors"] = int(STATS.get("v702_opportunity_hunter_symbol_errors", 0) or 0) + 1
+                logger.debug("[OPPORTUNITY-HUNTER] symbol=%s suppressed: %s:%s", symbol, type(exc).__name__, str(exc)[:120])
+        # Monitor persisted active ideas even when their symbol did not generate
+        # a fresh setup in this cycle. No extra API call is made.
+        latest_prices = {}
+        for symbol, md in list(market_data_map.items())[:max_symbols]:
+            f5, _ts = cls._closed_frame((md or {}).get("df_5m") if isinstance(md, dict) else None, 300, now=now)
+            if f5 is not None and len(f5):
+                latest_prices[str(symbol).upper()] = float(f5["close"].iloc[-1])
+        for row in cls._active_rows(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200)):
+            try:
+                symbol = str(row.get("symbol") or "").upper()
+                price = latest_prices.get(symbol)
+                updates = {}
+                if price is not None:
+                    updates["last_price"] = price
+                if now >= float(row.get("expires_at") or 0):
+                    updates["status"] = "EXPIRED"
+                    updates["reason"] = "انتهت نافذة صلاحية setup دون تحقق شرط استمرار صالح."
+                elif price is not None:
+                    invalid = cls._safe_float(row.get("invalidation_price"))
+                    if invalid is not None and price <= invalid:
+                        updates["status"] = "INVALIDATED"
+                        updates["reason"] = f"السعر المغلق {price:.10g} كسر مستوى الإبطال {invalid:.10g}."
+                if updates:
+                    updated = cls._update_row(row.get("opportunity_id"), updates)
+                    if updated and updated.get("status") in ("INVALIDATED", "EXPIRED") and updated.get("status") != row.get("status"):
+                        cls._queue_alert(updated, updated.get("status"))
+                    elif updated and updated.get("status") in cls._ACTIVE:
+                        # Refreshing last_price is not a new opportunity event.
+                        pass
+            except Exception:
+                errors += 1
+        active = cls._active_rows(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200))
+        counts = {state: sum(1 for r in active if r.get("status") == state) for state in cls._ACTIVE}
+        summary = {"status": "OK", "scanned": scanned, "created": created, "confirmed_seen": confirmed,
+                   "active": counts, "alerts_queued_this_scan": queued_this_scan, "errors": errors, "elapsed_sec": round(float(MONO_NOW()) - started, 3),
+                   "ts": now, "source": "EXISTING_MARKET_DATA_MAP_ONLY", "execution_authority": False}
+        STATS["v702_opportunity_hunter_last_scan"] = summary
+        STATS["v702_opportunity_hunter_active"] = counts
+        STATS["v702_opportunity_hunter_symbols_scanned_total"] = int(STATS.get("v702_opportunity_hunter_symbols_scanned_total", 0) or 0) + scanned
+        logger.info("[OPPORTUNITY-HUNTER] scanned=%d created=%d active_watch=%d confirmed=%d tradeable=%d errors=%d",
+                    scanned, created, counts.get("WATCH", 0), counts.get("CONFIRMED", 0), counts.get("TRADEABLE", 0), errors)
+        return summary
+
+    @classmethod
+    def snapshot(cls, limit=50):
+        rows = cls._active_rows(max(1, min(int(limit), 500)))
+        return [{k: r.get(k) for k in ("opportunity_id", "symbol", "family", "pattern", "source", "status", "score",
+                "timeframe", "candle_ts", "entry_ref", "last_price", "invalidation_price", "reason",
+                "confirmation_type", "missing_conditions", "blockers", "last_alert_delivery", "created_at", "expires_at")}
+                for r in rows]
+
+    @classmethod
+    def self_test(cls):
+        """Pure, side-effect-free contracts used by validate-only."""
+        return {
+            "execution_authority_disabled": cls.execution_authority is False,
+            "states_are_monotonic": cls._RANK["WATCH"] < cls._RANK["CONFIRMED"] < cls._RANK["TRADEABLE"],
+            "terminal_states_rank_last": cls._RANK["INVALIDATED"] > cls._RANK["TRADEABLE"] and cls._RANK["EXPIRED"] > cls._RANK["TRADEABLE"],
+            "closed_candle_contract_present": callable(cls._closed_frame) and callable(cls._evaluate_snapshot),
+            "sqlite_persistence_present": callable(cls._ensure_schema) and callable(cls._upsert),
+            "no_live_policy_relaxation": str(CONFIG.get("LIVE_ENTRY_POLICY", "MONITOR_ONLY_NO_NEW_BUYS")) == "MONITOR_ONLY_NO_NEW_BUYS"
+                or str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")) == "MONITOR_ONLY_NO_NEW_BUYS",
+        }
+
+
+# Candidate discovery observer: preserve the original MSE telemetry observer,
+# then persist each actual strategy candidate as a WATCH item.
+_V702_HUNTER_MSE_PREVIOUS = MultiStrategyEngine._run_engine_safe
+def _v702_hunter_mse_run_observed(engine_cls, snapshot):
+    rows = list(_V702_HUNTER_MSE_PREVIOUS(engine_cls, snapshot) or [])
+    for _candidate in rows:
+        try:
+            OpportunityHunter.observe_strategy_candidate(_candidate, snapshot)
+        except Exception:
+            STATS["v702_opportunity_hunter_observer_errors"] = int(STATS.get("v702_opportunity_hunter_observer_errors", 0) or 0) + 1
+    return rows
+_v702_mse_run_observed = _v702_hunter_mse_run_observed
+MultiStrategyEngine._run_engine_safe = staticmethod(_v702_mse_run_observed)
+
+
+# Observe only the existing canonical pipeline record. This does not alter any
+# scorer, prequalifier, builder, queue, order or execution method.
+_V702_HUNTER_PIPELINE_RECORD_ORIGINAL = V702PipelineMetrics.record.__func__
+def _v702_hunter_pipeline_record(cls, stage, candidate_key, symbol="", family="", details=None):
+    result = _V702_HUNTER_PIPELINE_RECORD_ORIGINAL(cls, stage, candidate_key, symbol=symbol, family=family, details=details)
+    try:
+        _hunter_stage = str(stage or "").upper()
+        if _hunter_stage in {
+            "PREQUAL_PASS", "SCORE_PASS", "PRESEND_PASS",
+            "PREQUAL_REJECT", "PREQUAL_PREFLIGHT_REJECT", "PREEXEC_BLOCK", "SCORE_BLOCK",
+            "BUILDER_RETURNED_NONE", "BUILDER_EXCEPTION", "ROUTE_DEFERRED",
+        }:
+            OpportunityHunter.on_pipeline_event(stage, candidate_key, symbol=symbol, family=family, details=details)
+    except Exception:
+        STATS["v702_opportunity_hunter_pipeline_hook_errors"] = int(STATS.get("v702_opportunity_hunter_pipeline_hook_errors", 0) or 0) + 1
+    return result
+V702PipelineMetrics.record = classmethod(_v702_hunter_pipeline_record)
+
+FINAL_CANONICAL_RUNTIME.update({
+    "opportunity_hunter_enabled": True,
+    "opportunity_hunter_revision": V702_A67_HUNTER_REVISION,
+    "opportunity_hunter_mode": "READ_ONLY_OPPORTUNITY_DISCOVERY",
+    "opportunity_hunter_states": ["WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"],
+    "opportunity_hunter_execution_authority": False,
+    "opportunity_hunter_uses_existing_market_snapshots_only": True,
+    "opportunity_hunter_tradeable_semantics": "PRESEND_PASS_ONLY_NOT_ORDER_OR_FILL",
+})
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A67_HUNTER_REVISION
+FINAL_CANONICAL_RUNTIME["package_audit_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["package_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["active_package_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME["canonical_runtime_revision"] = V702_PACKAGE_AUDIT_REVISION
+STATS["v702_opportunity_hunter_revision"] = V702_A67_HUNTER_REVISION
+
+
 def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
     """Verify critical boot-continuity invariants against the active source."""
     checks: Dict[str, bool] = {}
@@ -101692,6 +102662,23 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
         checks["tp1_full_close_and_partial_realized_metrics_are_distinct"] = (
             "TP1_FULL_CLOSE_NET_USDT" in _src
             and "TP1_PARTIAL_REALIZED_NET_USDT" in _src
+        )
+        _hunter_contract = OpportunityHunter.self_test()
+        checks["opportunity_hunter_read_only_contracts_pass"] = all(bool(v) for v in _hunter_contract.values())
+        checks["opportunity_hunter_pipeline_hook_preserves_observer"] = (
+            MultiStrategyEngine._run_engine_safe is _v702_mse_run_observed
+            and getattr(V702PipelineMetrics.record, "__func__", None) is _v702_hunter_pipeline_record
+        )
+        checks["opportunity_hunter_scans_existing_market_map"] = (
+            "await OpportunityHunter.scan_market_map(market_data_map)" in _src
+            and "EXISTING_MARKET_DATA_MAP_ONLY" in _src
+        )
+        checks["opportunity_hunter_states_and_no_order_authority"] = (
+            FINAL_CANONICAL_RUNTIME.get("opportunity_hunter_execution_authority") is False
+            and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+            and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+            and set(FINAL_CANONICAL_RUNTIME.get("opportunity_hunter_states", [])) ==
+                {"WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED"}
         )
         failed = [k for k, v in checks.items() if not bool(v)]
         return {"pass": not failed, "checks": checks, "failed": failed,

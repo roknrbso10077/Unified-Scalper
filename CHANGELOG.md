@@ -2381,3 +2381,15 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Kept Spot LONG_ONLY, existing gates, Edge/Builder requirements, two-slot limit, −2R daily stop, six-trade daily cap, and the 75 USDT upper notional cap.
 - Did not claim backtest or profitability because no historical OHLCV/order-book/fill dataset was supplied. Did not enable MEXC native OCO, futures/shorts, or a persistent Telegram Outbox without target-environment integration evidence.
 - Production decision remains NO_GO_UNATTENDED_LIVE.
+
+
+# V702 A67 — Intelligent Opportunity Hunter (2026-11-15)
+
+- Added a read-only opportunity lifecycle layered on the existing A66 market snapshots and strategy/pipeline observers; the existing 18 engines remain intact.
+- Added WATCH, CONFIRMED, TRADEABLE, INVALIDATED and EXPIRED states. CONFIRMED distinguishes closed-bar technical triggers from canonical Prequal/Score passage; TRADEABLE requires canonical `PRESEND_PASS` and is explicitly not an order/fill.
+- Added four bounded closed-candle pattern lanes: breakout continuation, trend pullback/reclaim, mean reversion watch/reversal, and relative strength versus BTC when a fresh BTC 15m snapshot exists.
+- Added SQLite persistence, monotonic lifecycle transitions, terminal-state non-resurrection, time-based expiry, price-based invalidation, evidence/missing-condition/blocker records, and rate-limited Telegram state alerts.
+- Uses existing `market_data_map` only; no additional exchange reads, no execution route, no BUY authority, and no score/liquidity/cost/risk gate relaxation.
+- Default bounds: 240 symbols/cycle, 6 pattern alerts/scan, 10 alerts/minute, ranking floor 55/100, 3,600-second TTL and 1,200 active records. Ranking score is not a probability or profitability claim.
+- Added regression coverage for monotonic states, closed-bar-only triggers, invalid OHLC/duplicate timestamps, persistence/expiry, terminal-state handling, technical-to-canonical Prequal upgrade, synchronous Telegram ACK ordering, and alert reference/target disclosure.
+- Final local offline verification: `pytest -q` **505 passed, 1 skipped, 0 failed**; Hunter-focused regressions **8/8 PASS**; `py_compile`/`compileall` PASS on Python 3.13.5; `--validate-only` exit 0 with 23/23 A66/A67 source checks and no bot startup. The clean-source skip is the historical A51 log fixture not packaged. Live MEXC/Telegram delivery, Docker/Python 3.12 Linux image, Native Stop, live protection, and profitability remain unverified. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain in force.
