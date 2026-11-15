@@ -149,6 +149,7 @@ class ProductionGuardrailTests(unittest.TestCase):
         async def run():
             with patch.dict(os.environ, {"UNIFIED_ALLOW_LIVE_TRADING": "I_ACCEPT_LIVE_RISK", "UNIFIED_LIVE_PILOT_ENABLE": "1", "UNIFIED_A55_LIVE_ARM": "1", "UNIFIED_A19_DIAGNOSTIC_ONLY": "0"}), \
                  patch.dict(bot.ENV, {"MEXC_API_KEY": "OFFLINE_TEST_KEY", "MEXC_API_SECRET": "OFFLINE_TEST_SECRET"}), \
+                 patch.dict(bot.CONFIG, {"V702_LIVE_PILOT_ENABLE": True}), \
                  patch.object(bot, "_v702_live_buy_possible", return_value=True), \
                  patch.object(bot, "_v702_position_manager_health_ok", return_value=True), \
                  patch.object(bot.LiveStateMachine, "is_live_runnable", return_value=True), \
@@ -478,8 +479,10 @@ if __name__ == "__main__":
             floor = bot._v702_unified_round_trip_cost_pct()
             measured = bot._v702_unified_round_trip_cost_pct(measured_cost_pct=0.72, spread_pct=0.04, fee_cost_pct=0.08)
         self.assertGreaterEqual(floor["round_trip_cost_pct"], 0.30)
-        self.assertEqual(measured["round_trip_cost_pct"], 0.72)
+        self.assertEqual(measured["round_trip_cost_pct"], 0.77)
         self.assertEqual(measured["measured_cost_pct"], 0.72)
+        self.assertEqual(measured["measured_cost_buffer_pct"], 0.05)
+        self.assertEqual(measured["used_measured_cost"], 1.0)
 
     def test_a58_paper_fill_requires_a_buffered_breakout(self):
         trigger, margin = bot.KnowledgeOutcomeLedger._paper_fill_trigger(100.0, 0.10)

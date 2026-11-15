@@ -56,7 +56,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("canonical_package_revision"), bot.V702_A10_CANONICAL_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_package_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("package_audit_revision"), bot.V702_PACKAGE_AUDIT_REVISION)
-        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL")
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A65-CANONICAL-FINAL")
 
 
     def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):
@@ -297,7 +297,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         guard = (ROOT / "production_guardrails.py").read_text(encoding="utf-8")
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         manifest = json.loads((ROOT / "FINAL_MANIFEST.json").read_text(encoding="utf-8"))
-        self.assertIn('cfg.setdefault("V702_LIVE_PILOT_ENABLE", True)', guard)
+        self.assertIn('cfg.setdefault("V702_LIVE_PILOT_ENABLE", False)', guard)
         self.assertIn('UNIFIED_LIVE_PILOT_ENABLE', guard)
         self.assertIn('UNIFIED_A55_LIVE_ARM', source)
         self.assertIn('operator_armed = bool(callable(arm_check) and arm_check())', guard)
@@ -324,7 +324,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn("--require-hashes -r /app/requirements-lock.txt", docker)
         self.assertIn("grep -q -- \"--hash=sha256:\" /app/requirements-lock.txt", docker)
         self.assertIn("ARG STRICT_HASH_LOCK=0", docker)
-        self.assertIn("STRICT_HASH_LOCK=1", (ROOT / ".github/workflows/a64-production-audit.yml").read_text(encoding="utf-8"))
+        self.assertIn("STRICT_HASH_LOCK=1", (ROOT / ".github/workflows/a65-production-audit.yml").read_text(encoding="utf-8"))
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("-r requirements.in", requirements)
 
@@ -349,7 +349,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn("previous bounded batch still active; skipping cycle to prevent overlap", source)
         self.assertIn("V702_INTRADAY_SHADOW_LIVE_ENABLE", source)
         self.assertIn("asyncio.wait(_tasks, timeout=_budget)", source)
-        self.assertIn('"higher_timeframe_bullish_required":False', module)
+        self.assertIn('"higher_timeframe_bullish_required":bool(adaptive)', module)
         self.assertIn("btc_15m_crash_guard", module)
         self.assertNotIn("exchange.create_order", module)
         self.assertIn('"live_execution":False', module)

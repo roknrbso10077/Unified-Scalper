@@ -65,8 +65,9 @@ def test_a55_shadow_presend_measures_spread_vwap_fees_and_cost_floor(monkeypatch
     assert result["round_trip_cost_pct"] >= 0.30
     model = result["round_trip_cost_model"]
     assert result["round_trip_cost_pct"] == max(
-        model["minimum_cost_pct"], model["measured_cost_pct"], model["r40_fallback_cost_pct"]
+        model["minimum_cost_pct"], model["measured_cost_pct"] + model["measured_cost_buffer_pct"]
     )
+    assert model["used_measured_cost"] == 1.0
     assert result["taker_fee_source"] == "exchange_market_taker"
     assert result["family"] == "PULLBACK"
     assert result["vwap_buy"] > result["vwap_sell"]
@@ -126,7 +127,9 @@ def test_a55_paper_annotation_persists_shadow_geometry_and_dynamic_cost(tmp_path
     assert notes["trade_state_created"] is False
     assert notes["market_qualification_completed"] is True
     assert notes["evaluation_attempt_id"] == "attempt-a55-1"
-    assert notes["round_trip_cost_pct"] == bot._v702_unified_round_trip_cost_pct(measured_cost_pct=0.42)["round_trip_cost_pct"]
+    assert notes["round_trip_cost_pct"] == 0.42
+    assert notes["round_trip_cost_model"]["cost_source"] == "SHADOW_PRESEND_ALL_IN_REUSED"
+    assert notes["round_trip_cost_model"]["measurement_buffer_reapplied"] is False
     assert notes["paper_final_geometry_source"] == "BUILDER_SHADOW_PRESEND"
 
 

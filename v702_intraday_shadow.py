@@ -5,6 +5,8 @@ Strategies:
 - MICRO_SWEEP_RECLAIM_1M: local low sweep and close reclaim.
 - MICRO_PULLBACK_RECLAIM_1M: local EMA9 reclaim while local EMA9/21 structure is constructive.
 - VWAP_RECLAIM_RS_5M: UTC-session VWAP reclaim plus coin-relative strength vs BTC.
+- ADAPTIVE_RS_PULLBACK_15M: top-10 4h relative strength, BTC/asset trend filters,
+  15m structural pullback and 5m resumption; 50% at 1.5R then confirmed 15m trail.
 
 All signals are recorded only as virtual experiments. No exchange order APIs are
 imported or called. Outcomes use closed 1m candles, pessimistic SL-first handling
@@ -25,18 +27,20 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
 from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
+from v702_core__execution__cost_model import unified_round_trip_cost_model
 
 try:
     import pandas as pd
 except Exception:  # pragma: no cover - guarded by runtime install/validator
     pd = None
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STRATEGIES = (
     "MICRO_MOMENTUM_1M",
     "MICRO_SWEEP_RECLAIM_1M",
     "MICRO_PULLBACK_RECLAIM_1M",
     "VWAP_RECLAIM_RS_5M",
+    "ADAPTIVE_RS_PULLBACK_15M",
 )
 _HARD_EXCLUDED_BASES = HARD_FORBIDDEN_BASES
 
@@ -93,15 +97,30 @@ def _ts_ms(index_value: Any) -> Optional[int]:
 
 
 def _closed_rows(df: Any, timeframe_ms: int) -> List[Dict[str, float]]:
-    """Return closed bars only. Exchanges generally include one in-progress final row."""
+    """Return bars whose close time has actually passed.
+
+    Do not blindly discard the final row: historical frames often contain only
+    closed candles, while live exchange frames can end with a forming candle.
+    ``attrs['as_of_ms']`` and ``attrs['close_grace_ms']`` make replay/tests fully
+    deterministic; live frames use wall-clock time and a small close grace.
+    """
     if not _frame_ok(df, 2):
         return []
+    try:
+        as_of_ms = _num(getattr(df, "attrs", {}).get("as_of_ms"), None)
+        if as_of_ms is None:
+            as_of_ms = time.time() * 1000.0
+        grace_ms = _num(getattr(df, "attrs", {}).get("close_grace_ms"), 1_000.0)
+        grace_ms = max(0.0, min(float(timeframe_ms) * 0.25, float(grace_ms or 0.0)))
+    except Exception:
+        as_of_ms = time.time() * 1000.0
+        grace_ms = 1_000.0
     rows: List[Dict[str, float]] = []
-    # Deliberately drop the final potentially-open candle.
-    for i in range(max(0, len(df) - 1)):
+    for i in range(len(df)):
         row = df.iloc[i]
         ts = _ts_ms(df.index[i])
-        if ts is None: continue
+        if ts is None or float(ts + timeframe_ms) > float(as_of_ms) - grace_ms:
+            continue
         try:
             item = {
                 "ts": float(ts),
@@ -227,8 +246,17 @@ class V702IntradayShadow:
                 features_json TEXT NOT NULL DEFAULT '{}',
                 resolved_ts REAL,
                 note TEXT NOT NULL DEFAULT '',
+                tp1_hit INTEGER NOT NULL DEFAULT 0,
+                partial_realized_r REAL NOT NULL DEFAULT 0.0,
+                trailing_stop REAL,
                 UNIQUE(symbol,strategy_mode,signal_ts_ms)
             )""")
+            _sample_columns = {str(r[1]) for r in conn.execute("PRAGMA table_info(v702_intraday_shadow_samples)").fetchall()}
+            for _name, _sql in (("tp1_hit", "INTEGER NOT NULL DEFAULT 0"),
+                                ("partial_realized_r", "REAL NOT NULL DEFAULT 0.0"),
+                                ("trailing_stop", "REAL")):
+                if _name not in _sample_columns:
+                    conn.execute(f"ALTER TABLE v702_intraday_shadow_samples ADD COLUMN {_name} {_sql}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_status ON v702_intraday_shadow_samples(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_strategy ON v702_intraday_shadow_samples(strategy_mode,status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_symbol ON v702_intraday_shadow_samples(symbol,signal_ts_ms)")
@@ -282,18 +310,18 @@ class V702IntradayShadow:
 
     def _cost_pct(self, entry: float, snapshot: Dict[str, Any]) -> float:
         cfg = self._cfg()
-        # CONFIG expresses fee in percentage points: 0.10 means 0.10% per side.
-        fee_side = max(0.0, _num(cfg.get("TAKER_FEE_PCT"), 0.10) or 0.0)
-        slip_side = max(0.0, _num(cfg.get("V702_INTRADAY_SLIPPAGE_PER_SIDE_PCT"), 0.05) or 0.0)
-        spread_fallback = max(0.0, _num(cfg.get("V702_INTRADAY_SPREAD_FALLBACK_PCT"), 0.15) or 0.0)
-        spread = _num(snapshot.get("spread_pct"), None)
-        if spread is None:
-            ticker = snapshot.get("ticker") if isinstance(snapshot.get("ticker"), dict) else {}
-            bid, ask = _num(ticker.get("bid"), None), _num(ticker.get("ask"), None)
-            if bid and ask and ask >= bid and (ask + bid) > 0:
-                spread = 100.0 * (ask - bid) / ((ask + bid) / 2.0)
-        spread = max(spread_fallback, spread or 0.0)
-        return max(0.0, 2.0 * fee_side + spread + 2.0 * slip_side)
+        local_cfg = dict(cfg)
+        local_cfg["V702_SMALL_NET_SPREAD_FALLBACK_PCT"] = _num(
+            cfg.get("V702_INTRADAY_SPREAD_FALLBACK_PCT"), 0.15
+        )
+        local_cfg["V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT"] = _num(
+            cfg.get("V702_INTRADAY_SLIPPAGE_PER_SIDE_PCT"), 0.05
+        )
+        model = unified_round_trip_cost_model(
+            local_cfg,
+            spread_pct=snapshot.get("spread_pct"),
+        )
+        return max(0.0, float(model.get("round_trip_cost_pct", 0.0)))
 
     def _make_signals_1m(self, rows: Sequence[Dict[str, float]], diagnostics: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
         """Generate the three 1m patterns and report one deterministic reason per engine.
@@ -478,6 +506,157 @@ class V702IntradayShadow:
         signal, _reason = self._make_vwap_rs_signal_detailed(snapshot)
         return signal
 
+    @staticmethod
+    def _efficiency_ratio(rows: Sequence[Dict[str, float]], lookback: int = 10) -> Optional[float]:
+        if lookback < 2 or len(rows) < lookback + 1:
+            return None
+        closes = [float(x["close"]) for x in rows[-(lookback + 1):]]
+        denominator = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+        if denominator <= 0:
+            return 0.0
+        return abs(closes[-1] - closes[0]) / denominator
+
+    @staticmethod
+    def rank_relative_strength(market_data_map: Dict[str, Dict[str, Any]], top_n: int = 10) -> Dict[str, Dict[str, float]]:
+        """Rank scanned symbols by latest closed 4h return relative to BTC/USDT."""
+        if not isinstance(market_data_map, dict) or not market_data_map:
+            return {}
+        btc_rows = None
+        for _snap in market_data_map.values():
+            if isinstance(_snap, dict) and _snap.get("df_btc_4h") is not None:
+                btc_rows = _closed_rows(_snap.get("df_btc_4h"), 14_400_000)
+                if len(btc_rows) >= 2:
+                    break
+        btc_return = _return(btc_rows or [], 1)
+        if btc_return is None:
+            return {}
+        scores = []
+        for symbol, snap in market_data_map.items():
+            try:
+                if not V702IntradayShadow._symbol_allowed(str(symbol)) or not isinstance(snap, dict):
+                    continue
+                rows = _closed_rows(snap.get("df_4h"), 14_400_000)
+                asset_return = _return(rows, 1)
+                if asset_return is None:
+                    continue
+                relative = asset_return - btc_return
+                if math.isfinite(relative):
+                    scores.append((str(symbol).upper(), float(relative)))
+            except Exception:
+                continue
+        scores.sort(key=lambda item: (-item[1], item[0]))
+        limit = max(1, min(50, int(top_n or 10)))
+        return {symbol: {"rank": float(i + 1), "rs_4h": float(score)}
+                for i, (symbol, score) in enumerate(scores[:limit])}
+
+    def _make_adaptive_rs_pullback_signal_detailed(self, snapshot: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
+        """15m trend pullback + 5m resumption, for shadow study only."""
+        rows4 = _closed_rows(snapshot.get("df_4h"), 14_400_000)
+        rows1 = _closed_rows(snapshot.get("df_1h"), 3_600_000)
+        rows15 = _closed_rows(snapshot.get("df_15m"), 900_000)
+        rows5 = _closed_rows(snapshot.get("df_5m"), 300_000)
+        btc4 = _closed_rows(snapshot.get("df_btc_4h"), 14_400_000)
+        if min(len(rows4), len(rows1), len(rows15), len(rows5), len(btc4)) < 55:
+            return None, "closed_mtf_history_insufficient"
+
+        rank_info = snapshot.get("adaptive_rs_rank") if isinstance(snapshot.get("adaptive_rs_rank"), dict) else {}
+        rank = _num(rank_info.get("rank"), None)
+        rs4 = _num(rank_info.get("rs_4h"), None)
+        if rank is None or rank > 10:
+            return None, "relative_strength_not_top_10"
+        if rs4 is None or rs4 < 0.003:
+            return None, "relative_strength_4h_below_0_30_pct"
+
+        btc_closes = [x["close"] for x in btc4]
+        btc_ema20, btc_ema50 = _ema(btc_closes, 20)[-1], _ema(btc_closes, 50)[-1]
+        btc_er = self._efficiency_ratio(btc4, 10)
+        if btc4[-1]["close"] <= btc_ema50 or btc_ema20 <= btc_ema50:
+            return None, "btc_4h_not_bullish_over_ema50"
+        if btc_er is None or btc_er < 0.25:
+            return None, "btc_4h_efficiency_ratio_below_0_25"
+
+        asset_closes = [x["close"] for x in rows1]
+        ema20_1h, ema50_1h = _ema(asset_closes, 20)[-1], _ema(asset_closes, 50)[-1]
+        if rows1[-1]["close"] <= ema50_1h or ema20_1h <= ema50_1h:
+            return None, "asset_1h_trend_not_bullish_over_ema50"
+
+        closes15 = [x["close"] for x in rows15]
+        ema20_15 = _ema(closes15, 20)[-1]
+        atr15 = _atr(rows15, 14)
+        if atr15 is None:
+            return None, "atr_15m_unavailable"
+        pullback_rows = rows15[-5:]
+        pullback_low = min(x["low"] for x in pullback_rows)
+        prior_swing_low = min(x["low"] for x in rows15[-12:-5])
+        if pullback_low <= prior_swing_low:
+            return None, "15m_pullback_broke_prior_swing_low"
+        if pullback_low > ema20_15 + 0.35 * atr15:
+            return None, "15m_pullback_not_near_ema20"
+        if rows15[-1]["close"] < ema20_15 - 0.20 * atr15 or rows15[-1]["close"] <= rows15[-2]["close"]:
+            return None, "15m_pullback_not_reclaiming_ema20"
+
+        atr5 = _atr(rows5, 14)
+        if atr5 is None:
+            return None, "atr_5m_unavailable"
+        b = rows5[-1]
+        reference_high = max(x["high"] for x in rows5[-5:-1])
+        if b["close"] <= reference_high or b["close"] <= b["open"]:
+            return None, "5m_resumption_breakout_not_confirmed"
+        volume_base = statistics.fmean(x["volume"] for x in rows5[-22:-2]) if len(rows5) >= 22 else 0.0
+        volume_ratio = b["volume"] / volume_base if volume_base > 0 else 0.0
+        minimum_volume = max(1.0, _num(self._cfg().get("V702_ADAPTIVE_RS_MIN_VOLUME_RATIO"), 1.10) or 1.10)
+        if volume_ratio < minimum_volume:
+            return None, "5m_volume_ratio_below_floor"
+        chase_atr = (b["close"] - reference_high) / max(atr5, 1e-12)
+        max_chase = max(0.1, _num(self._cfg().get("V702_ADAPTIVE_RS_MAX_CHASE_ATR"), 0.60) or 0.60)
+        if chase_atr > max_chase:
+            return None, "5m_breakout_chase_atr_above_ceiling"
+
+        entry = b["close"]
+        structural_stop = pullback_low - 0.10 * atr15
+        min_stop_distance = 1.50 * atr15
+        stop = min(structural_stop, entry - min_stop_distance)
+        risk = entry - stop
+        risk_pct = 100.0 * risk / max(entry, 1e-12)
+        risk_atr = risk / max(atr15, 1e-12)
+        if stop <= 0 or risk_pct < 0.12 or risk_pct > 2.5 or risk_atr < 1.5 or risk_atr > 3.5:
+            return None, "adaptive_stop_geometry_outside_1_5_to_3_5_atr"
+        target = entry + 1.5 * risk
+        return ({
+            "mode": "ADAPTIVE_RS_PULLBACK_15M", "tf": "5m", "bar": b,
+            "entry": entry, "stop": stop, "target": target, "risk": risk,
+            "atr": atr15,
+            "features": {
+                "rank_4h": rank, "rs_4h": rs4, "btc_4h_efficiency_ratio": btc_er,
+                "btc_4h_close": btc4[-1]["close"], "btc_4h_ema50": btc_ema50,
+                "asset_1h_ema20": ema20_1h, "asset_1h_ema50": ema50_1h,
+                "asset_15m_ema20": ema20_15, "pullback_low": pullback_low,
+                "prior_swing_low": prior_swing_low, "atr_15m": atr15,
+                "risk_atr_15m": risk_atr, "volume_ratio_5m": volume_ratio,
+                "chase_atr_5m": chase_atr, "target_rr": 1.5,
+                "exit_policy": "50_PERCENT_AT_1_5R_THEN_CONFIRMED_15M_SWING_TRAIL",
+                "experiment": "SHADOW_ONLY_NO_ORDERS",
+            },
+        }, "signal")
+
+    def _make_adaptive_rs_pullback_signal(self, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        signal, _reason = self._make_adaptive_rs_pullback_signal_detailed(snapshot)
+        return signal
+
+    @staticmethod
+    def _confirmed_15m_trailing_stops(rows15: Sequence[Dict[str, float]]) -> List[Tuple[int, float]]:
+        """Return confirmed 15m swing-low stops; each only becomes known after its right bar closes."""
+        out: List[Tuple[int, float]] = []
+        for i in range(2, len(rows15)):
+            pivot = rows15[i - 1]
+            if pivot["low"] < rows15[i - 2]["low"] and pivot["low"] <= rows15[i]["low"]:
+                atr = _atr(rows15[:i + 1], 14)
+                if atr and atr > 0:
+                    stop = float(pivot["low"]) - 0.10 * float(atr)
+                    if stop > 0:
+                        out.append((int(rows15[i]["close_ts"]), stop))
+        return out
+
     def _record_evaluations(self, symbol: str, evaluations: Sequence[Dict[str, Any]]) -> int:
         """Persist one deduplicated evaluation per closed strategy bar."""
         if not evaluations:
@@ -512,43 +691,73 @@ class V702IntradayShadow:
     def _record_signal(self, symbol: str, signal: Dict[str, Any], snapshot: Dict[str, Any]) -> bool:
         entry, stop, _initial_target, risk = (float(signal[k]) for k in ("entry", "stop", "target", "risk"))
         risk_pct = 100.0 * risk / entry
-        cost_pct = self._cost_pct(entry, snapshot)
         cfg = self._cfg()
+        mode = str(signal.get("mode", ""))
+        adaptive = mode == "ADAPTIVE_RS_PULLBACK_15M"
+        cost_pct = self._cost_pct(entry, snapshot)
         fee_side = max(0.0, _num(cfg.get("TAKER_FEE_PCT"), 0.10) or 0.0)
+        slip_side = max(0.0, _num(cfg.get("V702_INTRADAY_SLIPPAGE_PER_SIDE_PCT"), 0.05) or 0.0)
+        spread = _num(snapshot.get("spread_pct"), None)
+        if spread is None:
+            spread = max(0.0, _num(cfg.get("V702_INTRADAY_SPREAD_FALLBACK_PCT"), 0.15) or 0.0)
+        # One full-size round trip already prices 100% of the exited quantity.
+        # Splitting that exit into 50% + 50% does not double the proportional
+        # exchange fee or spread; do not charge an artificial second half-roundtrip.
+        extra_partial_exit_cost = 0.0
         desired_net_pct = max(0.0, _num(cfg.get("V702_INTRADAY_MIN_NET_PROFIT_PCT"), 0.10) or 0.0)
         minimum_net_rr = max(0.0, _num(cfg.get("V702_INTRADAY_MIN_NET_RR"), 0.25) or 0.0)
         fee_coverage = max(1.0, _num(cfg.get("V702_INTRADAY_TP1_FEE_COVERAGE"), 2.5) or 2.5)
         target_rr_cap = max(1.0, min(5.0, _num(cfg.get("V702_INTRADAY_MAX_TARGET_RR"), 3.0) or 3.0))
         target_buffer_rr = max(0.0, _num(cfg.get("V702_INTRADAY_TARGET_BUFFER_R"), 0.03) or 0.0)
-        required_rr = max(1.0, (cost_pct + desired_net_pct) / max(risk_pct, 1e-12),
-                          cost_pct / max(risk_pct, 1e-12) + minimum_net_rr,
-                          fee_coverage * (2.0 * fee_side) / max(risk_pct, 1e-12))
-        target_rr = min(target_rr_cap, required_rr + target_buffer_rr)
-        target = entry + risk * target_rr
-        target_net_pct = 100.0 * (target - entry) / max(entry, 1e-12) - cost_pct
-        target_net_r = target_rr - cost_pct / max(risk_pct, 1e-12)
-        post_cost_viable = bool(
-            required_rr + target_buffer_rr <= target_rr_cap + 1e-9
-            and target_net_pct + 1e-9 >= desired_net_pct
-            and target_net_r + 1e-9 >= minimum_net_rr
-        )
+        if adaptive:
+            target_rr = 1.5
+            # The 50% TP1 cash-out must itself cover the configured net floor and
+            # multiple of estimated round-trip fees; runner upside is not assumed.
+            partial_gross_pct = 0.5 * target_rr * risk_pct
+            fee_roundtrip_pct = 2.0 * fee_side
+            target_net_pct = partial_gross_pct - cost_pct
+            target_net_r = 0.5 * target_rr - cost_pct / max(risk_pct, 1e-12)
+            required_partial_cost_coverage = fee_coverage * fee_roundtrip_pct
+            post_cost_viable = bool(
+                partial_gross_pct + 1e-9 >= desired_net_pct + required_partial_cost_coverage
+                and target_net_pct + 1e-9 >= desired_net_pct
+                and target_net_r + 1e-9 >= minimum_net_rr
+            )
+            target = entry + risk * target_rr
+            required_rr = target_rr
+        else:
+            required_rr = max(1.0, (cost_pct + desired_net_pct) / max(risk_pct, 1e-12),
+                              cost_pct / max(risk_pct, 1e-12) + minimum_net_rr,
+                              fee_coverage * (2.0 * fee_side) / max(risk_pct, 1e-12))
+            target_rr = min(target_rr_cap, required_rr + target_buffer_rr)
+            target = entry + risk * target_rr
+            target_net_pct = 100.0 * (target - entry) / max(entry, 1e-12) - cost_pct
+            target_net_r = target_rr - cost_pct / max(risk_pct, 1e-12)
+            post_cost_viable = bool(
+                required_rr + target_buffer_rr <= target_rr_cap + 1e-9
+                and target_net_pct + 1e-9 >= desired_net_pct
+                and target_net_r + 1e-9 >= minimum_net_rr
+            )
         bar = signal["bar"]
         signal_close_ms = int(float(bar["close_ts"]))
-        mode = str(signal["mode"])
         material = f"{symbol}|{mode}|{signal_close_ms}"
         sample_id = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
         qv = _num(snapshot.get("quote_vol_24h"), None)
         tier = str(snapshot.get("tier") or "")[:24]
         features = dict(signal.get("features") or {})
-        features.update({"entry":entry,"stop":stop,"target":target,"risk_pct":risk_pct,"cost_pct":cost_pct,
-                         "target_rr":target_rr,"required_target_rr_before_cap":required_rr,
-                         "target_rr_capped_for_research":bool(required_rr + target_buffer_rr > target_rr_cap),
-                         "minimum_net_profit_pct_target":desired_net_pct,
-                         "target_net_pct_after_costs":target_net_pct,"target_net_r_after_costs":target_net_r,
-                         "post_cost_target_viable":post_cost_viable,
-                         "quote_volume_24h":qv,"macro_regime":snapshot.get("macro_regime"),
-                         "experiment":"SHADOW_ONLY_NO_ORDERS","higher_timeframe_bullish_required":False,
-                         "crash_guard":"BTC_5M_15MIN_SHOCK_ONLY"})
+        features.update({
+            "entry":entry,"stop":stop,"target":target,"risk_pct":risk_pct,"cost_pct":cost_pct,
+            "target_rr":target_rr,"required_target_rr_before_cap":required_rr,
+            "target_rr_capped_for_research":bool(not adaptive and required_rr + target_buffer_rr > target_rr_cap),
+            "minimum_net_profit_pct_target":desired_net_pct,
+            "target_net_pct_after_costs":target_net_pct,"target_net_r_after_costs":target_net_r,
+            "post_cost_target_viable":post_cost_viable,
+            "partial_tp1_extra_exit_cost_pct":extra_partial_exit_cost,
+            "quote_volume_24h":qv,"macro_regime":snapshot.get("macro_regime"),
+            "experiment":"SHADOW_ONLY_NO_ORDERS",
+            "higher_timeframe_bullish_required":bool(adaptive),
+            "crash_guard":"BTC_5M_15MIN_SHOCK_ONLY",
+        })
         try:
             with self._db() as conn:
                 cur = conn.execute("""INSERT OR IGNORE INTO v702_intraday_shadow_samples
@@ -556,7 +765,8 @@ class V702IntradayShadow:
                      last_candle_ts_ms,bars_seen,status,cost_pct,quote_volume_24h,tier,features_json,note)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (sample_id,symbol,mode,signal["tf"],signal_close_ms,time.time(),entry,stop,target,risk,risk_pct,
-                     signal_close_ms - 60_000,0,"PENDING",cost_pct,qv,tier,_json(features),"virtual_entry_at_closed_signal_bar"))
+                     signal_close_ms - 60_000,0,"PENDING",cost_pct,qv,tier,_json(features),
+                     "virtual_entry_at_closed_signal_bar;adaptive_partial_exit" if adaptive else "virtual_entry_at_closed_signal_bar"))
                 inserted = cur.rowcount > 0
                 max_rows = int(max(1000, min(200000, _num(self._cfg().get("V702_INTRADAY_SHADOW_MAX_ROWS"), 50000) or 50000)))
                 if inserted:
@@ -567,35 +777,73 @@ class V702IntradayShadow:
         except Exception:
             return False
 
-    def _update_pending(self, symbol: str, closed_1m_rows: Sequence[Dict[str, float]]) -> int:
+    def _update_pending(
+        self,
+        symbol: str,
+        closed_1m_rows: Sequence[Dict[str, float]],
+        closed_15m_rows: Sequence[Dict[str, float]] = (),
+    ) -> int:
         cfg = self._cfg()
         max_bars = int(max(5, min(120, _num(cfg.get("V702_INTRADAY_SHADOW_MAX_HOLD_BARS"), 30) or 30)))
+        trailing_stops = self._confirmed_15m_trailing_stops(closed_15m_rows or ())
         updated = 0
         try:
             with self._db() as conn:
-                pending = conn.execute("""SELECT sample_id,entry,stop,target,risk_unit,risk_pct,last_candle_ts_ms,bars_seen,cost_pct,signal_ts_ms
+                pending = conn.execute("""SELECT sample_id,strategy_mode,entry,stop,target,risk_unit,risk_pct,
+                    last_candle_ts_ms,bars_seen,cost_pct,signal_ts_ms,tp1_hit,partial_realized_r,trailing_stop
                     FROM v702_intraday_shadow_samples WHERE symbol=? AND status='PENDING' ORDER BY signal_ts_ms ASC""", (symbol,)).fetchall()
                 for rec in pending:
-                    sid, entry, stop, target, risk, risk_pct, last_ts, bars_seen, cost_pct, signal_ts = rec
+                    (sid, strategy_mode, entry, stop, target, risk, risk_pct, last_ts, bars_seen,
+                     cost_pct, signal_ts, tp1_hit, partial_realized_r, trailing_stop) = rec
+                    adaptive = str(strategy_mode) == "ADAPTIVE_RS_PULLBACK_15M"
                     state = None
                     exit_price = gross_r = net_r = net_pct = None
                     last_seen = int(last_ts or 0)
                     count = int(bars_seen or 0)
+                    has_partial = bool(tp1_hit) if adaptive else False
+                    partial_r = float(partial_realized_r or 0.0) if has_partial else 0.0
+                    current_trail = _num(trailing_stop, None)
                     for bar in closed_1m_rows:
                         bar_ts = int(bar["ts"])
-                        if bar_ts < int(signal_ts) or bar_ts <= last_seen: continue
+                        if bar_ts < int(signal_ts) or bar_ts <= last_seen:
+                            continue
                         last_seen = bar_ts
                         count += 1
-                        hit_sl = float(bar["low"]) <= float(stop)
+                        # Only a swing low confirmed before this 1m bar can protect it.
+                        if adaptive and has_partial:
+                            usable = [level for confirm_ts, level in trailing_stops if int(signal_ts) < confirm_ts <= bar_ts]
+                            if usable:
+                                current_trail = max(float(stop), float(current_trail or stop), max(usable))
+                        active_stop = max(float(stop), float(current_trail or stop)) if adaptive and has_partial else float(stop)
+                        hit_sl = float(bar["low"]) <= active_stop
                         hit_tp = float(bar["high"]) >= float(target)
-                        if hit_sl:  # conservative SL-first, including same-candle touch
-                            state, exit_price, gross_r = "SL", float(stop), -1.0
-                            break
-                        if hit_tp:
-                            state, exit_price = "TP1", float(target)
-                            gross_r = (float(target) - float(entry)) / max(float(risk), 1e-12)
-                            break
-                        if count >= max_bars:
+                        if not has_partial:
+                            if hit_sl:  # conservative SL-first, including same-candle touch
+                                state, exit_price, gross_r = "SL", active_stop, -1.0
+                                break
+                            if hit_tp:
+                                if adaptive:
+                                    has_partial = True
+                                    partial_r = 0.5 * ((float(target) - float(entry)) / max(float(risk), 1e-12))
+                                    current_trail = max(float(stop), float(current_trail or stop))
+                                    if count >= max_bars:
+                                        state, exit_price = "TIMEOUT", float(bar["close"])
+                                        gross_r = partial_r + 0.5 * ((exit_price - float(entry)) / max(float(risk), 1e-12))
+                                        break
+                                    continue
+                                state, exit_price = "TP1", float(target)
+                                gross_r = (float(target) - float(entry)) / max(float(risk), 1e-12)
+                                break
+                        else:
+                            if hit_sl:
+                                state, exit_price = "TRAILING_EXIT", active_stop
+                                gross_r = partial_r + 0.5 * ((float(exit_price) - float(entry)) / max(float(risk), 1e-12))
+                                break
+                            if count >= max_bars:
+                                state, exit_price = "TIMEOUT", float(bar["close"])
+                                gross_r = partial_r + 0.5 * ((exit_price - float(entry)) / max(float(risk), 1e-12))
+                                break
+                        if not adaptive and count >= max_bars:
                             state, exit_price = "TIMEOUT", float(bar["close"])
                             gross_r = (exit_price - float(entry)) / max(float(risk), 1e-12)
                             break
@@ -603,12 +851,19 @@ class V702IntradayShadow:
                         cost_r = float(cost_pct) / max(float(risk_pct), 1e-12)
                         net_r = float(gross_r) - cost_r
                         net_pct = net_r * float(risk_pct)
-                        conn.execute("""UPDATE v702_intraday_shadow_samples SET last_candle_ts_ms=?,bars_seen=?,status=?,exit_price=?,gross_r=?,net_r=?,net_pct=?,resolved_ts=?,note=? WHERE sample_id=? AND status='PENDING'""",
-                            (last_seen,count,state,exit_price,gross_r,net_r,net_pct,time.time(),"SL_FIRST_IF_AMBIGUOUS;ROUNDTRIP_COST_DEDUCTED",sid))
+                        conn.execute("""UPDATE v702_intraday_shadow_samples
+                            SET last_candle_ts_ms=?,bars_seen=?,status=?,exit_price=?,gross_r=?,net_r=?,net_pct=?,
+                                resolved_ts=?,note=?,tp1_hit=?,partial_realized_r=?,trailing_stop=?
+                            WHERE sample_id=? AND status='PENDING'""",
+                            (last_seen,count,state,exit_price,gross_r,net_r,net_pct,time.time(),
+                             "SL_FIRST_IF_AMBIGUOUS;UNIFIED_ROUNDTRIP_COST_DEDUCTED" + (";50PCT_TP1_1_5R_TRAIL_15M" if adaptive and has_partial else ""),
+                             1 if has_partial else 0,partial_r,current_trail,sid))
                         updated += 1
                     else:
-                        conn.execute("UPDATE v702_intraday_shadow_samples SET last_candle_ts_ms=?,bars_seen=? WHERE sample_id=? AND status='PENDING'",
-                                     (last_seen,count,sid))
+                        conn.execute("""UPDATE v702_intraday_shadow_samples
+                            SET last_candle_ts_ms=?,bars_seen=?,tp1_hit=?,partial_realized_r=?,trailing_stop=?
+                            WHERE sample_id=? AND status='PENDING'""",
+                            (last_seen,count,1 if has_partial else 0,partial_r,current_trail,sid))
         except Exception:
             return updated
         return updated
@@ -634,7 +889,7 @@ class V702IntradayShadow:
             base_5m_ts = int(rows5[-1]["close_ts"]) if rows5 else (ts_now_ms // 300_000) * 300_000
             items = []
             for mode in STRATEGIES:
-                tf = "5m" if mode == "VWAP_RECLAIM_RS_5M" else "1m"
+                tf = "5m" if mode in {"VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"} else "1m"
                 items.append({"strategy_mode":mode,"timeframe":tf,"bar_ts_ms":base_5m_ts if tf=="5m" else base_1m_ts,
                               "outcome":"SKIP","reason":reason,"quote_volume_24h":qv})
             result["evaluations"] = self._record_evaluations(symbol, items)
@@ -649,7 +904,8 @@ class V702IntradayShadow:
             result["pending"] = self._count_pending(symbol)
             return result
 
-        result["resolved"] = self._update_pending(symbol, rows)
+        rows15 = _closed_rows(snapshot.get("df_15m"), 900_000)
+        result["resolved"] = self._update_pending(symbol, rows, rows15)
         blocked, block_reason = self._crash_guard(snapshot)
         evals: List[Dict[str, Any]] = []
         signals: List[Dict[str, Any]] = []
@@ -660,7 +916,7 @@ class V702IntradayShadow:
 
         if blocked:
             for mode in STRATEGIES:
-                tf = "5m" if mode == "VWAP_RECLAIM_RS_5M" else "1m"
+                tf = "5m" if mode in {"VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"} else "1m"
                 evals.append({"strategy_mode":mode,"timeframe":tf,"bar_ts_ms":bar_5m if tf=="5m" else bar_1m,
                               "outcome":"BLOCKED","reason":str(block_reason or "btc_15m_crash_guard"),"quote_volume_24h":qv})
         else:
@@ -670,10 +926,14 @@ class V702IntradayShadow:
             if vwap_signal:
                 signals.append(vwap_signal)
             diag["VWAP_RECLAIM_RS_5M"] = vwap_reason
+            adaptive_signal, adaptive_reason = self._make_adaptive_rs_pullback_signal_detailed(snapshot)
+            if adaptive_signal:
+                signals.append(adaptive_signal)
+            diag["ADAPTIVE_RS_PULLBACK_15M"] = adaptive_reason
             signal_by_mode = {str(x.get("mode")):x for x in signals}
             for mode in STRATEGIES:
                 sig = signal_by_mode.get(mode)
-                tf = "5m" if mode == "VWAP_RECLAIM_RS_5M" else "1m"
+                tf = "5m" if mode in {"VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"} else "1m"
                 bar_ts = bar_5m if tf == "5m" else bar_1m
                 if sig:
                     cost_pct = self._cost_pct(float(sig["entry"]), snapshot)
@@ -684,13 +944,29 @@ class V702IntradayShadow:
                     fee_coverage = max(1.0, _num(cfg.get("V702_INTRADAY_TP1_FEE_COVERAGE"), 2.5) or 2.5)
                     cap = max(1.0, min(5.0, _num(cfg.get("V702_INTRADAY_MAX_TARGET_RR"), 3.0) or 3.0))
                     buffer = max(0.0, _num(cfg.get("V702_INTRADAY_TARGET_BUFFER_R"), 0.03) or 0.0)
-                    required_rr = max(1.0, (cost_pct + desired_net_pct) / max(risk_pct, 1e-12),
-                                      cost_pct / max(risk_pct, 1e-12) + min_net_rr,
-                                      fee_coverage * (2.0 * fee_side) / max(risk_pct, 1e-12))
-                    target_rr = min(cap, required_rr + buffer)
-                    target_net_pct = 100.0 * float(sig["risk"]) * target_rr / max(float(sig["entry"]), 1e-12) - cost_pct
-                    target_net_r = target_rr - cost_pct / max(risk_pct, 1e-12)
-                    viable = bool(required_rr + buffer <= cap + 1e-9 and target_net_pct + 1e-9 >= desired_net_pct and target_net_r + 1e-9 >= min_net_rr)
+                    if mode == "ADAPTIVE_RS_PULLBACK_15M":
+                        target_rr = 1.5
+                        # cost_pct is one complete entry + 100%-exit round trip.
+                        # The 50/50 exit split changes execution timing, not the
+                        # total proportional fee/spread basis.
+                        total_cost = cost_pct
+                        partial_gross_pct = 0.5 * target_rr * risk_pct
+                        target_net_pct = partial_gross_pct - total_cost
+                        target_net_r = 0.5 * target_rr - total_cost / max(risk_pct, 1e-12)
+                        viable = bool(
+                            partial_gross_pct + 1e-9 >= desired_net_pct + fee_coverage * 2.0 * fee_side
+                            and target_net_pct + 1e-9 >= desired_net_pct
+                            and target_net_r + 1e-9 >= min_net_rr
+                        )
+                        required_rr = target_rr
+                    else:
+                        required_rr = max(1.0, (cost_pct + desired_net_pct) / max(risk_pct, 1e-12),
+                                          cost_pct / max(risk_pct, 1e-12) + min_net_rr,
+                                          fee_coverage * (2.0 * fee_side) / max(risk_pct, 1e-12))
+                        target_rr = min(cap, required_rr + buffer)
+                        target_net_pct = 100.0 * float(sig["risk"]) * target_rr / max(float(sig["entry"]), 1e-12) - cost_pct
+                        target_net_r = target_rr - cost_pct / max(risk_pct, 1e-12)
+                        viable = bool(required_rr + buffer <= cap + 1e-9 and target_net_pct + 1e-9 >= desired_net_pct and target_net_r + 1e-9 >= min_net_rr)
                     features = dict(sig.get("features") or {})
                     features.update({"cost_pct":cost_pct,"target_net_pct_after_costs":target_net_pct,
                                      "target_net_r_after_costs":target_net_r,"required_target_rr_before_cap":required_rr,
@@ -757,7 +1033,7 @@ class V702IntradayShadow:
         report: Dict[str, Any] = {"schema_version":SCHEMA_VERSION,"mode":"SHADOW_ONLY_NO_ORDERS","generated_at_epoch":time.time(),"live_execution":False,"db_path":_db_resolved,"db_bytes":_db_size,"report_dir":_report_dir_resolved,"strategies":{},"totals":{}}
         try:
             with self._db() as conn:
-                sample_rows = conn.execute("SELECT strategy_mode,status,net_r,net_pct,gross_r,created_ts,resolved_ts,note,cost_pct,features_json FROM v702_intraday_shadow_samples ORDER BY created_ts ASC").fetchall()
+                sample_rows = conn.execute("SELECT strategy_mode,status,net_r,net_pct,gross_r,created_ts,resolved_ts,note,cost_pct,features_json,tp1_hit FROM v702_intraday_shadow_samples ORDER BY created_ts ASC").fetchall()
                 eval_rows = conn.execute("SELECT strategy_mode,outcome,reason,cost_pct,post_cost_viable,quote_volume_24h,features_json FROM v702_intraday_shadow_evaluations ORDER BY evaluated_ts ASC").fetchall()
                 pending = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples WHERE status='PENDING'").fetchone()[0])
                 total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
@@ -765,7 +1041,7 @@ class V702IntradayShadow:
             for mode in STRATEGIES:
                 subset = [r for r in sample_rows if r[0] == mode]
                 evaluations = [r for r in eval_rows if r[0] == mode]
-                resolved = [r for r in subset if r[1] in {"TP1","SL","TIMEOUT"} and r[2] is not None]
+                resolved = [r for r in subset if r[1] in {"TP1","SL","TIMEOUT","TRAILING_EXIT"} and r[2] is not None]
                 nets = [float(r[2]) for r in resolved]
                 pos = sum(v for v in nets if v > 0)
                 neg = -sum(v for v in nets if v < 0)
@@ -799,7 +1075,7 @@ class V702IntradayShadow:
                     "avg_net_pct":statistics.fmean(float(r[3]) for r in resolved if r[3] is not None) if any(r[3] is not None for r in resolved) else None,
                     "profit_factor_net_r":(pos/neg) if neg>0 else (None if pos==0 else "INF_NO_LOSSES"),
                     "max_drawdown_r":max_dd,
-                    "outcomes":{"TP1":sum(r[1]=="TP1" for r in subset),"SL":sum(r[1]=="SL" for r in subset),"TIMEOUT":sum(r[1]=="TIMEOUT" for r in subset)},
+                    "outcomes":{"TP1":sum(r[1]=="TP1" for r in subset),"SL":sum(r[1]=="SL" for r in subset),"TIMEOUT":sum(r[1]=="TIMEOUT" for r in subset),"TRAILING_EXIT":sum(r[1]=="TRAILING_EXIT" for r in subset),"partial_tp1_hits":sum(1 for r in subset if bool(r[10]))},
                     "sample_quality":"TOO_SMALL" if len(resolved)<30 else ("PRELIMINARY" if len(resolved)<100 else "NEEDS_OUT_OF_SAMPLE_VALIDATION"),
                 }
             report["totals"]={"samples":total,"pending":pending,"resolved":sum(v["resolved"] for v in report["strategies"].values()),
@@ -817,9 +1093,9 @@ class V702IntradayShadow:
             report["report_files"] = {"json":str(jp.resolve()), "markdown":str(mp.resolve())}
             jp.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
             lines = ["# V702 A9 Intraday Shadow Study", "", "**Mode: SHADOW ONLY. No live orders are generated or submitted.**", "",
-                     "Signals: 1m micro-momentum, 1m sweep-reclaim, 1m local pullback-reclaim, and 5m UTC-session VWAP reclaim + relative strength.",
-                     "Costs deduct two-sided fee, estimated full spread (using a conservative fallback when not measured), and two-sided slippage.",
-                     "Same-candle SL/TP ambiguity resolves as SL first. Higher timeframe bullish trend is not required; BTC shock guard remains active.", "",
+                     "Signals: 1m micro-momentum, 1m sweep-reclaim, 1m local pullback-reclaim, 5m UTC-session VWAP reclaim + relative strength, and shadow-only 15m Adaptive RS Pullback with 5m resumption.",
+                     "Costs use the shared measured all-in book/VWAP + symbol fee model with a 0.05% measurement buffer; without measurement, use observed/fallback spread + two-sided slippage + conservative fee estimate.",
+                     "Same-candle SL/TP ambiguity resolves as SL first. The Adaptive RS lane requires BTC and asset higher-timeframe alignment; earlier micro lanes retain their original regime rules.", "",
                      "| Strategy | Evals | Signals | Rejects | Samples | Resolved | Pending | Net win rate | Avg net R | PF net R | Max DD R | Quality |",
                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
             def f(x):
@@ -865,7 +1141,7 @@ class V702IntradayShadow:
             report = self.report()
             checks = {
                 "schema_present": {"sample_id","strategy_mode","signal_ts_ms","entry","stop","target","net_r","status"}.issubset(cols),
-                "four_strategies_reported": all(x in report.get("strategies",{}) for x in STRATEGIES),
+                "all_shadow_strategies_reported": all(x in report.get("strategies",{}) for x in STRATEGIES),
                 "shadow_only": report.get("mode")=="SHADOW_ONLY_NO_ORDERS" and report.get("live_execution") is False,
                 "no_execution_api_in_module": not any(
                     isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)

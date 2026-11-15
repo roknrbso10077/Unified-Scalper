@@ -177,7 +177,7 @@ class SRPipelineIntegration(unittest.TestCase):
         # kill-switch and submit route still execute. The fake exchange has no network.
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(bot.KillSwitch, "is_active", return_value=False))
-            stack.enter_context(patch.dict(bot.CONFIG, {"MAKER_FIRST_ENTRY_ENABLE": False}))
+            stack.enter_context(patch.dict(bot.CONFIG, {"MAKER_FIRST_ENTRY_ENABLE": False, "V702_LIVE_PILOT_ENABLE": True}))
             stack.enter_context(patch.object(bot, "_v626_execution_balance_preflight", new=AsyncMock(return_value=(True, "offline_test_ok"))))
             stack.enter_context(patch.object(bot, "_v553_reconcile_buy_fill", new=AsyncMock(return_value=(None, levels["entry"], {"id":"SIMULATED_ONLY"}))))
             # Explicitly authorize the *offline capture test only*. Production defaults

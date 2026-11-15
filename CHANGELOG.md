@@ -2352,3 +2352,14 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 #     (11.47 sec, 532,020 KiB peak RSS; bot_started=false by design).
 #   * Docker engine and live MEXC/Telegram integrations were unavailable in
 #     this audit environment and remain unverified; no live orders were sent.
+
+
+# V702 A65 — Adaptive RS / unified cost / closed-candle closure (2026-11-15)
+
+- Added the Shadow-only Adaptive Relative-Strength Pullback lane (4H relative rank vs BTC, BTC/asset trend context, 15M structural pullback, 5M resumption/volume confirmation, 1.5R TP1 and confirmed post-entry 15M pivot trail).
+- Unified production Shadow PreSend, Counterfactual Shadow and Intraday Shadow round-trip cost semantics. A valid measured all-in cost supersedes fallback and receives only the configured 0.05 percentage-point buffer; unavailable measurement uses conservative spread/fee/two-sided-slippage fallback.
+- Replaced blind last-row deletion with candle-close-time validation; added schema migration and tests for partial exit and post-entry trail pivot handling.
+- Fixed live-mode refresh to read the current guarded CONFIG rather than a stale pre-wrapper reference; live-pilot default remains false.
+- Kept Spot LONG_ONLY, existing gates, Edge/Builder requirements, two-slot limit, −2R daily stop, six-trade daily cap, and the 75 USDT upper notional cap.
+- Did not claim backtest or profitability because no historical OHLCV/order-book/fill dataset was supplied. Did not enable MEXC native OCO, futures/shorts, or a persistent Telegram Outbox without target-environment integration evidence.
+- Production decision remains NO_GO_UNATTENDED_LIVE.

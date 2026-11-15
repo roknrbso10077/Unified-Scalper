@@ -35,7 +35,8 @@ COPY LIVE_RELEASE_ENV.example /app/LIVE_RELEASE_ENV.example
 COPY v702_core__policy__family_policy.py v702_core__policy__forbidden_assets.py \
      v702_core__storage__sqlite_writer.py v702_core__scoring__floor_policy.py \
      v702_core__pipeline__event_time_buckets.py v702_core__pipeline__rejection.py \
-     v702_core__execution__handoff.py v702_core__telegram__funnel.py /app/
+     v702_core__execution__handoff.py v702_core__execution__cost_model.py \
+     v702_core__telegram__funnel.py /app/
 
 RUN python -m py_compile /app/main.py /app/production_guardrails.py \
         /app/v702_counterfactual_shadow.py /app/v702_intraday_shadow.py \
@@ -45,7 +46,8 @@ RUN python -m py_compile /app/main.py /app/production_guardrails.py \
         /app/v702_core__scoring__floor_policy.py \
         /app/v702_core__pipeline__event_time_buckets.py \
         /app/v702_core__pipeline__rejection.py \
-        /app/v702_core__execution__handoff.py /app/v702_core__telegram__funnel.py && \
+        /app/v702_core__execution__handoff.py /app/v702_core__execution__cost_model.py \
+        /app/v702_core__telegram__funnel.py && \
     useradd --create-home --uid 10001 appuser && \
     mkdir -p /data && \
     chown -R appuser:appuser /app /data

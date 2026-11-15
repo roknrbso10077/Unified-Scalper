@@ -762,7 +762,7 @@ def install(ns: Dict[str, Any]) -> None:
     # The package configuration alone never arms live entries. A55/A56 still
     # require both explicit environment keys and all canonical hard gates.
     # The environment OFF value remains an independent emergency switch.
-    cfg.setdefault("V702_LIVE_PILOT_ENABLE", True)
+    cfg.setdefault("V702_LIVE_PILOT_ENABLE", False)
     cfg.setdefault("V702_A19_DIAGNOSTIC_ONLY_DEFAULT", False)
     ns["V702_A19_DIAGNOSTIC_ONLY_DEFAULT"] = False
     shadow = V702ExpansionShadow(ns)
@@ -772,23 +772,28 @@ def install(ns: Dict[str, Any]) -> None:
     ns["_V702_R39_RECORD_PREQUAL"] = shadow.record_prequal
 
     def _refresh_mode() -> bool:
+        # CONFIG is wrapped by the later A44 immutable-risk layer after this
+        # guard installs. Resolve it at call time rather than capturing the
+        # pre-wrapper dict: otherwise an explicit operator pilot override can
+        # be read from a stale object and never reach this authorization gate.
+        runtime_cfg = ns.get("CONFIG") if isinstance(ns.get("CONFIG"), dict) else cfg
         env = ns.get("ENV", {})
         forbidden_set = set(ns.get("V702_HARD_FORBIDDEN_BASES", ()) or ())
-        invariants_ok = bool(cfg.get("ENABLE_LIVE_TRADING", True)) and not bool(cfg.get("PAPER_TRADING_MODE", False)) \
-            and bool(cfg.get("LONG_ONLY", True)) and str(cfg.get("MARKET_TYPE", "SPOT")).upper() == "SPOT" \
-            and str(cfg.get("TRADING_SIDE", "LONG")).upper() == "LONG" \
-            and not bool(cfg.get("FUTURES_ENABLED", False)) and not bool(cfg.get("ENABLE_FUTURES", False)) \
-            and not bool(cfg.get("ALLOW_SHORT", False)) and not bool(cfg.get("ALLOW_SHORTS", False)) \
-            and bool(cfg.get("POSITION_MANAGER_TASK_ENABLE", True)) \
-            and bool(cfg.get("V702_PORTFOLIO_DRAWDOWN_GUARD_ENABLE", True)) \
-            and int(cfg.get("MAX_CONCURRENT_TRADES", 2) or 0) in (1, 2) \
-            and float(cfg.get("MIN_LIVE_SCORE", 70.0) or 0.0) >= 70.0 \
-            and float(cfg.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0) or 0.0) >= 3_000_000.0 \
+        invariants_ok = bool(runtime_cfg.get("ENABLE_LIVE_TRADING", True)) and not bool(runtime_cfg.get("PAPER_TRADING_MODE", False)) \
+            and bool(runtime_cfg.get("LONG_ONLY", True)) and str(runtime_cfg.get("MARKET_TYPE", "SPOT")).upper() == "SPOT" \
+            and str(runtime_cfg.get("TRADING_SIDE", "LONG")).upper() == "LONG" \
+            and not bool(runtime_cfg.get("FUTURES_ENABLED", False)) and not bool(runtime_cfg.get("ENABLE_FUTURES", False)) \
+            and not bool(runtime_cfg.get("ALLOW_SHORT", False)) and not bool(runtime_cfg.get("ALLOW_SHORTS", False)) \
+            and bool(runtime_cfg.get("POSITION_MANAGER_TASK_ENABLE", True)) \
+            and bool(runtime_cfg.get("V702_PORTFOLIO_DRAWDOWN_GUARD_ENABLE", True)) \
+            and int(runtime_cfg.get("MAX_CONCURRENT_TRADES", 2) or 0) in (1, 2) \
+            and float(runtime_cfg.get("MIN_LIVE_SCORE", 70.0) or 0.0) >= 70.0 \
+            and float(runtime_cfg.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0) or 0.0) >= 3_000_000.0 \
             and forbidden_set.issuperset(HARD_FORBIDDEN_BASES) \
-            and ("V702_R38_HARD_GATE_BYPASS" not in cfg or cfg.get("V702_R38_HARD_GATE_BYPASS") is False)
+            and ("V702_R38_HARD_GATE_BYPASS" not in runtime_cfg or runtime_cfg.get("V702_R38_HARD_GATE_BYPASS") is False)
         control = os.environ.get("UNIFIED_LIVE_PILOT_ENABLE", "").strip().lower()
         forced_off = control in {"0", "false", "no", "off", "disabled"}
-        pilot_enabled = bool(cfg.get("V702_LIVE_PILOT_ENABLE", True))
+        pilot_enabled = bool(runtime_cfg.get("V702_LIVE_PILOT_ENABLE", False))
         token_opt_in = os.environ.get(LIVE_OPT_IN_ENV, "").strip() == LIVE_OPT_IN_TOKEN
         # A55/A56 have one authorization authority: the runtime helper that
         # verifies BOTH operator keys, live state, KillSwitch, entry block and
@@ -799,7 +804,7 @@ def install(ns: Dict[str, Any]) -> None:
         explicit = (not forced_off) and pilot_enabled and operator_armed
         credentials = bool(env.get("MEXC_API_KEY") and env.get("MEXC_API_SECRET"))
         live_enabled = explicit and credentials and invariants_ok
-        cfg["V702_MONITOR_ONLY_MODE"] = not live_enabled
+        runtime_cfg["V702_MONITOR_ONLY_MODE"] = not live_enabled
         if live_enabled:
             policy = "USER_REQUESTED_LIVE_PILOT"
         else:
@@ -925,7 +930,7 @@ def install(ns: Dict[str, Any]) -> None:
             if log:
                 log.warning("[V702-R39-SAFETY] entry_policy=%s; LIVE BUY/API entry calls=%s; configured_live_pilot=%s forced_off=%s credentials=%s invariants=%s; exchange data, Telegram, and existing-position protection/exit management may continue",
                            stats.get("v702_runtime_entry_policy"), "BLOCKED" if monitor_only else "enabled after portfolio drawdown guard",
-                           bool(cfg.get("V702_LIVE_PILOT_ENABLE", True)),
+                           bool(cfg.get("V702_LIVE_PILOT_ENABLE", False)),
                            str(os.environ.get("UNIFIED_LIVE_PILOT_ENABLE", "")).strip().lower() in {"0", "false", "no", "off", "disabled"},
                            bool(ns.get("ENV", {}).get("MEXC_API_KEY") and ns.get("ENV", {}).get("MEXC_API_SECRET")),
                            bool(stats.get("v702_spot_long_only_invariants_ok", False)))

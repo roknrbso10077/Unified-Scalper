@@ -18,6 +18,7 @@ from pathlib import Path
 
 from v702_core__policy__forbidden_assets import HARD_FORBIDDEN_BASES
 from v702_core__storage__sqlite_writer import SQLITE_WRITER_LOCK
+from v702_core__execution__cost_model import unified_round_trip_cost_model
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 2
@@ -265,11 +266,9 @@ class V702CounterfactualShadow:
                 # RR: test the cost-aware minimum target plus its bounded safety buffer.
                 # This remains counterfactual and never authorizes/submits an order.
                 notional = max(1.0, _num(cfg.get("V576_REQUESTED_POSITION_USDT"), _num(cfg.get("MAX_POSITION_SIZE_USDT"), 75.0)) or 75.0)
-                fee_pct = max(0.0, _num(cfg.get("TAKER_FEE_PCT"), 0.10) or 0.0) * max(0.0, _num(cfg.get("ROUNDTRIP_FEE_MULT"), 2.0) or 2.0)
-                fallback_spread = max(0.0, _num(cfg.get("V702_SMALL_NET_SPREAD_FALLBACK_PCT"), 0.15) or 0.15)
-                observed_spread = max(fallback_spread, spread_value if spread_value is not None else fallback_spread)
-                slip_side = max(0.0, _num(cfg.get("V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT"), 0.05) or 0.05)
-                total_cost_pct = fee_pct + observed_spread + 2.0 * slip_side
+                cost_model = unified_round_trip_cost_model(cfg, spread_pct=spread_value)
+                fee_pct = max(0.0, float(cost_model.get("round_trip_fee_pct", 0.0)))
+                total_cost_pct = max(0.0, float(cost_model.get("round_trip_cost_pct", 0.0)))
                 risk_pct = 100.0 * (entry - stop) / entry
                 desired_net_pct = max(0.0, _num(cfg.get("V702_SMALL_NET_MIN_NET_PROFIT_PCT"), 0.10) or 0.0)
                 min_net_rr = max(0.0, _num(cfg.get("V702_SMALL_NET_MIN_NET_RR_TP1"), 0.25) or 0.0)
@@ -329,7 +328,7 @@ class V702CounterfactualShadow:
                 "phase": _text(snap.get("market_phase") or getattr(c, "market_phase", ""), 40),
                 "engine_id": _text(getattr(c, "engine_id", ""), 48),
                 "spread_pct": spread_value,
-                "target_policy": "R40_SMALL_NET_COST_AWARE" if bool(cfg.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False)) else "CANDIDATE_TP1_RR",
+                "target_policy": "UNIFIED_COST_MODEL_V65" if bool(cfg.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False)) else "CANDIDATE_TP1_RR",
                 "candidate_tp1_rr_original": original_rr,
                 "candidate_tp1_rr_projected": rr,
                 "spread_fallback_pct": _num(cfg.get("V702_SMALL_NET_SPREAD_FALLBACK_PCT"), 0.15),
@@ -380,14 +379,18 @@ class V702CounterfactualShadow:
             return False
 
     @staticmethod
-    def _bar_rows(frame: Any) -> List[Tuple[int, float, float, float]]:
+    def _bar_rows(frame: Any, timeframe_ms: int = 300_000) -> List[Tuple[int, float, float, float]]:
+        """Return only bars whose close timestamp has passed (no blind tail drop)."""
         rows: List[Tuple[int, float, float, float]] = []
         if frame is None:
             return rows
         try:
-            # The scanner's last dataframe row is the still-forming candle.
-            closed = frame.iloc[:-1]
-            for idx, row in closed.iterrows():
+            as_of_ms = _num(getattr(frame, "attrs", {}).get("as_of_ms"), None)
+            if as_of_ms is None:
+                as_of_ms = time.time() * 1000.0
+            grace_ms = _num(getattr(frame, "attrs", {}).get("close_grace_ms"), 1_000.0)
+            grace_ms = max(0.0, min(float(timeframe_ms) * 0.25, float(grace_ms or 0.0)))
+            for idx, row in frame.iterrows():
                 try:
                     if hasattr(idx, "timestamp"):
                         ts_ms = int(float(idx.timestamp()) * 1000.0)
@@ -396,10 +399,12 @@ class V702CounterfactualShadow:
                         if ts is None:
                             continue
                         ts_ms = int(ts if ts > 10_000_000_000 else ts * 1000)
+                    if ts_ms <= 0 or float(ts_ms + timeframe_ms) > float(as_of_ms) - grace_ms:
+                        continue
                     high = _num(row.get("high"), None)
                     low = _num(row.get("low"), None)
                     close = _num(row.get("close"), None)
-                    if ts_ms > 0 and high is not None and low is not None and close is not None and high >= low > 0 and close > 0:
+                    if high is not None and low is not None and close is not None and high >= low > 0 and close > 0:
                         rows.append((ts_ms, high, low, close))
                 except Exception:
                     continue
@@ -422,7 +427,7 @@ class V702CounterfactualShadow:
             for symbol, md in market_data_map.items():
                 if symbol not in by_symbol or not isinstance(md, dict):
                     continue
-                bars = self._bar_rows(md.get("df_5m"))
+                bars = self._bar_rows(md.get("df_5m"), int(max(60, min(3600, _num(self._cfg().get("V702_CF_SHADOW_TIMEFRAME_SEC"), 300) or 300)) * 1000))
                 if not bars:
                     continue
                 counts["symbols"] += 1
@@ -448,20 +453,14 @@ class V702CounterfactualShadow:
                         if status != "PENDING":
                             gross_r = (float(exit_px) - float(entry)) / float(risk)
                             cfg = self._cfg()
-                            fee_bps = max(0.0, min(100.0, _num(cfg.get("V702_CF_SHADOW_FEE_BPS_PER_SIDE"), 10.0) or 0.0))
-                            slip_bps = max(0.0, min(100.0, _num(cfg.get("V702_CF_SHADOW_SLIPPAGE_BPS_PER_SIDE"), 5.0) or 0.0))
-                            base_costs = ((float(entry) + float(exit_px)) * (fee_bps + slip_bps) / 10000.0) / float(risk)
-                            spread_pct = 0.0
                             try:
                                 context = json.loads(context_json or "{}")
-                                observed_spread = _num(context.get("spread_pct"), None)
-                                if bool(cfg.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False)):
-                                    fallback = max(0.0, _num(cfg.get("V702_SMALL_NET_SPREAD_FALLBACK_PCT"), 0.15) or 0.15)
-                                    spread_pct = max(fallback, observed_spread if observed_spread is not None else fallback)
                             except Exception:
-                                spread_pct = max(0.0, _num(cfg.get("V702_SMALL_NET_SPREAD_FALLBACK_PCT"), 0.15) or 0.15) if bool(cfg.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False)) else 0.0
-                            spread_costs = ((float(entry) + float(exit_px)) * (spread_pct / 100.0) / 2.0) / float(risk)
-                            net_r = gross_r - base_costs - spread_costs
+                                context = {}
+                            cost_model = unified_round_trip_cost_model(cfg, spread_pct=_num(context.get("spread_pct"), None))
+                            risk_pct = 100.0 * float(risk) / max(float(entry), 1e-12)
+                            cost_r = float(cost_model.get("round_trip_cost_pct", 0.0)) / max(risk_pct, 1e-12)
+                            net_r = gross_r - cost_r
                             break
                     with self._db() as conn:
                         if status == "PENDING":

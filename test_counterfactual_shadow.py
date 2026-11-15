@@ -37,7 +37,10 @@ class CounterfactualShadowTests(unittest.TestCase):
 
     def candles(self, rows):
         idx = pd.to_datetime([r[0] for r in rows], unit="ms", utc=True)
-        return pd.DataFrame({"high": [r[1] for r in rows], "low": [r[2] for r in rows], "close": [r[3] for r in rows]}, index=idx)
+        frame = pd.DataFrame({"high": [r[1] for r in rows], "low": [r[2] for r in rows], "close": [r[3] for r in rows]}, index=idx)
+        # Last row is explicitly the forming candle, independent of wall clock.
+        frame.attrs["as_of_ms"] = int(idx[-1].timestamp() * 1000) + 300_000 - 1
+        return frame
 
     def test_schema_and_shadow_only_contract(self):
         result = self.study.self_test()

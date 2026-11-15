@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Unified Scalper V702 A63 canonical runtime.
+"""Unified Scalper V702 A65 canonical production distribution (A64 base runtime).
 
 Historical patch/version notes are preserved in CHANGELOG.md. The active
 strategy, risk, pre-send, queue, Telegram and execution authorities remain in
@@ -48,6 +48,7 @@ from v702_core__scoring__floor_policy import (
 from v702_core__pipeline__event_time_buckets import bump_event_time_bucket
 from v702_core__pipeline__rejection import record_reject as _v702_record_reject_facade
 from v702_core__execution__handoff import presend_queue_gap_reason as _v702_presend_queue_gap_reason
+from v702_core__execution__cost_model import unified_round_trip_cost_model as _v702_cost_model
 from v702_core__telegram__funnel import is_canonical_opportunity_message as _v702_is_canonical_opportunity_message
 
 getcontext().prec = 28
@@ -58,7 +59,7 @@ MONO_NOW = time.monotonic
 WALL_NOW = time.time
 
 # Canonical single version identity for runtime, telemetry and boot logs.
-CANONICAL_RUNTIME_IDENTITY = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+CANONICAL_RUNTIME_IDENTITY = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
 SCRIPT_VERSION = CANONICAL_RUNTIME_IDENTITY
 SCRIPT_VERSION_FAMILY = "4.5."
 SCRIPT_BUILD_TAGS = ("V605", "V606")
@@ -5625,60 +5626,20 @@ class CompositeScorer:
 # =============================================================================
 
 def _v702_unified_round_trip_cost_pct(*, measured_cost_pct=None, spread_pct=None, fee_cost_pct=None) -> Dict[str, float]:
-    """Single conservative round-trip cost model shared by sizing, Paper and Shadow.
+    """Canonical round-trip cost model; measured all-in friction supersedes fallback.
 
-    The model is the maximum of: configured 0.30% minimum, measured orderbook/VWAP
-    friction plus measured fees, and the R40 fallback (spread + two-sided slippage
-    + round-trip taker fee). Measured or configured costs can only increase cost.
+    A measured PreSend value already includes order-book/VWAP friction and the
+    symbol-specific venue fee, so only the configured safety buffer is added.
+    When measurement is absent, the function falls back to observed spread (or
+    the configured fallback), two-sided slippage, and the conservative fee rate.
     """
-    try:
-        floor = max(0.30, min(5.0, float(CONFIG.get("V702_SHADOW_MIN_ROUND_TRIP_COST_PCT", 0.30))))
-    except Exception:
-        floor = 0.30
-    try:
-        fallback_spread = max(0.0, min(5.0, float(CONFIG.get("V702_SMALL_NET_SPREAD_FALLBACK_PCT", 0.15))))
-    except Exception:
-        fallback_spread = 0.15
-    try:
-        observed_spread = float(spread_pct)
-        if not math.isfinite(observed_spread) or observed_spread < 0:
-            observed_spread = 0.0
-    except Exception:
-        observed_spread = 0.0
-    spread_used = max(fallback_spread, min(5.0, observed_spread))
-    try:
-        slip_side = max(0.0, min(2.0, float(CONFIG.get("V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT", 0.05))))
-    except Exception:
-        slip_side = 0.05
-    if fee_cost_pct is None:
-        try:
-            fee_cost = max(0.0, float(CONFIG.get("TAKER_FEE_PCT", 0.10)) * float(CONFIG.get("ROUNDTRIP_FEE_MULT", 2.0)))
-        except Exception:
-            fee_cost = 0.20
-    else:
-        try:
-            fee_cost = max(0.0, float(fee_cost_pct))
-            if not math.isfinite(fee_cost):
-                fee_cost = 0.0
-        except Exception:
-            fee_cost = 0.0
-    r40_fallback = spread_used + 2.0 * slip_side + fee_cost
-    try:
-        measured = max(0.0, float(measured_cost_pct)) if measured_cost_pct is not None else 0.0
-        if not math.isfinite(measured):
-            measured = 0.0
-    except Exception:
-        measured = 0.0
-    selected = max(floor, r40_fallback, measured)
-    return {
-        "round_trip_cost_pct": float(selected),
-        "minimum_cost_pct": float(floor),
-        "measured_cost_pct": float(measured),
-        "spread_pct_used": float(spread_used),
-        "slippage_per_side_pct": float(slip_side),
-        "round_trip_fee_pct": float(fee_cost),
-        "r40_fallback_cost_pct": float(r40_fallback),
-    }
+    return _v702_cost_model(
+        CONFIG,
+        measured_cost_pct=measured_cost_pct,
+        spread_pct=spread_pct,
+        fee_cost_pct=fee_cost_pct,
+    )
+
 
 
 class SizingEngine:
@@ -23668,12 +23629,35 @@ class KnowledgeOutcomeLedger:
                     shadow_ok = False
             risk = max(0.0, entry-stop)
             dynamic_cost = cls._num(shadow.get("round_trip_cost_pct"), 0.0)
-            _cost_model = _v702_unified_round_trip_cost_pct(
-                measured_cost_pct=dynamic_cost if shadow_ok else cls._num(notes.get("round_trip_cost_pct"), 0.0),
-                spread_pct=shadow.get("spread_pct") if shadow_ok else None,
-                fee_cost_pct=shadow.get("fee_cost_pct") if shadow_ok else None,
-            )
-            cost_pct = float(_cost_model["round_trip_cost_pct"])
+            if shadow_ok and dynamic_cost > 0.0:
+                # Shadow PreSend already produced an all-in round-trip cost and
+                # applied the configured measurement buffer. Reuse it verbatim:
+                # passing it back as raw measured friction would add the buffer
+                # a second time and systematically overstate paper costs.
+                _cost_model = dict(shadow.get("round_trip_cost_model") or {})
+                _cost_model.update({
+                    "round_trip_cost_pct": float(dynamic_cost),
+                    "cost_source": "SHADOW_PRESEND_ALL_IN_REUSED",
+                    "measurement_buffer_reapplied": False,
+                })
+                cost_pct = float(dynamic_cost)
+            else:
+                persisted_cost = cls._num(notes.get("round_trip_cost_pct"), 0.0)
+                if persisted_cost > 0.0:
+                    # Registration-time fallback is also a completed all-in
+                    # estimate; retain it rather than treating it as raw fill
+                    # friction and adding another buffer.
+                    cost_pct = float(persisted_cost)
+                    _cost_model = {
+                        "round_trip_cost_pct": cost_pct,
+                        "cost_source": "PERSISTED_ALL_IN_FALLBACK_REUSED",
+                        "measurement_buffer_reapplied": False,
+                    }
+                else:
+                    _cost_model = _v702_unified_round_trip_cost_pct(
+                        spread_pct=notes.get("candidate_spread_pct")
+                    )
+                    cost_pct = float(_cost_model["round_trip_cost_pct"])
             cost_r = (entry * cost_pct / 100.0 / risk) if risk > 0 else 0.0
             if str(notes.get("record_source", "")).upper() == "SELECTED_ROUTE_PAPER" and not notes.get("paper_fill_price"):
                 _new_trigger, _new_margin = cls._paper_fill_trigger(
@@ -24601,9 +24585,10 @@ class KnowledgeOutcomeLedger:
                 "notional_usdt_default":75.0,
                 "max_active_default":20,
                 "max_active_cap":120,
-                "round_trip_cost_pct_floor":0.30,
+                "round_trip_cost_pct_floor":float(CONFIG.get("V702_SHADOW_MIN_ROUND_TRIP_COST_PCT", 0.0) or 0.0),
+                "measured_cost_buffer_pct":float(CONFIG.get("V702_MEASURED_COST_BUFFER_PCT", 0.05) or 0.0),
                 "cost_included_in_modeled_realized_r":True,
-                "cost_source":"measured orderbook spread+VWAP market friction+venue taker fees; conservative 0.30% floor",
+                "cost_source":"symbol-specific measured orderbook/VWAP friction plus exchange fees and measured-cost safety buffer; otherwise observed/fallback spread plus two-sided slippage and conservative fee estimate",
                 "exchange_orders_submitted":False,
                 "edge_sample_source":"A55 current-version selected-route Paper rows only when Builder completed AND independent Shadow PreSend returned eligible=true AND market_live_eligible=true",
                 "edge_eligible_paper_rows":len(edge_evidence_rows),
@@ -26288,6 +26273,16 @@ async def run_bot(universe: List[str]):
                     _shadow_selected = _shadow_rotate(_shadow_pool_core, "_v702_intraday_core_offset", _shadow_each)
                     _shadow_selected += _shadow_rotate(_shadow_pool_micro, "_v702_intraday_micro_offset", _shadow_each)
                     _shadow_selected = list(dict.fromkeys(_shadow_selected))
+                    # Ensure the independent adaptive-RS cohort actually observes
+                    # the current top-10 leaders, not only the volume-rotated pool.
+                    try:
+                        _shadow_rs_leaders = _intraday_shadow.rank_relative_strength(
+                            market_data_map,
+                            top_n=max(5, min(10, int(CONFIG.get("V702_ADAPTIVE_RS_TOP_N", 10)))),
+                        )
+                    except Exception:
+                        _shadow_rs_leaders = {}
+                    _shadow_selected = list(dict.fromkeys(list(_shadow_rs_leaders.keys()) + _shadow_selected))[:_shadow_batch]
                     if len(_shadow_selected) < _shadow_batch:
                         _shadow_selected_set = set(_shadow_selected)
                         _shadow_remaining = [x for x in sorted(_shadow_pool_core + _shadow_pool_micro, key=lambda x:x[1], reverse=True) if x[0] not in _shadow_selected_set]
@@ -26336,6 +26331,7 @@ async def run_bot(universe: List[str]):
                                 _frame.set_index("ts", inplace=True)
                                 _snap = dict(_snapshots.get(_sym) or {})
                                 _snap["symbol"] = _sym
+                                _snap["adaptive_rs_rank"] = (_snap.get("adaptive_rs_rank") or {}).copy()
                                 # SQLite research writes must never block the scanner's event loop.
                                 _result = await asyncio.to_thread(_service.process_symbol, _sym, _frame, _snap)
                                 _ok_count += 1
@@ -26377,7 +26373,7 @@ async def run_bot(universe: List[str]):
                             STATS[_key] = int(_result.get(_key, 0) or 0)
                         _cycle_engines = _result.get("engine_cycle", {}) or {}
                         if isinstance(_cycle_engines, dict):
-                            for _code, _label in (("MICRO_MOMENTUM_1M", "MICRO MOMENTUM 1M"), ("MICRO_SWEEP_RECLAIM_1M", "MICRO SWEEP RECLAIM 1M"), ("MICRO_PULLBACK_RECLAIM_1M", "MICRO PULLBACK RECLAIM 1M"), ("VWAP_RECLAIM_RS_5M", "VWAP RECLAIM + RELATIVE STRENGTH 5M")):
+                            for _code, _label in (("MICRO_MOMENTUM_1M", "MICRO MOMENTUM 1M"), ("MICRO_SWEEP_RECLAIM_1M", "MICRO SWEEP RECLAIM 1M"), ("MICRO_PULLBACK_RECLAIM_1M", "MICRO PULLBACK RECLAIM 1M"), ("VWAP_RECLAIM_RS_5M", "VWAP RECLAIM + RELATIVE STRENGTH 5M"), ("ADAPTIVE_RS_PULLBACK_15M", "ADAPTIVE RELATIVE-STRENGTH PULLBACK 15M")):
                                 _cy = _cycle_engines.get(_code, {}) or {}
                                 _state_key = "v702_a9_engine_cycle_" + _code.lower()
                                 _state = {
@@ -26402,6 +26398,7 @@ async def run_bot(universe: List[str]):
                                 ("MICRO_SWEEP_RECLAIM_1M", "MICRO SWEEP RECLAIM 1M"),
                                 ("MICRO_PULLBACK_RECLAIM_1M", "MICRO PULLBACK RECLAIM 1M"),
                                 ("VWAP_RECLAIM_RS_5M", "VWAP RECLAIM + RELATIVE STRENGTH 5M"),
+                                ("ADAPTIVE_RS_PULLBACK_15M", "ADAPTIVE RELATIVE-STRENGTH PULLBACK 15M"),
                             )
                             for _code, _label in _mode_codes:
                                 _m = _strats.get(_code, {}) or {}
@@ -26424,7 +26421,7 @@ async def run_bot(universe: List[str]):
                                 }
                                 logger.info(
                                     "[V702-A9-ENGINE] name=%s timeframe=%s mode=SHADOW_ONLY_NO_ORDERS eval=%d signals=%d rejects=%d skipped=%d viable_after_cost=%d capped_after_cost=%d avg_cost_pct=%s samples=%d resolved=%d pending=%d net_win_rate=%s expectancy_net_R=%s median_net_R=%s profit_factor_net_R=%s max_drawdown_R=%s sample_quality=%s reasons=%s",
-                                    _label, "5m" if _code == "VWAP_RECLAIM_RS_5M" else "1m",
+                                    _label, "5m" if _code in {"VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"} else "1m",
                                     int(_m.get("evaluations", 0) or 0), int(_m.get("signals", 0) or 0),
                                     int(_m.get("rejections", 0) or 0), int(_m.get("skipped_evaluations", 0) or 0),
                                     int(_m.get("post_cost_target_viable_signals", 0) or 0), int(_m.get("post_cost_target_capped_signals", 0) or 0),
@@ -26453,7 +26450,11 @@ async def run_bot(universe: List[str]):
                     if _shadow_selected and (_active_intraday_task is None or _active_intraday_task.done()):
                         # Snapshot references are frozen for this experiment cycle. The scan/selection
                         # pipeline does not await market-data research and therefore cannot be stalled by it.
-                        _shadow_snapshots = {sym: dict(market_data_map.get(sym) or {}) for sym in _shadow_selected}
+                        _shadow_snapshots = {}
+                        for sym in _shadow_selected:
+                            _snap = dict(market_data_map.get(sym) or {})
+                            _snap["adaptive_rs_rank"] = dict(_shadow_rs_leaders.get(sym) or {})
+                            _shadow_snapshots[sym] = _snap
                         _shadow_task = asyncio.create_task(_v702_intraday_process_batch(list(_shadow_selected), _shadow_snapshots))
                         setattr(run_bot, "_v702_intraday_shadow_task", _shadow_task)
                         _shadow_task.add_done_callback(_v702_intraday_batch_done)
@@ -45400,7 +45401,7 @@ if _orig_v546_heartbeat is not None and not getattr(Telemetry, "_v546_wrapped", 
 # =============================================================================
 
 CONFIG.update({
-    "SCRIPT_VERSION": "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS",
+    "SCRIPT_VERSION": "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE",
 
     # Current-cycle observability
     "V549_HEARTBEAT_ENABLE": True,
@@ -47669,7 +47670,7 @@ if os.environ.get("UNIFIED_V585_SELF_TEST") == "1":
 # =============================================================================
 
 CONFIG.update({
-    "SCRIPT_VERSION": "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS",
+    "SCRIPT_VERSION": "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE",
     "SCRIPT_VERSION_FAMILY": "4.5.",
 
     # ---- PULLBACK precision closure -----------------------------------------
@@ -48221,7 +48222,7 @@ def _v587_self_test() -> Dict[str, Any]:
 
 
 # Make the runtime version authoritative after every late CONFIG.update().
-SCRIPT_VERSION = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+SCRIPT_VERSION = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
 SCRIPT_VERSION_FAMILY = "4.5."
 CONFIG["SCRIPT_VERSION"] = SCRIPT_VERSION
 CONFIG["SCRIPT_VERSION_FAMILY"] = SCRIPT_VERSION_FAMILY
@@ -48261,7 +48262,7 @@ if os.environ.get("UNIFIED_V587_SELF_TEST") == "1":
 # =============================================================================
 
 CONFIG.update({
-    "SCRIPT_VERSION": "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS",
+    "SCRIPT_VERSION": "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE",
     "SCRIPT_VERSION_FAMILY": "4.5.",
 
     "V588_STRATEGY_QUALITY_ENABLE": True,
@@ -48642,7 +48643,7 @@ _V607_NEAR_MISS_SENT_TS = deque(maxlen=32)
 # =============================================================================
 
 CONFIG.update({
-    "SCRIPT_VERSION": "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS",
+    "SCRIPT_VERSION": "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE",
     "SCRIPT_VERSION_FAMILY": "4.5.",
     "V640_BUILD_TAG": "V640-FINAL-ALL-IN-ONE-EXECUTION-SL-STARVATION-CLOSURE",
 
@@ -50367,7 +50368,7 @@ CONFIG.update({
 # that legacy check executes. Restore V644 immediately afterward.
 try:
     _v644_original_legacy_selftest = _v641_prev_final_self_test
-    _V644_LEGACY_ID = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+    _V644_LEGACY_ID = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
     def _v644_legacy_selftest_compat():
         old_sv = globals().get("SCRIPT_VERSION")
         old_ver = globals().get("__version__")
@@ -50500,7 +50501,7 @@ if False:
 # =============================================================================
 
 V645_FINAL_ENABLED = True
-V646_FINAL_IDENTITY = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+V646_FINAL_IDENTITY = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
 V645_FINAL_IDENTITY = V646_FINAL_IDENTITY
 CONFIG.update({
     "V645_FINAL_ENABLED": True,
@@ -50933,7 +50934,7 @@ except Exception as _v645_post_exc:
 # V646 keeps every prior trading safeguard and execution authority unchanged.
 # =============================================================================
 V646_FINAL_ENABLED = True
-V646_FINAL_IDENTITY = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+V646_FINAL_IDENTITY = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
 
 V640_FINAL_IDENTITY = V646_FINAL_IDENTITY
 V641_FINAL_IDENTITY = V646_FINAL_IDENTITY
@@ -51179,7 +51180,7 @@ def _v646_lit_fee_rescue_self_test() -> Dict[str, Any]:
 def _v646_all_fixes_self_test() -> Dict[str, Any]:
     checks: Dict[str, Any] = {}
     try:
-        checks["identity"] = str(SCRIPT_VERSION) == "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+        checks["identity"] = str(SCRIPT_VERSION) == "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
         checks["runtime_build_identity"] = str(globals().get("RUNTIME_BUILD_ID", "")) == str(SCRIPT_VERSION)
         checks["current_forensics"] = bool(STATS.get("v646_cycle_forensics_wrapper_installed", False))
         checks["truth_heartbeat"] = bool(STATS.get("v646_truth_heartbeat_wrapper_installed", False))
@@ -51919,7 +51920,7 @@ if os.environ.get("UNIFIED_V646_ALL_FIXES_SELF_TEST") == "1":
 #   * no new scoring relief, no new recall bypass, no new order path
 # =============================================================================
 
-V647_FINAL_IDENTITY = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+V647_FINAL_IDENTITY = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
 V646_FINAL_IDENTITY = V647_FINAL_IDENTITY  # compatibility alias for historical checks
 V645_FINAL_IDENTITY = V647_FINAL_IDENTITY
 V644_FINAL_IDENTITY = V647_FINAL_IDENTITY
@@ -55487,7 +55488,7 @@ try:
             # The original V647 base validator's identity sentinel was the
             # historical V648 canonical marker. Present the exact expected
             # tuple only for that base check, then restore V659 immediately.
-            base_id = "4.5.99-V648-FINAL-CANONICAL-PARITY-STARVATION-DIAGNOSTICS"
+            base_id = "4.5.99-V702-A65-CANONICAL-PRODUCTION-RELEASE"
             globals()["SCRIPT_VERSION"] = base_id
             CONFIG["SCRIPT_VERSION"] = base_id
             globals()["RUNTIME_BUILD_ID"] = base_id
@@ -88720,7 +88721,8 @@ CONFIG.update({
     "V702_SMALL_NET_MIN_NET_RR_OVERALL": 0.50,
     "V702_SMALL_NET_SPREAD_FALLBACK_PCT": 0.15,
     "V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT": 0.05,
-    "V702_SHADOW_MIN_ROUND_TRIP_COST_PCT": 0.30,
+    "V702_SHADOW_MIN_ROUND_TRIP_COST_PCT": 0.00,
+    "V702_MEASURED_COST_BUFFER_PCT": 0.05,
     "V702_PAPER_FILL_MIN_MARGIN_PCT": 0.02,
     "V702_EQUITY_IGNORE_ASSETS": [],
     "V702_EQUITY_TICKER_CACHE_TTL_SEC": 10,
@@ -89045,6 +89047,9 @@ CONFIG.setdefault("V702_VWAP_RS_MIN_RS_5M", 0.0000)
 CONFIG.setdefault("V702_VWAP_RS_MIN_RS_15M", 0.0000)
 CONFIG.setdefault("V702_VWAP_RS_MIN_VOLUME_RATIO", 0.80)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_MAX_ROWS", 50000)
+CONFIG.setdefault("V702_ADAPTIVE_RS_TOP_N", 10)
+CONFIG.setdefault("V702_ADAPTIVE_RS_MIN_VOLUME_RATIO", 1.10)
+CONFIG.setdefault("V702_ADAPTIVE_RS_MAX_CHASE_ATR", 0.60)
 
 # A9 production diagnostics: bounded prequal-time MEXC order-book capture.
 # This only supplies facts to the existing hard gates; it cannot authorize an order.
@@ -91478,7 +91483,7 @@ def _v702_a15_entry_authority_self_test() -> Dict[str, Any]:
             "revision": V702_A15_CANONICAL_REVISION,
             "entry_policy": STATS.get("v702_runtime_entry_policy", "MONITOR_ONLY_NO_NEW_BUYS"),
             "legacy_opt_in_env": "UNIFIED_ALLOW_LIVE_TRADING",
-            "pilot_configured": bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", True)),
+            "pilot_configured": bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", False)),
             "hard_environment_off_switch": "UNIFIED_LIVE_PILOT_ENABLE=0",
             "live_network_calls": 0,
         })
@@ -99641,7 +99646,7 @@ def _v702_a55_validate_config():
         "live_presend_requires_edge_gate": 'edge_gate_unavailable' in _source and 'edge_gate:{_edge_reason}' in _source,
         "score_buckets_75_plus": all(x in _source for x in ('"<75"', '"75-79.9"', '"80-84.9"', '"85-89.9"', '"90-94.9"', '"95+"')),
         "paper_capacity_120": 1 <= int(CONFIG.get("V702_KNOWLEDGE_OUTCOME_MAX_ACTIVE", 0) or 0) <= 120,
-        "round_trip_cost_floor_030": 'def _v702_unified_round_trip_cost_pct' in _source and 'V702_SHADOW_MIN_ROUND_TRIP_COST_PCT' in _source and 'r40_fallback = spread_used + 2.0 * slip_side + fee_cost' in _source,
+        "unified_measured_cost_precedence": 'def _v702_unified_round_trip_cost_pct' in _source and 'V702_SHADOW_MIN_ROUND_TRIP_COST_PCT' in _source and 'measured_cost_pct=measured_cost_pct' in _source,
         "dynamic_venue_fees_and_vwap": "exchange_fetch_trading_fee" in _source and "_buy_vwap_for_quote" in _source and "_sell_vwap_for_base" in _source,
         "full_round_trip_fee_coverage": "gross_tp1_usdt < (min_fee_ratio * fee_cost_usdt)" in _source,
         "actual_exit_split_sums_to_one": abs((_exit_q1+_exit_q2+_exit_q3)-1.0) < 1e-6,
@@ -100025,7 +100030,7 @@ def _v702_a58_validate_config():
         "previous_validation_pass": bool(_previous_ok),
         "release_env_example_present": bool(_env_source.strip()) and bool(STATS.get("v702_a58_release_env_example_present")),
         "legacy_authorizer_fails_closed": "entry_policy_authority_missing" in _guard_source and "legacy_token_ignored" in _guard_source,
-        "unified_round_trip_cost_model": "def _v702_unified_round_trip_cost_pct" in _source and "r40_fallback = spread_used + 2.0 * slip_side + fee_cost" in _source,
+        "unified_round_trip_cost_model": "from v702_core__execution__cost_model import unified_round_trip_cost_model as _v702_cost_model" in _source and "return _v702_cost_model(" in _source,
         "paper_fill_requires_buffered_breakout": "REFERENCE_PLUS_BUFFERED_BREAKOUT_V1" in _source and "h >= _trigger" in _source and "WAIT_FOR_BUFFERED_BREAKOUT" in _source,
         "paper_capacity_single_default_20_hard_cap_120": int(CONFIG.get("V702_KNOWLEDGE_OUTCOME_MAX_ACTIVE", 0) or 0) == 20 and KnowledgeOutcomeLedger.max_active() <= 120,
         "sqlite_updates_leave_event_loop": "await cls._active_async" in _source and "await cls._update_async" in _source and "asyncio.to_thread(cls._update" in _source,
@@ -100363,7 +100368,7 @@ def _v702_a61_self_test():
                     str(globals().get("V702_A63_RELEASE_TAG", "")),
                     str(globals().get("V702_A64_RELEASE_TAG", "")),
                 }
-                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
+                and FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag", FINAL_CANONICAL_RUNTIME.get("active_release_tag")) == V702_FINAL_CANONICAL_RELEASE
             ),
             "no_live_authority_or_gate_relaxation": (
                 FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
@@ -100505,7 +100510,7 @@ def _v702_a62_self_test():
                 str(globals().get("V702_A63_RELEASE_TAG", "")),
                 str(globals().get("V702_A64_RELEASE_TAG", "")),
             }
-            and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
+            and FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag", FINAL_CANONICAL_RUNTIME.get("active_release_tag")) == V702_FINAL_CANONICAL_RELEASE
         ),
         "live_execution_authority_unchanged": (
             FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
@@ -100596,7 +100601,7 @@ def _v702_a63_self_test():
                     str(globals().get("V702_A64_RELEASE_TAG", "")),
                 }
                 and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_FINAL_CANONICAL_RELEASE
-                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_FINAL_CANONICAL_RELEASE
+                and FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag", FINAL_CANONICAL_RUNTIME.get("active_release_tag")) == V702_FINAL_CANONICAL_RELEASE
             ),
             "order_identity_matching_is_fail_closed": (
                 "def _v517_match_order(" in source
@@ -100733,7 +100738,7 @@ def _v702_a64_self_test():
             "a64_release_identity_current": (
                 V702_FINAL_CANONICAL_RELEASE == V702_A64_RELEASE_TAG
                 and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A64_RELEASE_TAG
-                and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A64_RELEASE_TAG
+                and FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag", V702_A64_RELEASE_TAG) == V702_A64_RELEASE_TAG
             ),
             "snapshot_swap_retained": bool(getattr(flush_func, "_v702_a63_snapshot_swap", False)),
             "discovery_callbacks_are_bound_to_delivery_ack": (
@@ -100802,6 +100807,89 @@ def _v702_a64_validate_config():
 
 
 globals()["validate_config"] = _v702_a64_validate_config
+
+
+# =============================================================================
+# V702 A65 — Adaptive RS research lane + unified cost/candle evidence closure.
+# The active A64 Telegram/runtime code is retained as the base. A65 only adds
+# research-only strategy evaluation, unified measured/fallback cost semantics,
+# truthful closed-candle handling, and release/guardrail metadata coherence.
+# No live admission threshold is lowered and no exchange order authority is
+# added by this A65 layer.
+# =============================================================================
+V702_A65_RELEASE_REVISION = "A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15"
+V702_A65_RELEASE_TAG = "UNIFIED-SCALPER-V702-A65-CANONICAL-FINAL"
+V702_PACKAGE_AUDIT_REVISION = V702_A64_CANONICAL_REVISION + "-" + V702_A65_RELEASE_REVISION
+V702_A65_SOURCE_BASE_REVISION = V702_A64_RELEASE_REVISION
+STATS["v702_a65_release_revision"] = V702_A65_RELEASE_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_distribution_revision": V702_A65_RELEASE_REVISION,
+    "active_release_tag": V702_A65_RELEASE_TAG,
+    "active_distribution_release_tag": V702_A65_RELEASE_TAG,
+    "base_runtime_release_tag": V702_A64_RELEASE_TAG,
+    "a65_source_base_revision": V702_A65_SOURCE_BASE_REVISION,
+    "adaptive_rs_pullback_mode": "SHADOW_ONLY_NO_ORDERS",
+    "unified_cost_model": "MEASURED_ALL_IN_PLUS_BUFFER_ELSE_CONSERVATIVE_FALLBACK",
+    "closed_candle_policy": "USE_EXCHANGE_CLOSE_TIME_NOT_BLIND_LAST_ROW_DROP",
+    "live_enabled_by_default": False,
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "operator_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+    "profitability_verified": False,
+})
+
+
+def _v702_a65_self_test():
+    try:
+        cost_model = _v702_cost_model
+        intraday_study = globals().get("_V702_INTRADAY_SHADOW")
+        report = getattr(intraday_study, "self_test", None)
+        intraday = report() if callable(report) else {"pass": False, "error": "intraday_shadow_self_test_unavailable"}
+        checks = {
+            "a64_base_self_test_passes": bool(_v702_a64_self_test().get("pass")),
+            "unified_cost_model_is_callable": callable(cost_model),
+            "adaptive_intraday_lane_is_shadow_only": bool(intraday.get("pass")) and bool(intraday.get("checks", {}).get("shadow_only", False)),
+            "distribution_identity_is_a65": FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A65_RELEASE_TAG,
+            "base_runtime_identity_is_a64": FINAL_CANONICAL_RUNTIME.get("base_runtime_release_tag") == V702_A64_RELEASE_TAG,
+            "monitor_only_default_preserved": bool(CONFIG.get("V702_MONITOR_ONLY_MODE", True)) and not bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", False)),
+            "no_live_policy_relaxation": FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE" and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS" and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False,
+        }
+        failed = [name for name, ok in checks.items() if not bool(ok)]
+        return {"pass": not failed, "revision": V702_A65_RELEASE_REVISION, "checks": checks, "failed": failed,
+                "live_authority": False, "profitability_verified": False,
+                "production_decision": "NO_GO_UNATTENDED_LIVE"}
+    except Exception as exc:
+        return {"pass": False, "revision": V702_A65_RELEASE_REVISION,
+                "error": f"{type(exc).__name__}:{str(exc)[:180]}",
+                "live_authority": False, "production_decision": "NO_GO_UNATTENDED_LIVE"}
+
+
+def _v702_a65_validate_config():
+    # Keep the historical A64 -> A63 -> A62 -> A61 -> A60 ... wrapper chain:
+    # _v702_a64_validate_config() invokes _V702_A64_PREVIOUS_VALIDATE_CONFIG()
+    # and then _v702_a64_self_test(); A65 adds its own independent final check.
+    base_ok = bool(_v702_a64_validate_config())
+    report = _v702_a65_self_test()
+    STATS["v702_a65_validation"] = report
+    FINAL_CANONICAL_RUNTIME.update({
+        "a65_validation": report,
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+        "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "hard_gate_bypass": False,
+        "live_gates_relaxed": False,
+        "live_authority": False,
+    })
+    return bool(base_ok and report.get("pass", False))
+
+
+globals()["validate_config"] = _v702_a65_validate_config
 
 
 if _V699_VALIDATE_ONLY_REQUEST:
@@ -101043,6 +101131,8 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "v702_a63_validation": STATS.get("v702_a63_validation", {}),
         "v702_a64_validation": STATS.get("v702_a64_validation", {}),
         "v702_a64_release_revision": V702_A64_RELEASE_REVISION,
+        "v702_a65_validation": STATS.get("v702_a65_validation", {}),
+        "v702_a65_release_revision": V702_A65_RELEASE_REVISION,
         "telegram_digest_delivery_contract": {
             "queue_acceptance_is_delivery_ack": False,
             "discovery_knowledge_requires_all_digest_parts_acked": True,
@@ -101054,7 +101144,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "production_decision": "NO_GO_UNATTENDED_LIVE",
         "hard_gate_bypass": False,
         "live_gates_relaxed": False,
-        "active_release_tag": V702_FINAL_CANONICAL_RELEASE,
+        "active_release_tag": FINAL_CANONICAL_RUNTIME.get("active_release_tag", V702_FINAL_CANONICAL_RELEASE),
         "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
         "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
         "canonical_package_revision": V702_PACKAGE_AUDIT_REVISION,
@@ -101275,7 +101365,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
             "installed": _v702_r39_guardrails_installed,
             "base_release_contract_pass": _v702_base_validate_ok,
             "default_entry_policy": STATS.get("v702_runtime_entry_policy", "MONITOR_ONLY_GUARDRAIL_INSTALL_FAILED"),
-            "live_pilot_configured": bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", True)),
+            "live_pilot_configured": bool(CONFIG.get("V702_LIVE_PILOT_ENABLE", False)),
             "hard_environment_off_switch": "UNIFIED_LIVE_PILOT_ENABLE=0",
             "portfolio_drawdown_guard_enabled": bool(CONFIG.get("V702_PORTFOLIO_DRAWDOWN_GUARD_ENABLE", False)),
             "expansion_shadow_enabled": bool(_v702_cf_shadow_installed),

@@ -102,6 +102,9 @@ def test_a56_runtime_guardrails_require_both_operator_keys(monkeypatch):
     monkeypatch.setattr(bot, "_v702_position_manager_health_ok", lambda: True)
     monkeypatch.setitem(bot.ENV, "MEXC_API_KEY", "OFFLINE_TEST_KEY")
     monkeypatch.setitem(bot.ENV, "MEXC_API_SECRET", "OFFLINE_TEST_SECRET")
+    # Keep the test-owned monitor-only default isolated: the explicit two-key
+    # pilot refresh may temporarily flip this runtime mode while exercising it.
+    monkeypatch.setitem(bot.CONFIG, "V702_MONITOR_ONLY_MODE", True)
     monkeypatch.setitem(bot.CONFIG, "V702_LIVE_PILOT_ENABLE", True)
     monkeypatch.setitem(bot.CONFIG, "ENABLE_LIVE_TRADING", True)
     monkeypatch.setitem(bot.CONFIG, "PAPER_TRADING_MODE", False)

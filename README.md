@@ -1,74 +1,83 @@
-# UNIFIED SCALPER V702 — A64 CANONICAL FINAL
+# UNIFIED SCALPER V702 — A65 CANONICAL FINAL
 
-**Release ID:** `UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL`  
-**Release date:** 2026-11-14  
+**Release ID:** `UNIFIED-SCALPER-V702-A65-CANONICAL-FINAL`  
+**Release date:** 2026-11-15  
 **Canonical executable:** `main.py`  
+**Base runtime lineage:** A64  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
 
 ## Operational status
 
-This package is approved for offline validation, monitoring and supervised paper/shadow research only. It is **not approved for unattended live trading**. Offline tests do not establish exchange connectivity, actual order/fill/cancel behavior, Telegram delivery, protective-stop reliability, deployment correctness or profitability. No profit is guaranteed.
+This distribution is for offline validation, monitoring, and supervised Paper/Shadow research only. It is **not approved for unattended live trading**. A65 does not claim profitability and does not authorize real orders through the new research strategy.
 
-Live keys remain disabled by default:
+Live-pilot configuration remains off by default. لا يكفي المفتاح الأول وحده لتفعيل التداول؛ يجب أن يكون الإعداد الداخلي مفعّلًا ومفتاحا المشغّل موجودين، مع اجتياز كل بوابات التنفيذ وEdge والرصيد والحماية والمخاطر. التفعيل اليدوي يتطلب ضبط `UNIFIED_LIVE_PILOT_ENABLE=1` و`UNIFIED_A55_LIVE_ARM=1` صراحةً، إلى جانب الإعداد الداخلي؛ القيم الافتراضية في المثال أدناه تظل `0`. CI وبيئة النشر لا ينبغي أن تفعّلا هذه المفاتيح تلقائيًا:
 
 ```dotenv
 UNIFIED_LIVE_PILOT_ENABLE=0
 UNIFIED_A55_LIVE_ARM=0
 ```
 
-لا يكفي المفتاح الأول وحده؛ يجب أن يكون `UNIFIED_LIVE_PILOT_ENABLE=1` و`UNIFIED_A55_LIVE_ARM=1` مفعّلين معاً قبل أي BUY حي. Do not turn these values on as part of deployment or CI. A real entry also requires every existing policy, EdgeGate, ProductionCapabilityGate, fresh PositionManager health lease, portfolio drawdown, balance, sizing, market-quality, protection and execution check. Any missing authority or unverifiable protection must fail closed.
+A65 also fixes the runtime guard's stale CONFIG reference: authorization reads the current guarded CONFIG object at decision time. That fixes an inconsistent authorization read; it does not loosen a gate. The effective default remains `MONITOR_ONLY_NO_NEW_BUYS`.
 
-## Strategy and risk invariants
+## A65 changes
+
+1. **Unified round-trip cost model.** Production Shadow PreSend and the research studies now share one estimator. A valid measured all-in result (order-book/VWAP friction plus the symbol's available taker-fee metadata) takes precedence and receives a configurable 0.05 percentage-point safety buffer. The fallback is observed spread when available, otherwise a conservative configured spread, plus two-sided slippage and round-trip fee estimate. No measured cost is added to the fallback a second time, and the old unconditional minimum floor is set to zero. The conservative fallback remains in place whenever measurement is missing or invalid. A fee rate is not assumed identical for every MEXC market.
+2. **Adaptive Relative-Strength Pullback — Shadow only.** A new experimental lane ranks closed 4H relative returns against BTC, requires BTC 4H regime/efficiency and asset 1H trend alignment, waits for a 15M structural pullback, then requires a closed 5M resumption break, volume confirmation, and a chase limit. Its research geometry uses a structural stop constrained to 1.5–3.5 ATR(15M), a 1.5R first target, a modeled 50% reduction at 1.5R, and a later 15M confirmed-pivot trail. It sends no orders.
+3. **Closed-candle truth.** Shadow studies no longer discard the last DataFrame row blindly. They use each candle's timeframe close time and an explicit `as_of_ms`/grace when supplied; a still-forming candle is excluded.
+4. **Partial-exit cost coherence.** One all-in round-trip estimate already prices the full original position. Splitting a modeled exit into 50% plus 50% no longer creates a second artificial full round-trip cost. The 15M trailing stop cannot use a pivot confirmed before the virtual entry.
+5. **Default live-pilot safety.** `V702_LIVE_PILOT_ENABLE` defaults to false. The emergency-off variable, two operator keys, Spot/Long-only rules, Edge/Builder eligibility, score/liquidity/risk/protection gates and KillSwitch remain in force.
+6. **Release identity.** Distribution metadata now identifies A65 while explicitly preserving A64 as the base runtime lineage. The source version labels are coherent with the A65 distribution.
+
+## Strategy coverage and what was deliberately not added
+
+- The package retains its existing `SWING_PULLBACK`, `MTF_PULLBACK`, `RELATIVE_STRENGTH_LEADER`, `COMPRESSION_EXPANSION`, `BREAKOUT_RETEST`, `VWAP_RECLAIM_RS_5M`, and `MICRO_SWEEP_RECLAIM_1M` code paths. The new Adaptive RS lane is additive and research-only; production strategy admission is unchanged.
+- The Efficiency Ratio concept is used as a BTC 4H regime filter inside the new research lane, not as permission to bypass production regime filters.
+- A separate RSI-only mean-reversion engine and an external “Xiznit Scalper” clone were not added. An oversold RSI value alone is not a reversal signal, and the package has no verified specification or licensed source for the external named system.
+- Futures/short selling was not added. The product remains Spot LONG_ONLY; futures require a separate risk, execution, liquidation, and protection design.
+- MEXC native OCO/stop automation was not enabled. The package must not assume that an exchange feature is available for every symbol/account or correctly wired through the deployed CCXT adapter. Software-SL operational risk remains a live blocker until native protection is verified end to end.
+- A durable Telegram Outbox was not introduced in A65. A64's digest queue and ACK/callback restoration remains; that is not represented as a transactional, crash-safe Outbox. This requires a separate idempotent persistence/reconciliation change and Telegram integration tests.
+- A full historical Backtester and Walk-Forward proof were not fabricated. The supplied archive contains no historical OHLCV/book/fill dataset. A faithful replay must use timestamped exchange candles and book snapshots, and should exercise the same Candidate → Prequal → Score → Builder → Shadow PreSend → exit code paths. Until those inputs and replay parity tests exist, profitability remains unverified.
+
+## Risk and operating boundaries
 
 - Spot only; LONG_ONLY; Futures and short selling disabled.
-- Minimum live score remains **70**. No score, HTF, liquidity, fake-break, structure, spread, fee or risk gate has been relaxed.
-- Maximum concurrent positions: **2**. Maximum planned ticket: **75 USDT**. These are upper bounds, not a recommendation to trade.
-- Forbidden bases: `PUMP`, `BNB`, `CAKE`, `AERO`, `ETHFI`.
-- The paper-ledger default active capacity is **20**, with a hard ceiling of **120**. Selected-route paper entries require a buffered upside breakout; a simple reference touch is not a fill.
-- Same-candle stop/target ambiguity is conservatively resolved as **stop first**.
+- Live score floor remains **70**; hard liquidity floor remains **3,000,000 USDT**; max concurrent positions remains **2**.
+- The existing **75 USDT** notional remains an upper cap, not an instruction or recommended ticket. An unconditional 10–20 USDT absolute cap was not hard-coded because the account equity, pair minimums, and fee reserve were not supplied. The existing risk-based sizing, balance/exposure/fee/SL/TP constraints, daily stop of **−2R**, and daily trade cap of **6** remain in force.
+- Forbidden bases remain `PUMP`, `BNB`, `CAKE`, `AERO`, and `ETHFI`.
+- `MAKER_FIRST_ENTRY_ENABLE` remains enabled where supported by the existing adapter, but a limit order is not guaranteed to be a maker fill and no maker fee is assumed without actual venue data.
+- Same-candle SL/TP ambiguity remains pessimistically resolved as stop-first in the relevant Shadow studies.
+
+## Cost semantics
+
+All values are percentage points (`0.10` means 0.10%). The measured route is `measured_all_in + 0.05% buffer`. The fallback route uses observed spread when valid (otherwise the configured conservative spread) + two-sided slippage + configured round-trip fee. The configured baseline fallback remains conservative; it is not asserted to be each account's actual MEXC fee. Actual fees can vary by symbol, market, region, and current fee schedule. Invalid or unavailable fee/book data cannot be treated as a cheap measured fill.
 
 ## Run and validate
 
-Use Python 3.12 for the declared target runtime. `requirements.in` is the single source of six pinned direct dependencies. Railway's default Docker build uses those pins and allows pip to resolve transitive packages; it does not claim a hash-reproducible installation. CI compiles the complete Python 3.12 `linux/amd64` transitive graph with SHA-256 hashes into `requirements-lock.txt`, verifies it with `pip --require-hashes`, uses `STRICT_HASH_LOCK=1` for the Docker build, and publishes the resolved lock as a workflow artifact. The checked-in `requirements-lock.txt` is only a direct-pin seed and must not be passed to `--require-hashes`.
+Target runtime: Python 3.12, Linux amd64.
 
 ```bash
 python main.py --validate-only
 python -u main.py
 ```
 
-`--validate-only` must exit with code 0, report `bot_started=false`, and leave no background threads. The normal command starts the monitor/paper runtime; it does not override the live-off defaults.
+`--validate-only` must exit with code 0, report `bot_started=false`, and leave no background threads. The normal command starts the existing monitor/Paper/Shadow runtime; it does not override live-off defaults.
 
-## Durable storage
+## Dependencies and deployment
 
-Mount a persistent volume at `/data` and set `RAILWAY_RUN_UID=0` in Railway Variables so the process can write to the Railway volume (Railway mounts volumes as root-owned). Keep the service restart policy set to `Always`. Then set:
+`requirements.in` is the direct-dependency source. The checked-in `requirements-lock.txt` is a direct-pin seed, **not** a complete transitive hash lock. The A65 GitHub Actions workflow resolves Python 3.12/Linux amd64 hashes at CI time, performs compile/validation/tests, and builds the strict Docker image. This CI workflow was not executed by this local packaging run. Do not describe the current checked-in requirements lock as reproducible with `pip --require-hashes`.
 
-```dotenv
-SCALPER_DB=/data/unified_scalper.db
-V702_KNOWLEDGE_RECIPE_EXPORT_PATH=/data/knowledge_recipe_memory.json
-```
-
-Do not store API keys in the repository or ZIP. Supply them only through the deployment secret manager. Do not package `.env`, credentials, runtime databases, generated market data or logs.
-
-## Safety and health monitoring
-
-The generic heartbeat remains a 30-minute process digest and its 2,100-second stale threshold is intentionally matched to that cadence; it is not the fast watchdog. The independent runtime heartbeat must be fresh within 60 seconds. When any position is open, a PositionManager heartbeat from the same process boot must be fresh within 30 seconds and show an active position. Docker HEALTHCHECK fails closed on stale/missing protection-manager evidence when the container runtime monitors it. Railway's deployment healthcheck is a startup gate only and is not a continuous watchdog; do not configure a Railway HTTP Healthcheck Path because this bot does not expose an HTTP server. Use an external alert/monitor against the runtime and PositionManager heartbeat files or Telegram watchdog alerts for ongoing supervision. On every restart, recovered-position protection reconciliation runs before market scanning; a failure blocks new entries.
-
-MEXC Spot native stop support must not be assumed. Where protection is software-SL-only, the process and PositionManager must remain healthy. A container restart or stale heartbeat is an operational safety event, not proof that a position is protected.
+Mount persistent storage at `/data` and set the documented `SCALPER_DB` and knowledge export paths. Never store secrets or runtime databases in this ZIP. A Docker image build and native stop functionality have not been verified in this environment.
 
 ## Release integrity
 
-After obtaining the A64 archive, verify its contents from the package root:
+From the package root, verify:
 
 ```bash
-sha256sum -c A64_SHA256SUMS.txt
+sha256sum -c A65_SHA256SUMS.txt
 ```
 
-`A62` and older release metadata are historical only; A64 distribution integrity is defined by `A64_RELEASE_MANIFEST.json` and `A64_SHA256SUMS.txt`. A64 retains the A62 runtime, tests and historical audit documents, then adds fail-closed execution reconciliation, A63 Edge/Paper evidence isolation, digest snapshot handling, CI/development dependency inputs, the A64 audit, manifest, checksums and regression coverage. The non-executable `HISTORICAL_A53_main.py.baseline` snapshot was already absent from the supplied A60 package and is not a drop-in rollback. `LIVE_RELEASE_ENV.example` is a public, non-secret runtime validation artifact: `.dockerignore` explicitly re-includes it and Dockerfile copies it to `/app`; actual `.env`, `LIVE_RELEASE_ENV`, secrets and runtime databases remain excluded. A rollback requires the complete matching historical distribution, configuration and environment.
+`A65_RELEASE_MANIFEST.json` records the final archive inventory and the A65 release decision. `FINAL_MANIFEST.json` remains the machine-readable canonical source manifest. `A64_*` files are retained as historical base-release evidence; they are not the A65 checksum authority.
 
-The GitHub Actions workflow `.github/workflows/a64-production-audit.yml` is the active A64 production audit workflow. It targets Python 3.12 and `linux/amd64`, resolves transitive dependency hashes from `requirements.in`, installs with `--require-hashes`, runs compilation and `python main.py --validate-only` before pytest, publishes the generated lock artifact, builds the Docker image with `STRICT_HASH_LOCK=1`, and tests both healthy and stale PositionManager heartbeat cases. It does not contact MEXC or Telegram. Make sure the hidden `.github/workflows/` path is pushed to GitHub using Git; a web upload that omits hidden directories will not activate this workflow.
+## Production decision
 
-## Final release evidence
-
-See `A64_FINAL_PRODUCTION_AUDIT_AR.md`, `A64_RELEASE_MANIFEST.json`, and `A64_SHA256SUMS.txt` for the current production audit. A58.2 Docker boot-artifact handling, A59 Bearish/HTF reject-shadow observability, A60 Paper outcome-model closure and A61 Builder/Edge evidence closure remain intact. A62 fixes stale structured Telegram blocker records being replayed in later Digest windows after successful delivery. A63 adds fail-closed order identity and precision checks, separates same-attempt market evidence from account/execution eligibility, enforces closed-candle coverage for Paper evidence, and uses snapshot-and-swap Digest generations. A64 restores Discovery callback ownership across snapshot swaps, binds it to every Telegram Digest part, and invokes Knowledge callbacks only after all parts receive a delivery ACK. Failed queue admission restores the original event and periodic-summary state. Queue acceptance is explicitly not a Telegram delivery ACK. The legacy and structured queues remain protected against reset races. Strategy admission, Score, HTF, liquidity, PreSend, queue, execution and protection gates are unchanged. The active decision remains **NO-GO for unattended live trading**.
-
-Historical changes and lineage are retained in `CHANGELOG.md` and `DOCS__audits__V702_A*_*.md`.
+**NO_GO_UNATTENDED_LIVE** remains the only supported decision. A65's Adaptive RS results are Shadow observations, not an edge certification. Before considering a supervised pilot, collect real timestamped costs and execution observations, run a production-parity historical replay with walk-forward/holdout periods across market regimes, prove stop behavior and restart recovery on the target exchange/account, test Telegram delivery durability, and complete Python 3.12/Linux amd64 CI plus the Docker build.
