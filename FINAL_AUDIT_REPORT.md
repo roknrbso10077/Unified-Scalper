@@ -1,3 +1,38 @@
+# A71 — Integrated corrective production audit (2026-11-16)
+
+**Active corrective layer:** `A71-BOOT-MEMORY-PM-COVERAGE-RESEARCH-RETENTION-2026-11-16`
+**Canonical distribution tag:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A70 package lineage retained)
+**Archive ceiling:** 99 files; this integration edits existing package files only.
+**Production disposition:** `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## A71 integrated changes
+
+- Replaced whole-file source introspection in startup contracts with bounded function-source extraction; LONG_ONLY is checked behaviorally and still rejects SHORT.
+- Fixed frozen candidate diversification through immutable replacement and repaired the fallback ranked-candidate construction.
+- Replaced the undefined Universe fallback reference with an explicit bounded cached-Universe recovery contract and a visible degraded-empty state.
+- Made observability self-test exceptions unconditionally fail the check.
+- Tightened PositionManager health to exact open-position identity coverage and per-position protection-cycle completion; this is fail-closed for new-entry health and does not disable existing position management.
+- Changed shadow retention to remove terminal rows only, retaining unresolved `PENDING` rows even when the configured cap is reached.
+- Added bounded Telegram Outbox retention for terminal `DELIVERED`/`DEAD_LETTER` rows only; pending/retry/sending rows are preserved.
+- Centralized legacy/current validate-only environment aliases and added explicit `[V702-VALIDATE-EXIT]` diagnostics.
+
+## A71 verification snapshot
+
+- `py_compile` passed for the changed runtime, healthcheck, shadow and test modules.
+- `python -u main.py --validate-only`: PASS, exit 0, 23 checks, 22.60 seconds; peak RSS measured at 551,132 KiB (about 538 MiB); `bot_started=false`.
+- Targeted A71 regression suite: 9 passed. Position-health coverage regression: 1 passed.
+- Full `pytest -q` completed after the final source/manifest refresh: **535 passed, 1 skipped, 0 failed**, in 64.72 seconds. The one skip is the historical A51-log test; the clean source archive does not package that historical log.
+- The new peak memory is substantially below the ~1001 MiB measurement stated in the supplied audit, but remains above 512 MiB. Railway's actual memory limit and termination reason were not available; Railway OOM is therefore not confirmed.
+- No real MEXC order, real Telegram delivery, exchange-native stop, or profitability test was performed.
+
+## Railway deployment gates still requiring operator verification
+
+Use the persistent worker start command `python -u main.py` (not `--validate-only`). Confirm that all validate-only variables are absent/disabled, mount a persistent Railway Volume at `/data`, and set `SCALPER_DB=/data/unified_scalper.db`. Keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`; keep monitor/paper flags as intended. Allow sufficient memory headroom (the measured validation peak is already about 538 MiB; a 512 MiB limit is insufficient for that measured path). Confirm the actual Railway healthcheck mode and grace period; do not configure an HTTP health path for a worker that does not serve HTTP. Obtain the deployment exit code, memory graph, and full logs before attributing a crash to OOM.
+
+**Release decision remains NO-GO for unattended live trading.** A successful one-shot validator proves only the validation path. Monitor/Paper operation still requires stable Railway deployment, persistent DB verification, and real integration checks before a separate human-approved live decision.
+
+---
+
 # A66 — التقرير النهائي المدمج للتدقيق والإغلاق الإنتاجي
 
 **التوزيعة المرجعية:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL`  

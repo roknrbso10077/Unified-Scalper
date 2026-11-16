@@ -1,10 +1,20 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT IDENTITY
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT + A71 CORRECTIVE INTEGRATION
 
 **Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures + A70 entrypoint identity closure)  
-**Release date:** 2026-11-15 (A70 audit closure: 2026-11-16)  
+**Release date:** 2026-11-16 (A71 corrective integration; canonical A70 lineage retained)  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
+
+## A71 — integrated corrective production audit (2026-11-16)
+
+A71 is a corrective integration layer over the A70 package identity. It does not change the A66 distribution tag or relax strategy, risk, entry, or execution gates. It closes the startup source-parsing memory spike, frozen-candidate diversity mutation, fallback ranking constructor, cached-Universe fallback NameError, fail-open observability self-test exception, exact PositionManager identity coverage, unresolved Shadow sample retention, and bounded terminal Telegram Outbox retention. It also centralizes legacy validate-only aliases and logs an explicit one-shot validation exit.
+
+**Verification:** full offline suite `535 passed, 1 skipped, 0 failed` (64.72s); `python -u main.py --validate-only` passed 23 checks with exit 0, `bot_started=false`, peak RSS 551,132 KiB (538.21 MiB). This measured peak is below the earlier ~1001 MiB audit measurement but remains above 512 MiB. Railway's actual memory quota and termination reason were not available; OOM is not confirmed.
+
+**Railway operator checks:** use `python -u main.py` as the persistent Start Command; mount a persistent Volume at `/data`; set `SCALPER_DB=/data/unified_scalper.db`; disable every validate-only variable; keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`; and confirm a memory limit with adequate headroom. The app's monitor factory still requires MEXC credentials in this release. Do not use an HTTP health path unless the service actually serves HTTP; the packaged healthcheck is a process/container heartbeat check with a 360-second Docker start period.
+
+The package remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`. Railway deployment, real MEXC orders, native stop protection, real Telegram delivery and profitability are not certified.
 
 ## Operational status
 

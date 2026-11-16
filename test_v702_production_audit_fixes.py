@@ -1162,3 +1162,136 @@ def test_exchange_client_missing_credentials_fails_fast_with_actionable_boot_mar
     assert any("[V702-BOOT-STOP]" in record.getMessage() for record in caplog.records)
     assert all("MEXC_API_KEY=" not in record.getMessage() for record in caplog.records)
 
+
+
+# A71 corrective integration regression tests.
+def _a71_candidate(symbol="A71/USDT", mode="PULLBACK", side="long", score=0.80):
+    return bot.StrategyCandidate(
+        "a71-test", symbol, side, int(time.time() * 1000),
+        100.0, 99.0, 1.0, 2.0, 3.0, score, 2.0, 0.8, 0.8,
+        "PULLBACK", 100.0, {}, (), mode, "SCALP", "TREND",
+        "BULLISH", "LOCAL_BULLISH", "NORMAL", "5m", "B",
+    )
+
+
+def test_a71_fallback_ranked_candidate_preserves_canonical_absolute_targets():
+    candidate = _a71_candidate()
+    ranked = bot._v702_fallback_ranked_candidate(candidate)
+    assert isinstance(ranked, bot.RankedCandidate)
+    assert ranked.candidate is candidate
+    assert ranked.composite == candidate.engine_score
+    assert (ranked.tp1_abs, ranked.tp2_abs, ranked.tp3_abs) == (101.0, 102.0, 103.0)
+
+
+def test_a71_diversity_bonus_replaces_frozen_ranked_candidate_without_mutation():
+    first = bot.RankedCandidate(_a71_candidate(mode="PULLBACK"), 0.800, 101.0, 102.0, 103.0)
+    second = bot.RankedCandidate(_a71_candidate(symbol="B71/USDT", mode="BREAKOUT"), 0.799, 101.0, 102.0, 103.0)
+    adjusted = bot._v702_apply_mse_diversity_bonus([first, second], 0.005)
+    assert first.composite == 0.800 and second.composite == 0.799
+    assert adjusted[0].composite == 0.804
+    assert adjusted[0] is not second
+    assert adjusted[0].candidate is second.candidate
+
+
+def test_a71_long_only_contract_is_behavioral_and_rejects_short_candidate():
+    candidate = _a71_candidate(side="short")
+    assert bot.CompositeRankingEngine._validate_fail_closed(candidate) == "side_not_long"
+
+
+def test_a71_universe_fallback_uses_only_bounded_explicit_cache():
+    empty = SimpleNamespace(_liq_universe=[])
+    assert bot._v699_cached_universe_fallback(empty, 4) == []
+    assert bot.STATS["v699_universe_last_fallback_state"] == "EMPTY"
+    cached = SimpleNamespace(_liq_universe=["A/USDT", "B/USDT", "C/USDT"])
+    assert bot._v699_cached_universe_fallback(cached, 2) == ["A/USDT", "B/USDT"]
+    assert bot.STATS["v699_universe_last_fallback_state"] == "CACHED_FALLBACK"
+
+
+def test_a71_observability_self_test_fails_closed_when_summary_raises(monkeypatch):
+    def raise_offline():
+        raise RuntimeError("offline_injected_summary_error")
+    monkeypatch.setattr(bot, "_v699_daily_summary_text", raise_offline)
+    report = bot._v699_observability_closure_test()
+    assert report["pass"] is False
+    assert "exception" in report["failed"]
+    assert "offline_injected_summary_error" in report["error"]
+    assert all(isinstance(value, bool) for value in report["checks"].values())
+
+
+def test_a71_runtime_source_extractor_returns_only_function_span():
+    source = bot._v702_runtime_function_source(bot._v699_observability_closure_test)
+    assert "def _v699_observability_closure_test" in source
+    assert "checks={}" in source
+    assert len(source) < 20_000
+
+
+def test_a71_telegram_outbox_retention_never_deletes_nonterminal_work(tmp_path, monkeypatch):
+    import sqlite3
+    db_path = tmp_path / "outbox.sqlite3"
+    monkeypatch.setitem(bot.CONFIG, "DB_PATH", str(db_path))
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE telegram_outbox (
+        outbox_id TEXT PRIMARY KEY, message_key TEXT NOT NULL, message TEXT NOT NULL,
+        status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+    )""")
+    old = "2020-01-01T00:00:00+00:00"
+    fresh = datetime_now = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    rows = [
+        ("old-delivered", "k1", "x", "DELIVERED", 1, old, old, None),
+        ("old-dead", "k2", "x", "DEAD_LETTER", 3, old, old, None),
+        ("fresh-delivered", "k3", "x", "DELIVERED", 1, fresh, fresh, None),
+        ("queued", "k4", "x", "QUEUED", 0, old, old, None),
+        ("sending", "k5", "x", "SENDING", 1, old, old, None),
+        ("retry", "k6", "x", "RETRY_PENDING", 2, old, old, None),
+    ]
+    conn.executemany("INSERT INTO telegram_outbox VALUES(?,?,?,?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+    report = bot.DBManager.prune_telegram_outbox(retention_days=30, max_terminal_rows=100)
+    assert report["deleted_by_age"] == 2
+    assert report["pending_preserved"] == 3
+    conn = sqlite3.connect(str(db_path))
+    statuses = dict(conn.execute("SELECT outbox_id,status FROM telegram_outbox").fetchall())
+    conn.close()
+    assert statuses == {"fresh-delivered": "DELIVERED", "queued": "QUEUED",
+                        "sending": "SENDING", "retry": "RETRY_PENDING"}
+
+
+def test_a71_counterfactual_retention_preserves_pending_rows_over_cap(tmp_path):
+    from v702_counterfactual_shadow import V702CounterfactualShadow
+    study = V702CounterfactualShadow(str(tmp_path / "cf.sqlite3"), str(tmp_path / "reports"))
+    with study._db() as conn:
+        for index, status in enumerate(("PENDING", "PENDING", "TP1", "SL")):
+            conn.execute("""INSERT INTO v702_cf_shadow_samples
+                (sample_id,sample_key,created_ts,anchor_bar_ts_ms,symbol,family,strategy_mode,lane,reject_reason,
+                 last_candle_ts_ms,bars_seen,status,note,context_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (f"cf-{index}", f"key-{index}", float(index), 1, "A71/USDT", "PULLBACK", "PULLBACK",
+                 "BASELINE_PASS", "test", 1, 0, status, "", "{}"))
+        retention = study._prune_sample_rows(conn, 2)
+    with study._db() as conn:
+        statuses = dict(conn.execute("SELECT sample_id,status FROM v702_cf_shadow_samples").fetchall())
+    assert statuses == {"cf-0": "PENDING", "cf-1": "PENDING"}
+    assert retention["pending"] == 2
+    assert retention["deleted_terminal"] == 2
+    assert retention["over_cap"] == 0
+
+
+def test_a71_intraday_retention_preserves_pending_rows_over_cap(tmp_path):
+    from v702_intraday_shadow import V702IntradayShadow
+    study = V702IntradayShadow(str(tmp_path / "intraday.sqlite3"), str(tmp_path / "reports"))
+    with study._db() as conn:
+        for index, status in enumerate(("PENDING", "PENDING", "TP1", "SL")):
+            conn.execute("""INSERT INTO v702_intraday_shadow_samples
+                (sample_id,symbol,strategy_mode,timeframe,signal_ts_ms,created_ts,entry,stop,target,risk_unit,
+                 risk_pct,last_candle_ts_ms,bars_seen,status,cost_pct,quote_volume_24h,tier,features_json,note)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (f"intra-{index}", f"A71-{index}/USDT", "PULLBACK", "1m", 1, float(index),
+                 100.0, 99.0, 101.0, 1.0, 1.0, 1, 0, status, 0.3, 2_000_000.0, "MICRO", "{}", "test"))
+        retention = study._prune_sample_rows(conn, 2)
+    with study._db() as conn:
+        statuses = dict(conn.execute("SELECT sample_id,status FROM v702_intraday_shadow_samples").fetchall())
+    assert statuses == {"intra-0": "PENDING", "intra-1": "PENDING"}
+    assert retention["pending"] == 2
+    assert retention["deleted_terminal"] == 2

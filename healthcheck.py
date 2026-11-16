@@ -94,17 +94,37 @@ def main() -> int:
                 raise ValueError("pm_healthy_ticks_not_integer")
             pm_positions = int(pm_positions_num)
             pm_state = str(pm.get("state", "")).strip().upper()
+            runtime_ids_raw = runtime.get("open_position_ids")
+            pm_ids_raw = pm.get("open_position_ids")
+            managed_ids_raw = pm.get("managed_position_ids")
+            ids_valid = all(isinstance(value, list) for value in (runtime_ids_raw, pm_ids_raw, managed_ids_raw))
+            runtime_ids = [str(value).strip() for value in runtime_ids_raw] if isinstance(runtime_ids_raw, list) else []
+            pm_ids = [str(value).strip() for value in pm_ids_raw] if isinstance(pm_ids_raw, list) else []
+            managed_ids = [str(value).strip() for value in managed_ids_raw] if isinstance(managed_ids_raw, list) else []
+            identity_coverage_ok = bool(
+                ids_valid
+                and all(runtime_ids) and all(pm_ids) and all(managed_ids)
+                and len(runtime_ids) == open_positions
+                and len(pm_ids) == pm_positions == open_positions
+                and len(managed_ids) == open_positions
+                and len(set(runtime_ids)) == len(runtime_ids)
+                and len(set(pm_ids)) == len(pm_ids)
+                and len(set(managed_ids)) == len(managed_ids)
+                and set(runtime_ids) == set(pm_ids) == set(managed_ids)
+            )
             if (not math.isfinite(pm_age) or pm_stamp <= 0 or pm_age < -5.0
                     or pm_age > pm_stale or not runtime_boot or pm_boot != runtime_boot
-                    or pm_positions < 1 or pm_state != "RUNNING" or int(pm_ticks_num) < 1):
+                    or pm_positions != open_positions or not identity_coverage_ok
+                    or pm_state != "RUNNING" or int(pm_ticks_num) < 1):
                 print(
                     f"unhealthy: position_manager_heartbeat_age_sec={pm_age:.1f} "
                     f"threshold_sec={pm_stale:.1f} runtime_positions={open_positions} "
-                    f"manager_positions={pm_positions} same_boot={bool(runtime_boot and pm_boot == runtime_boot)}",
+                    f"manager_positions={pm_positions} identity_coverage_ok={identity_coverage_ok} "
+                    f"same_boot={bool(runtime_boot and pm_boot == runtime_boot)}",
                     flush=True,
                 )
                 return 1
-            pm_age_detail = f"pm_age_sec={max(0.0, pm_age):.1f} pm_positions={pm_positions}"
+            pm_age_detail = f"pm_age_sec={max(0.0, pm_age):.1f} pm_positions={pm_positions} identity_coverage=exact"
 
         telemetry = payload.get("telemetry", {})
         telemetry_state = "unavailable"

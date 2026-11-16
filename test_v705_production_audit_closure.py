@@ -171,8 +171,12 @@ def test_a58_healthcheck_requires_fresh_position_manager_heartbeat(tmp_path, mon
     runtime = tmp_path / "runtime.json"
     manager = tmp_path / "pm.json"
     heartbeat.write_text(json.dumps({"timestamp": now, "state": "RUNNING"}), encoding="utf-8")
-    runtime.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1}), encoding="utf-8")
-    manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1, "state": "RUNNING", "healthy_ticks": 1}), encoding="utf-8")
+    runtime.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1,
+                                   "open_position_ids": ["ABC/USDT|trade-a"]}), encoding="utf-8")
+    manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1,
+                                   "open_position_ids": ["ABC/USDT|trade-a"],
+                                   "managed_position_ids": ["ABC/USDT|trade-a"],
+                                   "state": "RUNNING", "healthy_ticks": 1}), encoding="utf-8")
     for key, value in {
         "V702_HEARTBEAT_FILE": str(heartbeat),
         "V702_RUNTIME_HEARTBEAT_FILE": str(runtime),
@@ -182,6 +186,26 @@ def test_a58_healthcheck_requires_fresh_position_manager_heartbeat(tmp_path, mon
     }.items():
         monkeypatch.setenv(key, value)
     assert healthcheck.main() == 0
+    # Matching counts are not sufficient: every runtime position must be
+    # identified and explicitly covered by the manager's successful cycle.
+    runtime.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 2,
+                                   "open_position_ids": ["ABC/USDT|trade-a", "XYZ/USDT|trade-b"]}), encoding="utf-8")
+    manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1,
+                                   "open_position_ids": ["ABC/USDT|trade-a"],
+                                   "managed_position_ids": ["ABC/USDT|trade-a"],
+                                   "state": "RUNNING", "healthy_ticks": 1}), encoding="utf-8")
+    assert healthcheck.main() == 1
+    manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 2,
+                                   "open_position_ids": ["ABC/USDT|trade-a", "XYZ/USDT|trade-b"],
+                                   "managed_position_ids": ["ABC/USDT|trade-a"],
+                                   "state": "RUNNING", "healthy_ticks": 1}), encoding="utf-8")
+    assert healthcheck.main() == 1
+    runtime.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1,
+                                   "open_position_ids": ["ABC/USDT|trade-a"]}), encoding="utf-8")
+    manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1,
+                                   "open_position_ids": ["ABC/USDT|trade-a"],
+                                   "managed_position_ids": ["ABC/USDT|trade-a"],
+                                   "state": "RUNNING", "healthy_ticks": 1}), encoding="utf-8")
     manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1, "state": "ERROR", "healthy_ticks": 1}), encoding="utf-8")
     assert healthcheck.main() == 1
     manager.write_text(json.dumps({"timestamp": now, "boot_id": boot, "open_positions": 1, "state": "RUNNING", "healthy_ticks": 0}), encoding="utf-8")

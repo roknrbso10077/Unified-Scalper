@@ -199,7 +199,27 @@ class V702IntradayShadow:
         self.report_dir = Path(report_dir or "./reports")
         self._config_getter = config_getter or (lambda: {})
         self._forbidden_fn = forbidden_fn
+        self._last_retention = {"total": 0, "pending": 0, "deleted_terminal": 0, "over_cap": 0}
         self._initialize()
+
+    def _prune_sample_rows(self, conn, max_rows: int):
+        """Prune oldest resolved rows, never unresolved PENDING samples."""
+        max_rows = max(1, int(max_rows))
+        total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
+        pending = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples WHERE status='PENDING'").fetchone()[0])
+        excess = max(0, total - max_rows)
+        deleted = 0
+        if excess:
+            cur = conn.execute(
+                "DELETE FROM v702_intraday_shadow_samples WHERE sample_id IN ("
+                "SELECT sample_id FROM v702_intraday_shadow_samples WHERE status!='PENDING' "
+                "ORDER BY created_ts ASC LIMIT ?)", (excess,)
+            )
+            deleted = max(0, int(cur.rowcount or 0))
+        remaining = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
+        self._last_retention = {"total": remaining, "pending": pending,
+                                "deleted_terminal": deleted, "over_cap": max(0, remaining - max_rows)}
+        return dict(self._last_retention)
 
     def _cfg(self) -> Dict[str, Any]:
         try:
@@ -783,9 +803,7 @@ class V702IntradayShadow:
                 inserted = cur.rowcount > 0
                 max_rows = int(max(1000, min(200000, _num(self._cfg().get("V702_INTRADAY_SHADOW_MAX_ROWS"), 50000) or 50000)))
                 if inserted:
-                    total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
-                    if total > max_rows:
-                        conn.execute("DELETE FROM v702_intraday_shadow_samples WHERE sample_id IN (SELECT sample_id FROM v702_intraday_shadow_samples ORDER BY created_ts ASC LIMIT ?)", (total - max_rows,))
+                    self._prune_sample_rows(conn, max_rows)
             return inserted
         except Exception:
             return False

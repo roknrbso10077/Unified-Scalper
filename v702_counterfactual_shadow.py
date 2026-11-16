@@ -140,6 +140,7 @@ class V702CounterfactualShadow:
         self.config_getter = config_getter or (lambda: {})
         self._last_report_wall = 0.0
         self._last_cycle_processed = 0
+        self._last_retention = {"total": 0, "pending": 0, "deleted_terminal": 0, "over_cap": 0}
         self._init_schema()
 
     def _cfg(self) -> Dict[str, Any]:
@@ -170,6 +171,32 @@ class V702CounterfactualShadow:
                 raise
             finally:
                 conn.close()
+
+    def _prune_sample_rows(self, conn: sqlite3.Connection, cap: int) -> Dict[str, int]:
+        """Prune oldest terminal samples only; unresolved research rows are sacrosanct."""
+        cap = max(1, int(cap))
+        total = int(conn.execute("SELECT COUNT(*) FROM v702_cf_shadow_samples").fetchone()[0])
+        pending = int(conn.execute("SELECT COUNT(*) FROM v702_cf_shadow_samples WHERE status='PENDING'").fetchone()[0])
+        excess = max(0, total - cap)
+        deleted = 0
+        if excess:
+            cur = conn.execute(
+                "DELETE FROM v702_cf_shadow_samples WHERE sample_id IN ("
+                "SELECT sample_id FROM v702_cf_shadow_samples WHERE status!='PENDING' "
+                "ORDER BY created_ts ASC LIMIT ?)", (excess,)
+            )
+            deleted = max(0, int(cur.rowcount or 0))
+        # Age-based retention applies to resolved rows only. PENDING cohorts are
+        # retained until there is enough observed closed-candle data to resolve.
+        age_cur = conn.execute(
+            "DELETE FROM v702_cf_shadow_samples WHERE created_ts < ? AND status!='PENDING'",
+            (time.time() - 30 * 86400,),
+        )
+        deleted += max(0, int(age_cur.rowcount or 0))
+        remaining = int(conn.execute("SELECT COUNT(*) FROM v702_cf_shadow_samples").fetchone()[0])
+        self._last_retention = {"total": remaining, "pending": pending,
+                                "deleted_terminal": deleted, "over_cap": max(0, remaining - cap)}
+        return dict(self._last_retention)
 
     def _init_schema(self) -> None:
         with self._db() as conn:
@@ -369,10 +396,7 @@ class V702CounterfactualShadow:
                 inserted = cur.rowcount > 0
                 if inserted:
                     cap = int(max(1000, min(100000, _num(self._cfg().get("V702_CF_SHADOW_MAX_ROWS"), 30000) or 30000)))
-                    count = int(conn.execute("SELECT COUNT(*) FROM v702_cf_shadow_samples").fetchone()[0])
-                    if count > cap:
-                        conn.execute("DELETE FROM v702_cf_shadow_samples WHERE sample_id IN (SELECT sample_id FROM v702_cf_shadow_samples ORDER BY created_ts ASC LIMIT ?)", (count - cap,))
-                    conn.execute("DELETE FROM v702_cf_shadow_samples WHERE created_ts < ? AND status != 'PENDING'", (time.time() - 30 * 86400,))
+                    self._prune_sample_rows(conn, cap)
             return inserted
         except Exception:
             # Shadow telemetry is never allowed to affect the live decision.

@@ -1,3 +1,16 @@
+# A71 — Integrated corrective production closure (2026-11-16)
+
+- Removed full-file AST parsing from startup source-contract tests by extracting bounded function source; retained the behavior-level LONG_ONLY guard.
+- Fixed immutable ranked-candidate diversity and the fallback rank-result constructor.
+- Fixed cached-Universe recovery NameError and made an unavailable cache an explicit degraded-empty outcome.
+- Made observability self-test exceptions fail closed.
+- Required exact PositionManager identity coverage for every open position before reporting healthy protection coverage.
+- Preserved unresolved shadow `PENDING` samples during capacity/age retention.
+- Added bounded retention of terminal Telegram Outbox rows without deleting pending/retrying rows.
+- Unified validate-only aliases and explicit one-shot exit diagnostics.
+- Preserved A70 canonical package identity; exposed A71 as a separate corrective-integration revision.
+- No strategy thresholds, entry gates, risk caps, or live authorization defaults were relaxed. Live execution remains disabled by default and the package remains `NO_GO_UNATTENDED_LIVE`.
+
 # V702 A70 — entrypoint audit-identity closure (2026-11-16)
 
 - Move the A69 canonical audit-identity closure above both the `--validate-only` CLI exit and the persistent `__main__` entrypoint. The old placement allowed script startup to block inside `main()` before the final identity fields were applied, while module-import tests masked the ordering defect.

@@ -28,7 +28,7 @@ import tempfile
 import sqlite3
 import threading  # v4.2.0 — needed by V420 layer locks
 import contextvars
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, getcontext
 from dataclasses import dataclass, field, asdict, replace
 from collections import OrderedDict, defaultdict, deque
@@ -3282,6 +3282,67 @@ def _v702_read_source_text() -> str:
     except Exception:
         _V702_SOURCE_TEXT_CACHE = ""
     return _V702_SOURCE_TEXT_CACHE
+
+_V702_SOURCE_LINES_CACHE = None
+
+def _v699_cached_universe_fallback(run_bot: Any, fallback_n: int) -> List[str]:
+    """Return only a bounded, previously retained universe; never invent one."""
+    try:
+        limit = max(1, min(1000, int(fallback_n)))
+        cached = list(getattr(run_bot, "_liq_universe", []) or [])[:limit]
+    except Exception:
+        cached = []
+    if cached:
+        STATS["v699_universe_last_fallback_state"] = "CACHED_FALLBACK"
+        STATS["v699_universe_last_fallback_reason"] = "source_refresh_failed"
+        return cached
+    STATS["v699_universe_last_fallback_state"] = "EMPTY"
+    STATS["v699_universe_last_fallback_reason"] = "source_failed_and_no_cached_universe"
+    return []
+
+
+def _v702_runtime_function_source(fn: Any) -> str:
+    """Return only a callable's source span without parsing the 100k-line module.
+
+    inspect.getsource() calls inspect.findsource(), which AST-parses the complete
+    module for line discovery. Startup self-tests need only a bounded snippet;
+    derive its end from the callable's code-object line table instead.
+    """
+    global _V702_SOURCE_LINES_CACHE
+    try:
+        target = getattr(fn, "__func__", fn)
+        code = getattr(target, "__code__", None)
+        if code is None:
+            return ""
+        if _V702_SOURCE_LINES_CACHE is None:
+            _V702_SOURCE_LINES_CACHE = _v702_read_source_text().splitlines(keepends=True)
+        lines = _V702_SOURCE_LINES_CACHE
+        start = max(1, int(code.co_firstlineno))
+        end = start
+        pending = [code]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            try:
+                for _byte_start, _byte_end, lineno in current.co_lines():
+                    if lineno is not None:
+                        end = max(end, int(lineno))
+            except Exception:
+                end = max(end, start)
+            for const in current.co_consts:
+                if hasattr(const, "co_lines") and hasattr(const, "co_consts"):
+                    pending.append(const)
+        if start > len(lines):
+            return ""
+        # Python code line tables point to the final executable line. Include
+        # one additional physical line for a trailing decorator/continuation.
+        return "".join(lines[start - 1:min(len(lines), end + 1)])
+    except Exception:
+        return ""
+
 
 def _v702_iter_named_call_segments(source: str, call_name: str):
     """Yield only individual calls named *call_name* without building a file AST.
@@ -12229,6 +12290,55 @@ class DBManager:
                 except Exception: pass
 
     @staticmethod
+    def prune_telegram_outbox(retention_days: int = 30, max_terminal_rows: int = 5000) -> Dict[str, int]:
+        """Bound terminal Telegram history without ever pruning work in flight."""
+        retention_days = max(1, min(3650, int(retention_days)))
+        max_terminal_rows = max(100, min(100000, int(max_terminal_rows)))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        conn = None
+        try:
+            path = str(CONFIG.get("DB_PATH") or "./unified_scalper.db")
+            conn = sqlite3.connect(path, timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("""CREATE TABLE IF NOT EXISTS telegram_outbox (
+                outbox_id TEXT PRIMARY KEY, message_key TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+            )""")
+            terminal = ("DELIVERED", "DEAD_LETTER")
+            old_cur = conn.execute(
+                "DELETE FROM telegram_outbox WHERE status IN (?,?) AND updated_at < ?",
+                (terminal[0], terminal[1], cutoff),
+            )
+            deleted_old = max(0, int(old_cur.rowcount or 0))
+            terminal_count = int(conn.execute(
+                "SELECT COUNT(*) FROM telegram_outbox WHERE status IN (?,?)", terminal
+            ).fetchone()[0])
+            excess = max(0, terminal_count - max_terminal_rows)
+            deleted_cap = 0
+            if excess:
+                cap_cur = conn.execute(
+                    "DELETE FROM telegram_outbox WHERE outbox_id IN ("
+                    "SELECT outbox_id FROM telegram_outbox WHERE status IN (?,?) "
+                    "ORDER BY updated_at ASC,created_at ASC LIMIT ?) ",
+                    (terminal[0], terminal[1], excess),
+                )
+                deleted_cap = max(0, int(cap_cur.rowcount or 0))
+            conn.commit()
+            pending = int(conn.execute(
+                "SELECT COUNT(*) FROM telegram_outbox WHERE status IN ('QUEUED','SENDING','RETRY_PENDING')"
+            ).fetchone()[0])
+            remaining = int(conn.execute(
+                "SELECT COUNT(*) FROM telegram_outbox WHERE status IN (?,?)", terminal
+            ).fetchone()[0])
+            return {"deleted_by_age": deleted_old, "deleted_by_cap": deleted_cap,
+                    "terminal_remaining": remaining, "pending_preserved": pending}
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
+    @staticmethod
     def update_telegram_outbox(outbox_id: str, status: str, attempts: Optional[int] = None,
                                last_error: Optional[str] = None) -> bool:
         oid = str(outbox_id or "").strip()
@@ -15100,6 +15210,35 @@ class RankedCandidate:
     tp3_abs: float
 
 
+def _v702_fallback_ranked_candidate(candidate: StrategyCandidate) -> RankedCandidate:
+    """Build the canonical ranked shape when weighted ranking is disabled."""
+    entry = float(candidate.entry_ref)
+    risk = entry - float(candidate.sl_price)
+    return RankedCandidate(
+        candidate=candidate,
+        composite=float(candidate.engine_score),
+        tp1_abs=entry + float(candidate.tp1_rr) * risk,
+        tp2_abs=entry + float(candidate.tp2_rr) * risk,
+        tp3_abs=entry + float(candidate.tp3_rr) * risk,
+    )
+
+
+def _v702_apply_mse_diversity_bonus(ranked: List[RankedCandidate], bonus: float) -> List[RankedCandidate]:
+    """Apply a bounded tie bonus without mutating frozen RankedCandidate values."""
+    cap = max(0.0, min(0.02, float(bonus)))
+    if cap <= 0.0 or len(ranked) < 2:
+        return list(ranked)
+    top_score = float(ranked[0].composite)
+    top_mode = ranked[0].candidate.strategy_mode
+    adjusted = []
+    for item in ranked:
+        score = float(item.composite)
+        if item is not ranked[0] and abs(top_score - score) <= 0.005 and item.candidate.strategy_mode != top_mode:
+            score = min(1.0, score + cap)
+        adjusted.append(replace(item, composite=score) if score != item.composite else item)
+    return sorted(adjusted, key=lambda item: item.composite, reverse=True)
+
+
 
 def _v554_record_mse_rank_reject(symbol: str, reason: str, candidate: Any = None, **ctx) -> None:
     """Record the exact reason a discovery candidate was dropped before canonical prequal.
@@ -15762,17 +15901,14 @@ class MultiStrategyEngine:
             _valid=[]
             for _c in all_cands:
                 _err=CompositeRankingEngine._validate_fail_closed(_c)
-                if _err is None: _valid.append(CompositeResult(_c,_c.engine_score,{}))
+                if _err is None:
+                    _valid.append(_v702_fallback_ranked_candidate(_c))
             ranked=sorted(_valid,key=lambda x:x.candidate.engine_score,reverse=True)
         # Optional, tightly bounded diversity tie adjustment. It can only
         # operate on near-equal candidates and is 0 by default.
         _div_cap=max(0.0,min(0.02,float(CONFIG.get("MSE_DIVERSITY_BONUS_PCT",0.0))))
         if _div_cap>0 and len(ranked)>1:
-            _top=ranked[0].composite
-            for _r in ranked[1:]:
-                if abs(_top-_r.composite)<=0.005 and _r.candidate.strategy_mode != ranked[0].candidate.strategy_mode:
-                    _r.composite=min(1.0,_r.composite+_div_cap)
-            ranked=sorted(ranked,key=lambda x:x.composite,reverse=True)
+            ranked = _v702_apply_mse_diversity_bonus(ranked, _div_cap)
 
         # V688 — canonical handoff closure for EVERY strategy family.
         # The MSE winner must be prequalified by the same canonical prequalifier
@@ -22058,8 +22194,16 @@ class PositionManager:
         # conclusively closed during this cycle. Per-symbol exceptions must not
         # be hidden by the loop's best-effort continuation.
         _pm_cycle_started = float(WALL_NOW())
-        _pm_cycle_symbols = [str(x) for x in list(ACTIVE_TRADES.keys())]
+        _pm_cycle_snapshot = list(ACTIVE_TRADES.items())
+        _pm_cycle_symbols = [str(x) for x, _trade in _pm_cycle_snapshot]
+        _pm_cycle_identity_by_symbol = {
+            str(_sym): _v702_position_identity(_sym, _trade)
+            for _sym, _trade in _pm_cycle_snapshot
+        }
         _pm_cycle_status = {sym: "PENDING" for sym in _pm_cycle_symbols}
+        for _sym, _identity in _pm_cycle_identity_by_symbol.items():
+            if not _identity:
+                _pm_cycle_status[_sym] = "INCOMPLETE:POSITION_IDENTITY_MISSING"
         def _pm_set_status(_sym, _state):
             _pm_cycle_status[str(_sym)] = str(_state)[:180]
         # v4.0.2 PATCH B: heartbeat for SoftwareSLFallback consumers
@@ -22844,19 +22988,43 @@ class PositionManager:
 
         _pm_failed = {sym: state for sym, state in _pm_cycle_status.items()
                       if state not in {"PROTECTED", "CLOSED"}}
-        # Include positions that appeared during the cycle; they also need a
-        # valid protection state before this tick can renew the health lease.
+        _pm_managed_ids = []
+        _pm_open_ids = []
+        # A health lease covers exact positions, not a positive count. Reject a
+        # trade that appeared, disappeared/replaced, or lost its stable identity
+        # during this cycle; it will be evaluated on the next complete tick.
         for _sym, _trade in list(ACTIVE_TRADES.items()):
-            if not _v563_trade_protection_healthy(_trade):
-                _pm_failed.setdefault(str(_sym), "INCOMPLETE:ACTIVE_POSITION_NOT_PROTECTED")
+            _key = str(_sym)
+            _identity = _v702_position_identity(_sym, _trade)
+            if _identity:
+                _pm_open_ids.append(_identity)
+            _start_identity = _pm_cycle_identity_by_symbol.get(_key)
+            if not _identity or not _start_identity:
+                _pm_failed.setdefault(_key, "INCOMPLETE:POSITION_IDENTITY_MISSING")
+                continue
+            if _identity != _start_identity:
+                _pm_failed.setdefault(_key, "INCOMPLETE:POSITION_IDENTITY_CHANGED_DURING_CYCLE")
+                continue
+            if _pm_cycle_status.get(_key) != "PROTECTED" or not _v563_trade_protection_healthy(_trade):
+                _pm_failed.setdefault(_key, "INCOMPLETE:ACTIVE_POSITION_NOT_PROTECTED")
+                continue
+            _pm_managed_ids.append(_identity)
+        _pm_open_ids = sorted(_pm_open_ids)
+        _pm_managed_ids = sorted(_pm_managed_ids)
+        if len(_pm_open_ids) != len(ACTIVE_TRADES) or len(set(_pm_open_ids)) != len(_pm_open_ids):
+            _pm_failed.setdefault("__coverage__", "INCOMPLETE:OPEN_POSITION_IDENTITIES_NOT_UNIQUE")
+        if set(_pm_managed_ids) != set(_pm_open_ids):
+            _pm_failed.setdefault("__coverage__", "INCOMPLETE:POSITION_MANAGER_COVERAGE_MISMATCH")
         _pm_report = {
             "started_ts": _pm_cycle_started, "completed_ts": float(WALL_NOW()),
             "positions_at_start": len(_pm_cycle_symbols),
             "positions_open_at_end": len(ACTIVE_TRADES),
+            "open_position_ids": _pm_open_ids,
+            "managed_position_ids": _pm_managed_ids,
             "status_by_symbol": dict(_pm_cycle_status),
             "failed_by_symbol": _pm_failed,
             "healthy": not bool(_pm_failed),
-            "source": "POSITION_MANAGER_PER_POSITION_PROTECTION_EVALUATION",
+            "source": "POSITION_MANAGER_EXACT_POSITION_IDENTITY_PROTECTION_EVALUATION",
         }
         STATS["v702_pm_cycle_report"] = _pm_report
         if _pm_failed:
@@ -23013,13 +23181,41 @@ def _v702_atomic_heartbeat_write(path_value: str, payload: Dict[str, Any]) -> No
     temp.write_text(data, encoding="utf-8")
     os.replace(str(temp), str(target))
 
+def _v702_position_identity(symbol: Any, trade: Any) -> Optional[str]:
+    """Return a stable, non-empty identity for one currently-open trade."""
+    try:
+        _sym = str(symbol or getattr(trade, "symbol", "") or "").strip().upper()
+        _trace = str(getattr(trade, "trace_id", "") or "").strip()
+        if not _sym or not _trace:
+            return None
+        return f"{_sym}|{_trace}"
+    except Exception:
+        return None
+
+
+def _v702_open_position_ids() -> List[str]:
+    _ids = []
+    for _symbol, _trade in list(ACTIVE_TRADES.items()):
+        _identity = _v702_position_identity(_symbol, _trade)
+        if _identity:
+            _ids.append(_identity)
+    return sorted(_ids)
+
+
 def _v702_pm_heartbeat_payload() -> Dict[str, Any]:
+    _open_ids = _v702_open_position_ids()
+    _report = STATS.get("v702_pm_cycle_report", {})
+    _managed_ids = []
+    if isinstance(_report, dict) and bool(_report.get("healthy")):
+        _managed_ids = sorted(set(str(x) for x in (_report.get("managed_position_ids", []) or []) if str(x)))
     return {
         "timestamp": float(time.time()),
         "boot_id": _V702_PROCESS_BOOT_ID,
         "pid": int(os.getpid()),
         "state": str(STATS.get("v702_pm_task_state", "STARTING")),
         "open_positions": int(len(ACTIVE_TRADES)),
+        "open_position_ids": _open_ids,
+        "managed_position_ids": _managed_ids,
         "healthy_ticks": int(STATS.get("v702_pm_healthy_ticks", 0) or 0),
         "source": "POSITION_MANAGER_SUCCESSFUL_CYCLE",
     }
@@ -23034,6 +23230,7 @@ async def _v702_runtime_heartbeat_task():
                 "timestamp": float(time.time()), "boot_id": _V702_PROCESS_BOOT_ID,
                 "pid": int(os.getpid()), "state": str(LIVE_STATE.state.value if hasattr(LIVE_STATE.state, "value") else LIVE_STATE.state),
                 "open_positions": int(len(ACTIVE_TRADES)),
+                "open_position_ids": _v702_open_position_ids(),
                 "pm_last_healthy_ts": float(STATS.get("v702_pm_last_healthy_ts", 0.0) or 0.0),
                 "source": "INDEPENDENT_RUNTIME_WATCHDOG",
             }
@@ -25582,6 +25779,7 @@ async def run_bot(universe: List[str]):
             "timestamp": float(time.time()), "boot_id": _V702_PROCESS_BOOT_ID,
             "pid": int(os.getpid()), "state": "STARTUP_PROTECTED",
             "open_positions": int(len(ACTIVE_TRADES)),
+            "open_position_ids": _v702_open_position_ids(),
             "pm_last_healthy_ts": float(STATS.get("v702_pm_last_healthy_ts", 0.0) or 0.0),
             "source": "STARTUP_BEFORE_SCAN",
         }
@@ -40048,13 +40246,13 @@ def _v456_self_test() -> None:
         _spot = str(CONFIG.get("MARKET_TYPE", CONFIG.get("EXCHANGE_MARKET", "spot"))).lower() in ("spot", "")
         _no_fut = not bool(CONFIG.get("ENABLE_FUTURES", False)) and not bool(CONFIG.get("FUTURES_ENABLED", False))
         _no_lev = float(CONFIG.get("LEVERAGE", 1) or 1) <= 1.0
-        _side_long = True
-        try:
-            import inspect as _insp30
-            _src = _insp30.getsource(StrategyCandidate)
-            _side_long = ('"long"' in _src) or ("'long'" in _src)
-        except Exception:
-            _side_long = True
+        _side_probe = StrategyCandidate(
+            "t30_side_contract", "T30/USDT", "short", int(WALL_NOW() * 1000),
+            100.0, 99.0, 1.0, 2.0, 3.0, 0.8, 2.0, 0.8, 0.8,
+            "PULLBACK", 100.0, {}, (), "PULLBACK", "SCALP", "TREND",
+            "BULLISH", "LOCAL_BULLISH", "NORMAL", "5m", "B",
+        )
+        _side_long = CompositeRankingEngine._validate_fail_closed(_side_probe) == "side_not_long"
         ok("T30_long_only_invariant", _long_only and _spot and _no_fut and _no_lev and _side_long)
     except Exception:
         ok("T30_long_only_invariant", False)
@@ -40179,7 +40377,7 @@ def _v456_self_test() -> None:
     try:
         import inspect as _inspect
         _pre_impl = globals().get("_orig_v453_prequalify", _v453_prequalify)
-        _src_pre = _inspect.getsource(_pre_impl)
+        _src_pre = _v702_runtime_function_source(_pre_impl)
         ok("prequal_trace_id_defined", "trace_id = LifecycleTrace.new(sym)" in _src_pre or "trace_id = LifecycleTrace.new" in _src_pre)
     except Exception:
         ok("prequal_trace_id_defined", False)
@@ -40788,7 +40986,7 @@ def _v456_self_test_v516() -> None:
     # source so the assertion cannot match its own test text/comments.
     try:
         import inspect as _inspect58
-        _sb_src = _inspect58.getsource(SignalBuilder.build_and_route)
+        _sb_src = _v702_runtime_function_source(SignalBuilder.build_and_route)
         _legacy_tokens = (
             "_legacy_would_allow = str(opp",
             "bearish_family_policy =",
@@ -66968,7 +67166,7 @@ validate_config = _v691_validate_config
 STATS["v691_validator_authority"] = True
 STATS["v691_final_identity"] = V691_FINAL_IDENTITY
 
-if os.environ.get("UNIFIED_V690_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V690_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _ok = bool(validate_config()) and bool(STATS.get("v702_knowledge_edge_self_test",{}).get("pass",False))
     print(json.dumps({"pass": _ok, "identity": V691_FINAL_IDENTITY, "checks": STATS.get("v691_public_validate_checks", {})}, ensure_ascii=False, default=str))
     raise SystemExit(0 if _ok else 1)
@@ -67963,7 +68161,7 @@ def _v693_public_validate_config():
 
 validate_config = _v693_public_validate_config
 
-if os.environ.get("UNIFIED_V693_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V693_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _v693_validate_ok = bool(validate_config())
     print(json.dumps({
         "pass": _v693_validate_ok,
@@ -68328,7 +68526,7 @@ V694_SELF_TEST_RESULT = _v694_terminal_self_test()
 STATS["v694_self_test"] = V694_SELF_TEST_RESULT
 STATS["v694_boot_pass"] = bool(V694_SELF_TEST_RESULT.get("pass", False))
 
-if os.environ.get("UNIFIED_V694_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V694_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _v694_validate_ok = bool(validate_config())
     print(json.dumps({
         "pass": _v694_validate_ok,
@@ -68704,7 +68902,7 @@ def _v695_public_validate_config():
 
 globals()["validate_config"] = _v695_public_validate_config
 
-if os.environ.get("UNIFIED_V695_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V695_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _ok = bool(validate_config())
     print(json.dumps({
         "pass": _ok,
@@ -69224,7 +69422,7 @@ def _v696_public_validate_config():
 
 globals()["validate_config"] = _v696_public_validate_config
 
-if os.environ.get("UNIFIED_V696_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V696_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _ok = bool(validate_config())
     print(json.dumps({
         "pass": _ok,
@@ -69449,7 +69647,7 @@ def _v697_public_validate_config():
         return False
 globals()["validate_config"]=_v697_public_validate_config
 
-if os.environ.get("UNIFIED_V697_VALIDATE_ONLY")=="1":
+if False and os.environ.get("UNIFIED_V697_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _ok=bool(validate_config())
     print(json.dumps({"pass":_ok,"identity":V697_FINAL_IDENTITY,"checks":STATS.get("v697_self_test",{}).get("checks",{}),"self_test":V697_SELF_TEST_RESULT,"heartbeat":_v697_hb_segment()[:3000]},ensure_ascii=False,default=str))
     raise SystemExit(0 if _ok else 1)
@@ -69844,7 +70042,7 @@ def _v698_public_validate_config():
 
 globals()["validate_config"] = _v698_public_validate_config
 
-if os.environ.get("UNIFIED_V698_VALIDATE_ONLY") == "1":
+if False and os.environ.get("UNIFIED_V698_VALIDATE_ONLY") == "1":  # legacy alias handled by terminal V702 validator
     _ok = bool(validate_config())
     print(json.dumps({"pass":_ok,"identity":V698_FINAL_IDENTITY,"checks":V698_SELF_TEST_RESULT.get("checks",{}),"self_test":V698_SELF_TEST_RESULT,"heartbeat":_v698_hb_segment()}, ensure_ascii=False, default=str))
     raise SystemExit(0 if _ok else 1)
@@ -71191,11 +71389,11 @@ try:
                 ))
             except Exception:
                 fallback_n = 130
-            base = list(getattr(run_bot, "_liq_universe", []) or [])[:fallback_n]
+            # Only an explicitly retained, previously validated universe is a
+            # legitimate fallback. Never invent a replacement universe.
+            base = _v699_cached_universe_fallback(run_bot, fallback_n)
             if not base:
-                base = list(universe or [])[:fallback_n]
-            if not base:
-                logger.warning("[V699-UNIVERSE] source refresh failed with no bounded fallback")
+                logger.warning("[V699-UNIVERSE] source refresh failed with no bounded cached fallback; returning empty universe")
                 return []
         try:
             # V702: forbidden-asset admission is independent of dynamic-universe
@@ -72335,12 +72533,16 @@ def _v705_self_test() -> dict:
     }
 
 
-_V699_VALIDATE_ONLY_REQUEST = (
-    os.environ.get("UNIFIED_V699_VALIDATE_ONLY") == "1"
-    or os.environ.get("UNIFIED_V702_VALIDATE_ONLY") == "1"
-    or os.environ.get("UNIFIED_VALIDATE_ONLY") == "1"
-    or "--validate-only" in sys.argv
+_V702_VALIDATE_ONLY_ENV_ALIASES = tuple(
+    f"UNIFIED_V{_version}_VALIDATE_ONLY" for _version in (690, 693, 694, 695, 696, 697, 698, 699, 702)
+) + ("UNIFIED_VALIDATE_ONLY",)
+_V702_VALIDATE_ONLY_ACTIVE_ENV = tuple(
+    _name for _name in _V702_VALIDATE_ONLY_ENV_ALIASES
+    if str(os.environ.get(_name, "")).strip().lower() in {"1", "true", "yes", "on"}
 )
+_V699_VALIDATE_ONLY_REQUEST = bool(_V702_VALIDATE_ONLY_ACTIVE_ENV or "--validate-only" in sys.argv)
+logger.info("[V702-BOOT-MODE] validate_only=%s active_env_aliases=%s cli_flag=%s",
+            _V699_VALIDATE_ONLY_REQUEST, list(_V702_VALIDATE_ONLY_ACTIVE_ENV), "--validate-only" in sys.argv)
 
 
 # =============================================================================
@@ -72772,6 +72974,7 @@ except Exception:
 # none authorize a trade.
 def _v699_observability_closure_test():
     checks={}
+    error = None
     try:
         checks["live_epoch_baseline"] = isinstance(_V699_BOOT_REJECTION_BASELINE, dict)
         checks["truth_function"] = callable(_v699_truthful_starvation_snapshot)
@@ -72800,8 +73003,15 @@ def _v699_observability_closure_test():
         checks["drawdown_not_starvation_root"] = _dd_truth.get("entry_block") != "DD_HALT" and _dd_truth.get("detail") != "equity_drawdown_halt"
         checks["summary_excludes_boot_when_unarmed"] = (not bool(globals().get("_V699_LIVE_EPOCH_ARMED", False)) and "eerr=0" in _v699_daily_summary_text()) or bool(globals().get("_V699_LIVE_EPOCH_ARMED", False))
     except Exception as exc:
-        checks["exception"] = f"{type(exc).__name__}:{exc}"
-    return {"pass":bool(all(bool(v) for v in checks.values())), "checks":checks, "failed":[k for k,v in checks.items() if not v]}
+        error = f"{type(exc).__name__}:{str(exc)[:240]}"
+    failed = [k for k, value in checks.items() if value is not True]
+    if error is not None:
+        failed.append("exception")
+    result = {"pass": bool(error is None and bool(checks) and not failed),
+              "checks": checks, "failed": failed}
+    if error is not None:
+        result["error"] = error
+    return result
 
 _V699_OBSERVABILITY_CLOSURE_TEST = _v699_observability_closure_test()
 STATS["v699_observability_closure_test"] = _V699_OBSERVABILITY_CLOSURE_TEST
@@ -72992,9 +73202,10 @@ def _v700_production_audit():
         )
         checks["dynamic_universe_failure_never_falls_open"] = (
             "fallback_n = max(1, min(" in src
-            and 'base = list(getattr(run_bot, "_liq_universe", []) or [])[:fallback_n]' in src
+            and "_v699_cached_universe_fallback(run_bot, fallback_n)" in src
             and "if not base:" in src
-            and "base = list(universe or [])[:fallback_n]" in src
+            and 'source_failed_and_no_cached_universe' in src
+            and "base = list(universe or [])[:fallback_n]" not in src
         )
         checks["v650_no_double_truncate_v699"] = (
             "V699_RT_INTEGRATION_ENABLE" in src and "_v650_target = max(_v650_target, len(scan_universe))" in src
@@ -76177,7 +76388,7 @@ def _v702_final_audit_self_test() -> Dict[str, Any]:
                         _forming_refs.append(_engine_name + ":missing_generate")
                         continue
                     try:
-                        _body_txt = textwrap.dedent(_inspect_engine.getsource(_generate))
+                        _body_txt = textwrap.dedent(_v702_runtime_function_source(_generate))
                     except Exception:
                         _forming_refs.append(_engine_name + ":source_unavailable")
                         continue
@@ -78566,7 +78777,7 @@ def _v702_r11_production_closure_self_test() -> Dict[str, Any]:
         # Canonical operator label closure.
         try:
             import inspect as _r11_inspect
-            _agg_src = _r11_inspect.getsource(_V662RejectionAggregator.snapshot_and_flush) if agg is not None else ""
+            _agg_src = _v702_runtime_function_source(_V662RejectionAggregator.snapshot_and_flush) if agg is not None else ""
             checks["rejection_batch_header_is_evaluation_scoped"] = "Rejected evaluations:" in _agg_src and "Notification groups:" in _agg_src
             checks["rejection_batch_header_no_ambiguous_rejections_label"] = "| Rejections: <b>" not in _agg_src
         except Exception:
@@ -80520,7 +80731,7 @@ def _v702_r19_final_self_test():
         checks["smc_no_execution_api"] = not any(k in smc for k in ("submit", "queue", "send", "create_order", "execute"))
         try:
             import inspect as _inspect_r19
-            _smc_src = _inspect_r19.getsource(_v702_smc_detect)
+            _smc_src = _v702_runtime_function_source(_v702_smc_detect)
             checks["smc_source_execution_safe"] = not any(k in _smc_src for k in ("create_order(", "create_limit_buy_order(", "create_market_buy_order(", "submit_entry(", "emergency_close(", "TelegramDispatcher.enqueue("))
         except Exception:
             checks["smc_source_execution_safe"] = False
@@ -81327,7 +81538,7 @@ def _v702_r20_smc_self_test():
         checks["fill_bounds"]=0<=float(s1.get("ob_fill_pct",1.0) or 0.0)<=1 and 0<=float(s1.get("fvg_fill_pct",1.0) or 0.0)<=1 and 0<=float(s1.get("zone_fill_pct",1.0) or 0.0)<=1
         checks["pa_contract"]=isinstance(s1.get("pa"),dict) and "confirmed" in s1.get("pa",{})
         checks["native_requires_quality"]=not bool(s1.get("native_eligible")) or (s1.get("zone_state")=="FRESH" and (s1.get("sweep_bos_linked") or s1.get("choch")) and s1.get("pa_confirmed"))
-        checks["no_execution_tokens"] = not any(x in __import__("inspect").getsource(_v702_r20_smc_detect) for x in ("create_order(","submit_entry(","create_market_buy_order(","execute(","TelegramDispatcher.enqueue("))
+        checks["no_execution_tokens"] = not any(x in _v702_runtime_function_source(_v702_r20_smc_detect) for x in ("create_order(","submit_entry(","create_market_buy_order(","execute(","TelegramDispatcher.enqueue("))
         details["synthetic_smc"]={k:s1.get(k) for k in ("bias_1d","bias_4h","sweep","sweep_bos_linked","bos","bos_structure","choch","displacement","order_block","ob_state","fvg","fvg_state","discount","pa_confirmed","zone_source","zone_state","zone_distance_atr","confluence","quality_tier","native_eligible")}
     except Exception as exc:
         checks["exception"]=False; details["exception"]=f"{type(exc).__name__}:{exc}"
@@ -82937,7 +83148,7 @@ def _v702_r25_terminal_validate_config() -> bool:
             and "builder_terminal_no_result_unattributed" in _src_r25
         )
         try:
-            _hb = inspect.getsource(globals().get("_v43_hb_segment")) if callable(globals().get("_v43_hb_segment")) else ""
+            _hb = _v702_runtime_function_source(globals().get("_v43_hb_segment")) if callable(globals().get("_v43_hb_segment")) else ""
             components["r25_heartbeat_identity"] = "rev=R25" in _hb or bool(STATS.get("v702_r25_heartbeat_identity_wired", False))
         except Exception:
             components["r25_heartbeat_identity"] = bool(STATS.get("v702_r25_heartbeat_identity_wired", False))
@@ -83199,7 +83410,7 @@ def _v702_r26_builder_typeerror_retry_audit() -> Dict[str, Any]:
             continue
         visited.add(id(fn))
         try:
-            src = textwrap.dedent(_inspect_r26.getsource(fn))
+            src = textwrap.dedent(_v702_runtime_function_source(fn))
             tree = ast.parse(src)
             chain.append({"name": name, "function": getattr(fn, "__name__", name)})
             try:
@@ -83313,7 +83524,7 @@ def _v702_r26_terminal_self_test() -> Dict[str, Any]:
                 checks["builder_typeerror_no_retry"] = (
                     _calls["n"] == 0
                     and "_V702_R26_ORIG_BUILD_AND_ROUTE(" in
-                    _inspect_r26.getsource(SignalBuilder.build_and_route)
+                    _v702_runtime_function_source(SignalBuilder.build_and_route)
                 )
             else:
                 checks["builder_typeerror_no_retry"] = (
@@ -83527,7 +83738,7 @@ def _v702_r26_validate_config() -> bool:
             and not bool(CONFIG.get("V690_DISCOVERY_VERIFIED_LIVE", False))
         )
         _r26_builder_source = (
-            _inspect_r26.getsource(SignalBuilder.build_and_route)
+            _v702_runtime_function_source(SignalBuilder.build_and_route)
             if "_v702_r26_build_and_route" in globals()
             else ""
         )
@@ -83547,7 +83758,7 @@ def _v702_r26_validate_config() -> bool:
             )
         )
         try:
-            hb = _inspect_r26.getsource(_v43_hb_segment)
+            hb = _v702_runtime_function_source(_v43_hb_segment)
             components["heartbeat_r26_identity"] = "rev=R26" in hb
         except Exception:
             components["heartbeat_r26_identity"] = False
@@ -85807,7 +86018,7 @@ def _v702_r31_final_self_test() -> Dict[str, Any]:
                 probe_results[grade] = _v702_r31_grade_ticket_target(grade)
             try:
                 import inspect as _inspect_r31
-                _sizing_src = _inspect_r31.getsource(SizingEngine.decide)
+                _sizing_src = _v702_runtime_function_source(SizingEngine.decide)
             except Exception:
                 _sizing_src = ""
             checks["grade_ticket_real_branch_present"] = (
@@ -89062,9 +89273,22 @@ async def _v702_a66_restore_telegram_outbox_once() -> int:
         return 0
 
 async def _v702_a66_telegram_outbox_feeder() -> None:
+    next_prune_at = 0.0
     while TelegramDispatcher._running:
         try:
             await _v702_a66_restore_telegram_outbox_once()
+            _now = MONO_NOW()
+            if _now >= next_prune_at:
+                try:
+                    _prune = await asyncio.to_thread(DBManager.prune_telegram_outbox, 30, 5000)
+                    STATS["v702_a66_telegram_outbox_retention"] = dict(_prune)
+                    if int(_prune.get("deleted_by_age", 0)) + int(_prune.get("deleted_by_cap", 0)) > 0:
+                        logger.info("[V702-A66-TG-OUTBOX] terminal retention pruned=%s", _prune)
+                    next_prune_at = _now + 86400.0
+                except Exception as _prune_exc:
+                    STATS["v702_a66_telegram_outbox_retention_error"] = f"{type(_prune_exc).__name__}:{str(_prune_exc)[:160]}"
+                    logger.warning("[V702-A66-TG-OUTBOX] terminal retention deferred: %s", _prune_exc)
+                    next_prune_at = _now + 300.0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -95783,8 +96007,8 @@ def _v702_a35_projection_htf_terminal_self_test() -> Dict[str, Any]:
     }
     try:
         import inspect as _inspect_a35
-        projection_source = _inspect_a35.getsource(_v702_projected_canonical_score)
-        disposition_source = _inspect_a35.getsource(_v702_r5_projection_disposition)
+        projection_source = _v702_runtime_function_source(_v702_projected_canonical_score)
+        disposition_source = _v702_runtime_function_source(_v702_r5_projection_disposition)
         checks = {
             "a35_revision_appends_a34": V702_PACKAGE_AUDIT_REVISION.startswith(V702_A34_CANONICAL_REVISION + "-A35-"),
             "a35_projection_uses_closed_1h_htf_grader": "HTFGrader.grade(" in projection_source and "df1h_projection" in projection_source,
@@ -101709,11 +101933,15 @@ globals()["validate_config"] = _v702_a65_validate_config
 V702_A66_RELEASE_REVISION = "A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15"
 V702_A66_RELEASE_TAG = "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL"
 V702_A66_POST_AUDIT_PATCH_REVISION = "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15"
+V702_A71_CORRECTIVE_INTEGRATION_REVISION = "A71-BOOT-MEMORY-PM-COVERAGE-RESEARCH-RETENTION-2026-11-16"
 V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A66_RELEASE_REVISION + "-" + V702_A66_POST_AUDIT_PATCH_REVISION
+# A71 is tracked as a separate corrective-integrity layer so the inherited A70
+# canonical package identity and release-contract checks remain stable.
 CONFIG.setdefault("V702_A66_UNIVERSE_EMPTY_RETRY_SEC", 60.0)
 STATS["v702_a66_release_revision"] = V702_A66_RELEASE_REVISION
 STATS["v702_a66_release_tag"] = V702_A66_RELEASE_TAG
 STATS["v702_a66_post_audit_patch_revision"] = V702_A66_POST_AUDIT_PATCH_REVISION
+STATS["v702_a71_corrective_integration_revision"] = V702_A71_CORRECTIVE_INTEGRATION_REVISION
 FINAL_CANONICAL_RUNTIME.update({
     "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
     "package_revision": V702_PACKAGE_AUDIT_REVISION,
@@ -103006,6 +103234,7 @@ FINAL_CANONICAL_RUNTIME.update({
     "active_distribution_release_tag": V702_A66_RELEASE_TAG,
     "active_distribution_revision": V702_A66_RELEASE_REVISION,
     "active_post_audit_patch_revision_current": V702_A66_POST_AUDIT_PATCH_REVISION,
+    "active_corrective_integration_revision_current": V702_A71_CORRECTIVE_INTEGRATION_REVISION,
     "active_audit_merge_revision_current": V702_A69_MERGED_AUDIT_REVISION,
     "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
     "active_audit_revision": V702_PACKAGE_AUDIT_REVISION,
@@ -103976,6 +104205,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
             if t.is_alive() and t is not threading.current_thread()
         ]
         logger.info("[V702-VALIDATE-EXIT] live_threads=%s", _v702_validation_threads)
+        logger.info("[V702-VALIDATE-EXIT] active_env_aliases=%s", list(_V702_VALIDATE_ONLY_ACTIVE_ENV))
         logger.info(
             "[V702-VALIDATE-EXIT] one_shot=true bot_started=false exit_code=%d; "
             "this mode is for CI/manual validation only, not a persistent Railway start command",
