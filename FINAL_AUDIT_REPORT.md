@@ -709,3 +709,91 @@ Use the persistent worker start command `python -u main.py` (not `--validate-onl
 ### 20.7 نتيجة التسليم
 
 بُني `FINAL_PRODUCTION_RELEASE.zip` من قائمة `FINAL_MANIFEST.json` بعدد **99 ملفًا فريدًا**، ثم اجتاز اختبار CRC وفك الضغط ومطابقة قائمة الملفات. كما اجتازت ملفات الحزمة الـ98 غير الذاتية فحص SHA-256 مقابل `A66_SHA256SUMS.txt`، واجتاز الاستخراج النظيف فحوصات Python والاختبارات و`--validate-only` الموضحة في هذا التقرير. يبقى قرار التشغيل **`NO_GO_UNATTENDED_LIVE`**. لا يمكن اعتبار رسالة Crash محلولة حتى تتوفر نهاية Deploy Logs وأمر Start Command وذاكرة Railway أو traceback من نفس revision `9d951f72`.
+
+
+## 21. A72 — Public market discovery without private MEXC credentials and independent macro reporting (2026-11-16)
+
+### 21.1 Executive decision
+
+Applied the A72 correction directly to the existing `main.py`. In the release's hard-locked `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE` mode, public MEXC Spot market-data discovery no longer depends on API key/secret, a private account session, or wallet balance. A separate authenticated MEXC client is optional and is created only when recovered open positions or unresolved execution intents require private reconciliation/protection. No order authority was added.
+
+BTC Macro is now an observational stream. When closed BTC data is available it reports `BULLISH`, `BEARISH`, or `NEUTRAL`; when the data is insufficient/unavailable it reports `UNKNOWN`. Macro classification/notification is performed before the empty-Universe defer, so an empty or unavailable trading universe does not prevent the BTC macro attempt. This does **not** remove strategy-specific regime/crash filters, local confirmations, cost/risk gates, or other canonical admission rules.
+
+### 21.2 Confirmed defects and fixes
+
+| # | Confirmed issue in the supplied source | Impact | Applied correction |
+|---:|---|---|---|
+| 1 | Read-only startup called the authenticated MEXC client factory even when no private state required it. | Missing/invalid MEXC keys could stop public discovery and Telegram opportunities before scanning. | Added `create_mexc_public_async()` with no `apiKey`/`secret`; monitor-only startup uses this public client. |
+| 2 | Monitor-only boot still ran private balance/TruthSeal preflight. | A zero wallet balance or private-account/API failure could prevent read-only idea discovery even though balance is not needed to scan. | Skipped private balance preflight only for the hard-locked read-only release; live authority remains blocked. |
+| 3 | Empty-Universe `continue` occurred before the shared BTC macro fetch/classification. | A MEXC Universe failure also suppressed BTC Macro, making the operator blind to the broader market context. | Moved BTC 5m/15m/1h/4h context processing and macro notification before the empty-Universe defer. Symbol-specific scanning remains deferred if Universe is empty. |
+
+**Confirmed logic defects corrected in this round: 3.** No strategy threshold, score floor, family regime allow-list, crash policy, risk cap, or execution authorization was relaxed.
+
+### 21.3 Runtime behavior and important boundaries
+
+- No MEXC key/secret and no wallet balance are required for public market scanning in monitor-only mode. This assumes the public MEXC endpoints are reachable and CCXT is installed.
+- Invalid/missing private credentials no longer terminate public discovery. If an old position or unresolved order intent exists, its private reconciliation/protection cannot be claimed without valid account access; the runtime sets an explicit unverified state, blocks new execution, and does not emit a false healthy PositionManager lease.
+- Telegram delivery still requires a valid bot token and destination chat ID. Public scanning can continue without Telegram configuration, but no Telegram notification can be delivered without those values. A real Telegram delivery was not attempted in this offline audit.
+- Opportunity messages still depend on actual data and the existing candidate/Hunter lanes producing a real measured idea. The changes do not fabricate a signal when the market data is unavailable, Universe is empty, or no pattern qualifies.
+- Macro `BEARISH`/`NEUTRAL` reporting does not itself authorize a trade or bypass each strategy's family/macro/crash requirements. It merely removes a global requirement for a bullish macro label to continue observation/discovery.
+- The public-only runtime does not start private Telegram command controls or the private PositionManager. If recovered positions exist while private account access is missing/invalid, their protection status is explicitly unverified. The release is still `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE`.
+
+### 21.4 Files changed / archive accounting
+
+| File | Change |
+|---|---|
+| `main.py` | Public-vs-private exchange-client separation; read-only startup and preflight separation; conditional private recovery/PM/Supervisor operations; descriptive Macro classifier and Telegram notifier; Macro fetch before empty-Universe defer; A72 source-audit checks. |
+| `test_v705_production_audit_closure.py` | Regression tests for public-client credential isolation, all four Macro states, bearish Macro Telegram notification under monitor-only policy, empty-Universe Macro ordering, and unchanged live authority. |
+| `README.md` | Corrected credential requirements, Macro semantics, Telegram requirements, and Colab instructions. |
+| `CHANGELOG.md` | Added A72 release notes. |
+| `FINAL_AUDIT_REPORT.md` | Added this audit and verification section. |
+| `FINAL_MANIFEST.json` | Updated main-source digest, A72 read-only/macro scope, and final verification claims. |
+| `A66_RELEASE_MANIFEST.json` | Synced A72 revision/verification metadata and source digest. |
+| `A66_SHA256SUMS.txt` | Regenerated hashes for all 98 other packaged files. |
+
+- Modified files total: **8** (2 Python files, 3 documentation files, 2 manifests, 1 checksum ledger). Original archive: **99 regular files**. Final archive: **99 regular files**.
+- Files added: **0**. Files removed: **0**. No required functionality was deleted to meet the 99-file limit. `unified_scalper.db`, caches, bytecode, and any `.env` secret file are excluded from the ZIP.
+- Python source/operational files modified in this round: `main.py` plus one existing test module; documentation files modified: three.
+
+### 21.5 Verification performed for A72
+
+| Test / check | Result |
+|---|---|
+| A72 targeted regression module + existing missing-private-credentials + empty-Universe protection regressions | **19 passed, 0 failed** (9.02s) after adding the invalid-private-key case. |
+| `main._v702_a66_startup_recovery_source_check()` | PASS (asserted by regression). |
+| `main._v702_a72_read_only_runtime_source_check()` | PASS (asserted by regression). |
+| No-key public-client config | PASS in mocked factory test; captured config contains no `apiKey` or `secret`. |
+| BTC macro regime classifier | PASS in unit test for `BULLISH`, `BEARISH`, `NEUTRAL`, `UNKNOWN`; all declare `discovery_direction_gate=False`. |
+| Bearish macro Telegram enqueue | PASS in mocked dispatcher test; message states macro does not turn discovery off and live entry remains monitor-only. |
+| Real MEXC/Telegram calls or real orders | **Not performed**. All execution remains test/mock/read-only; no trading account was used. |
+| Full pytest suite | **540 passed, 1 skipped, 0 failed; 541 collected**. All 58 test modules ran in four batches (89 + 111 + 171 + 169 passed; one historical A51-log fixture skipped); summed batch runtime 59.14s. Monolithic pytest exceeded tool timeout, so the full collection was completed in four bounded runs. The monolithic one-process run exceeded the tool time limit, so no single-process full-suite pass is claimed. |
+| Compileall | **PASS**; explicit per-file `py_compile` passed for **73/73** Python files. |
+| `python -u main.py --validate-only` with MEXC and Telegram secrets removed | **PASS**, exit 0, `bot_started=false`, `live_threads=[]`, and MEXC/Telegram secrets were absent from the environment; no real MEXC/Telegram network calls or orders. |
+
+### 21.6 Google Colab operation
+
+1. Upload and unzip `FINAL_PRODUCTION_RELEASE.zip`, then `cd /content/unified-scalper`.
+2. Install `requirements.txt`; run `python -m compileall -q .`, `python -m pytest -q`, and `python -u main.py --validate-only`.
+3. To receive Telegram notifications, set `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_TOKEN`) and `TELEGRAM_CHAT_ID` (or `TELEGRAM_CHAT`) securely in the Colab process environment. The README demonstrates `getpass` so the bot token is not stored in notebook code.
+4. Start `python -u main.py` in a foreground cell. No MEXC API key/secret or balance is required for public read-only market scanning; the machine still needs Internet access to MEXC public endpoints. Colab may disconnect and is not a persistent production host.
+5. Keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`. This release does not authorize real orders.
+
+### 21.7 Remaining limitations
+
+- Public data discovery depends on MEXC's public endpoints, their current symbol metadata, network availability, and rate limits. If these fail, a candidate opportunity cannot be measured; the Macro notifier may report `UNKNOWN` if Telegram is available.
+- Actual Telegram delivery, deployment-platform uptime, target Python 3.12/Linux amd64, Docker build, account recovery with a real MEXC account, and profitability remain unverified.
+- The full test run and final archive-level checks are only called PASS in this report after the final output shows their exact results.
+
+
+### 21.8 Final ZIP extraction verification
+
+The final artifact `/mnt/data/FINAL_PRODUCTION_RELEASE.zip` was extracted into a clean directory and the exact extracted copy was validated:
+
+- ZIP inventory: **99 unique entries**, exact match to `FINAL_MANIFEST.json`; CRC test returned no corrupt member; clean extraction passed.
+- SHA-256 ledger: **98/98 non-self files passed** against `A66_SHA256SUMS.txt`.
+- `compileall`: PASS; explicit `py_compile`: **73/73 Python files passed**.
+- Full tests from the final ZIP extraction: **540 passed, 1 skipped, 0 failed; 541 collected** across all 58 test modules in four batches (89 + 111 + 171 + 169; 58.47s combined runtime). The single skip is the historical A51 log test because the historical log is not included in the clean release.
+- `python -u main.py --validate-only` from the final extraction with MEXC and Telegram secret variables removed: PASS, exit 0, `bot_started=false`, `live_threads=[]`; A66 validation reported 25 checks PASS.
+- No database, `.env`, credentials, caches or bytecode were packed.
+
+The complete one-process pytest invocation exceeded the execution tool timeout; the test suite was therefore run by all 58 test modules in four separate batches, all of which completed successfully. No single-process full-suite pass is claimed.

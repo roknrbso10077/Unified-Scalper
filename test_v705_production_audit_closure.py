@@ -278,3 +278,118 @@ def test_a70_audit_identity_is_applied_before_validate_only_and_persistent_entry
     assert main.STATS["v702_a70_entrypoint_identity_closure"]["live_authority_changed"] is False
     assert 'audit_merge_revision={_audit_merge_revision}' in source
     assert 'entrypoint_identity_revision={_entrypoint_identity_revision}' in source
+
+
+def test_v702_public_mexc_client_has_no_private_credentials(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+    fake_client = object()
+
+    def fake_mexc(config):
+        captured.update(config)
+        return fake_client
+
+    monkeypatch.setattr(main, "_CCXT_OK", True)
+    monkeypatch.setattr(main, "ccxt_async", SimpleNamespace(mexc=fake_mexc), raising=False)
+    monkeypatch.setitem(main.ENV, "MEXC_API_KEY", None)
+    monkeypatch.setitem(main.ENV, "MEXC_API_SECRET", None)
+
+    client = main.ExchangeFactory.create_mexc_public_async()
+
+    assert client is fake_client
+    assert captured.get("enableRateLimit") is True
+    assert captured.get("options", {}).get("defaultType") == "spot"
+    assert "apiKey" not in captured
+    assert "secret" not in captured
+    assert main.STATS["v702_public_market_client_authenticated"] is False
+
+
+
+def test_v702_public_mexc_client_ignores_invalid_private_credentials(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+    def fake_mexc(config):
+        captured.update(config)
+        return object()
+
+    monkeypatch.setattr(main, "_CCXT_OK", True)
+    monkeypatch.setattr(main, "ccxt_async", SimpleNamespace(mexc=fake_mexc), raising=False)
+    monkeypatch.setitem(main.ENV, "MEXC_API_KEY", "deliberately-invalid-key")
+    monkeypatch.setitem(main.ENV, "MEXC_API_SECRET", "deliberately-invalid-secret")
+
+    client = main.ExchangeFactory.create_mexc_public_async()
+
+    assert client is not None
+    assert "apiKey" not in captured and "secret" not in captured
+    assert captured == {"enableRateLimit": True, "options": {"defaultType": "spot"}}
+
+
+def test_v702_btc_macro_is_descriptive_not_bullish_only(monkeypatch):
+    import numpy as np
+    import pandas as pd
+
+    def make_frame(length, direction):
+        if direction == "up":
+            close = np.linspace(100.0, 220.0, length)
+        elif direction == "down":
+            close = np.linspace(220.0, 100.0, length)
+        else:
+            close = np.full(length, 150.0)
+        return pd.DataFrame({"close": close})
+
+    bullish = main._v702_classify_btc_macro_context(make_frame(70, "up"), make_frame(230, "up"))
+    bearish = main._v702_classify_btc_macro_context(make_frame(70, "down"), make_frame(230, "down"))
+    neutral = main._v702_classify_btc_macro_context(make_frame(70, "flat"), make_frame(230, "flat"))
+    unknown = main._v702_classify_btc_macro_context(None, None)
+
+    assert bullish["regime"] == "BULLISH"
+    assert bearish["regime"] == "BEARISH"
+    assert neutral["regime"] == "NEUTRAL"
+    assert unknown["regime"] == "UNKNOWN"
+    for context in (bullish, bearish, neutral, unknown):
+        assert context["informational_only"] is True
+        assert context["discovery_direction_gate"] is False
+
+
+def test_v702_macro_telegram_notifier_sends_bearish_context_without_entry_authority(monkeypatch):
+    import asyncio
+
+    captured = []
+
+    async def fake_enqueue(message):
+        captured.append(str(message))
+        return True
+
+    monkeypatch.setitem(main.ENV, "TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setitem(main.ENV, "TELEGRAM_CHAT", "test-chat")
+    monkeypatch.setattr(main.TelegramDispatcher, "enqueue", staticmethod(fake_enqueue))
+    monkeypatch.setattr(main, "WALL_NOW", lambda: 1_800_000_000.0)
+    monkeypatch.setitem(main.STATS, "v702_btc_macro_last_notified_regime", "")
+    monkeypatch.setitem(main.STATS, "v702_btc_macro_last_notified_ts", 0.0)
+
+    queued = asyncio.run(main._v702_notify_btc_macro_context({
+        "regime": "BEARISH", "reason": "test_closed_context",
+        "closed_1h": 60, "closed_4h": 220,
+        "btc_1h_close": 100.0, "btc_1h_ema50": 101.0,
+        "btc_4h_close": 90.0, "btc_4h_ema50": 95.0, "btc_4h_ema200": 110.0,
+    }))
+
+    assert queued is True
+    assert len(captured) == 1
+    assert "Regime: <b>BEARISH</b>" in captured[0]
+    assert "does not switch off discovery" in captured[0]
+    assert "MONITOR_ONLY_NO_NEW_BUYS" in captured[0]
+
+
+def test_v702_read_only_macro_audits_pass_without_relaxing_live_policy():
+    a66 = main._v702_a66_startup_recovery_source_check()
+    a72 = main._v702_a72_read_only_runtime_source_check()
+
+    assert a66["pass"], a66.get("failed")
+    assert a66["checks"]["btc_context_and_macro_run_before_empty_universe_defer"]
+    assert a66["checks"]["empty_universe_skips_scan_pipeline"]
+    assert a72["pass"], a72.get("failed")
+    assert main.FINAL_CANONICAL_RUNTIME["effective_entry_policy"] == "MONITOR_ONLY_NO_NEW_BUYS"
+    assert main.FINAL_CANONICAL_RUNTIME["production_decision"] == "NO_GO_UNATTENDED_LIVE"

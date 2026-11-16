@@ -1,3 +1,13 @@
+# A72 — public discovery without private account credentials; independent BTC macro (2026-11-16)
+
+- Split the monitor-only runtime into an unauthenticated public MEXC Spot market-data client and an optional authenticated account client. Public ticker/market/OHLCV/order-book discovery no longer depends on MEXC API keys or wallet balance.
+- Skip private balance/TruthSeal preflight for the hard-locked read-only release. Create a private account client only when recovered positions or unresolved execution intents require reconciliation/protection. A failed/missing private client keeps public discovery available but marks existing position protection unverified and does not grant execution authority.
+- Move BTC 5m/15m/1h/4h context fetch and a descriptive 1h/4h macro digest ahead of the empty-Universe defer. Macro reports BULLISH/BEARISH/NEUTRAL/UNKNOWN and does not impose a bullish-only discovery gate. Existing strategy-specific crash/regime and risk policies remain intact.
+- Keep Telegram delivery separately configurable: public scanning can run without Telegram credentials, but actual Telegram alert delivery requires bot token and chat ID. Macro digest is informational/rate-limited.
+- Start public-only runtime heartbeat and read-only Telegram dispatcher without starting private account commands or a false healthy PositionManager lease. Existing active positions without verified private reconciliation are explicitly marked unverified.
+- Add regression checks for public client configuration, all four macro regimes, bearish macro notification under monitor-only policy, source ordering before empty-Universe defer, and unchanged live-authority gates.
+- No file was added or deleted; no strategy threshold was loosened; no real exchange order or Telegram network delivery was attempted.
+
 # A71 — Integrated corrective production closure (2026-11-16)
 
 - Removed full-file AST parsing from startup source-contract tests by extracting bounded function source; retained the behavior-level LONG_ONLY guard.

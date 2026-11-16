@@ -7959,6 +7959,135 @@ def _v702_monitor_only_scan_authorized() -> bool:
         return False
 
 
+def _v702_classify_btc_macro_context(df_1h: Any, df_4h: Any) -> Dict[str, Any]:
+    """Describe BTC macro regime from closed 1H/4H candles; never gate discovery.
+
+    Direction is informational (BULLISH/BEARISH/NEUTRAL/UNKNOWN). Existing
+    strategy-specific crash, regime and execution safety gates remain authoritative.
+    """
+    result: Dict[str, Any] = {
+        "regime": "UNKNOWN", "source": "BTC_USDT_CLOSED_1H_4H_EMA_CONTEXT",
+        "informational_only": True, "discovery_direction_gate": False,
+        "reason": "insufficient_or_unavailable_closed_history",
+        "closed_1h": 0, "closed_4h": 0, "asof_ts": float(WALL_NOW()),
+    }
+    try:
+        if not (_PDNP_OK and pd is not None):
+            result["reason"] = "pandas_unavailable"
+            return result
+
+        def _closed(frame: Any, interval_ms: int):
+            if frame is None or not hasattr(frame, "iloc") or len(frame) < 2 or "close" not in frame.columns:
+                return None
+            idx = int(_v702_a33_closed_index(frame, interval_ms))
+            if idx < 0:
+                idx = len(frame) + idx
+            if idx < 0 or idx >= len(frame):
+                return None
+            return frame.iloc[:idx + 1].copy()
+
+        one = _closed(df_1h, 60 * 60 * 1000)
+        four = _closed(df_4h, 4 * 60 * 60 * 1000)
+        if one is None or four is None:
+            return result
+        c1 = pd.to_numeric(one["close"], errors="coerce").dropna()
+        c4 = pd.to_numeric(four["close"], errors="coerce").dropna()
+        result["closed_1h"] = int(len(c1))
+        result["closed_4h"] = int(len(c4))
+        if len(c1) < 55 or len(c4) < 205:
+            result["reason"] = "insufficient_closed_ema_history"
+            return result
+        if not np.isfinite(c1.to_numpy(dtype=float)).all() or not np.isfinite(c4.to_numpy(dtype=float)).all():
+            result["reason"] = "non_finite_close_history"
+            return result
+        if (c1 <= 0).any() or (c4 <= 0).any():
+            result["reason"] = "non_positive_close_history"
+            return result
+
+        e1_50 = c1.ewm(span=50, adjust=False).mean()
+        e4_50 = c4.ewm(span=50, adjust=False).mean()
+        e4_200 = c4.ewm(span=200, adjust=False).mean()
+        values = {
+            "btc_1h_close": float(c1.iloc[-1]),
+            "btc_1h_ema50": float(e1_50.iloc[-1]),
+            "btc_4h_close": float(c4.iloc[-1]),
+            "btc_4h_ema50": float(e4_50.iloc[-1]),
+            "btc_4h_ema200": float(e4_200.iloc[-1]),
+            "btc_4h_ema50_3bars_ago": float(e4_50.iloc[-4]),
+        }
+        if not all(math.isfinite(v) and v > 0 for v in values.values()):
+            result["reason"] = "invalid_macro_indicator_values"
+            return result
+        bullish = (
+            values["btc_4h_close"] > values["btc_4h_ema50"] > values["btc_4h_ema200"]
+            and values["btc_4h_ema50"] > values["btc_4h_ema50_3bars_ago"]
+            and values["btc_1h_close"] > values["btc_1h_ema50"]
+        )
+        bearish = (
+            values["btc_4h_close"] < values["btc_4h_ema50"] < values["btc_4h_ema200"]
+            and values["btc_4h_ema50"] < values["btc_4h_ema50_3bars_ago"]
+            and values["btc_1h_close"] < values["btc_1h_ema50"]
+        )
+        regime = "BULLISH" if bullish else "BEARISH" if bearish else "NEUTRAL"
+        result.update(values)
+        result.update({"regime": regime, "reason": "closed_1h_4h_ema_context_evaluated"})
+        return result
+    except Exception as exc:
+        result["reason"] = f"macro_classification_error:{type(exc).__name__}"
+        return result
+
+
+async def _v702_notify_btc_macro_context(context: Dict[str, Any]) -> bool:
+    """Queue a bounded BTC macro digest when regime changes or every 30 minutes.
+
+    This is an observational message, not an opportunity or trading instruction.
+    """
+    try:
+        if not isinstance(context, dict):
+            context = {"regime": "UNKNOWN", "reason": "invalid_macro_payload"}
+        regime = str(context.get("regime") or "UNKNOWN").upper()
+        if regime not in {"BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"}:
+            regime = "UNKNOWN"
+        now = float(WALL_NOW())
+        previous = str(STATS.get("v702_btc_macro_last_notified_regime") or "")
+        last_ts = float(STATS.get("v702_btc_macro_last_notified_ts", 0.0) or 0.0)
+        interval = max(300.0, float(CONFIG.get("V702_BTC_MACRO_TELEGRAM_INTERVAL_SEC", 1800.0) or 1800.0))
+        if regime == previous and (now - last_ts) < interval:
+            STATS["v702_btc_macro_notification_suppressed"] = int(STATS.get("v702_btc_macro_notification_suppressed", 0) or 0) + 1
+            return False
+        if not ENV.get("TELEGRAM_TOKEN") or not ENV.get("TELEGRAM_CHAT"):
+            STATS["v702_btc_macro_telegram_unconfigured"] = int(STATS.get("v702_btc_macro_telegram_unconfigured", 0) or 0) + 1
+            return False
+        def _fmt(key: str) -> str:
+            value = context.get(key)
+            try:
+                number = float(value)
+                return f"{number:,.2f}" if math.isfinite(number) else "n/a"
+            except Exception:
+                return "n/a"
+        msg = (
+            "<b>BTC MACRO CONTEXT</b>\n"
+            f"Regime: <b>{regime}</b>\n"
+            f"1H close / EMA50: {_fmt('btc_1h_close')} / {_fmt('btc_1h_ema50')}\n"
+            f"4H close / EMA50 / EMA200: {_fmt('btc_4h_close')} / {_fmt('btc_4h_ema50')} / {_fmt('btc_4h_ema200')}\n"
+            f"Closed candles: 1H={int(context.get('closed_1h', 0) or 0)} 4H={int(context.get('closed_4h', 0) or 0)}\n"
+            f"Status: {str(context.get('reason') or 'unknown')}\n\n"
+            "This is market context only. Macro direction does not switch off discovery; "
+            "existing strategy-specific risk/crash gates remain unchanged.\n"
+            "Entry policy: MONITOR_ONLY_NO_NEW_BUYS (no live orders)."
+        )
+        queued = await TelegramDispatcher.enqueue(msg)
+        if queued:
+            STATS["v702_btc_macro_last_notified_regime"] = regime
+            STATS["v702_btc_macro_last_notified_ts"] = now
+            STATS["v702_btc_macro_notifications_queued"] = int(STATS.get("v702_btc_macro_notifications_queued", 0) or 0) + 1
+        return bool(queued)
+    except Exception as exc:
+        STATS["v702_btc_macro_telegram_errors"] = int(STATS.get("v702_btc_macro_telegram_errors", 0) or 0) + 1
+        logger.warning("[V702-BTC-MACRO-TG] enqueue failed: %s:%s", type(exc).__name__, str(exc)[:160])
+        return False
+
+
 def _v702_paper_sim_authorized() -> bool:
     """Authorize virtual outcome tracking without requiring available USDT.
 
@@ -23253,7 +23382,8 @@ async def _v702_runtime_heartbeat_task():
 class Supervisor:
 
     @staticmethod
-    async def run_loop(exchange):
+    async def run_loop(exchange, account_exchange=None):
+        """Run public telemetry continuously; run private reconciliation only with an account client."""
         last_hb = 0.0
         last_consistency = 0.0
         while True:
@@ -23268,11 +23398,13 @@ class Supervisor:
                     await Telemetry.emit_heartbeat()
                     last_hb = now
 
-                if now - last_consistency >= float(CONFIG["V4_CONSISTENCY_CHECK_INTERVAL_SEC"]):
-                    await ConsistencyChecker.tick(exchange)
-                    last_consistency = now
-
-                await LiveStateMachine.recover_runtime_if_safe(exchange)
+                if account_exchange is not None:
+                    if now - last_consistency >= float(CONFIG["V4_CONSISTENCY_CHECK_INTERVAL_SEC"]):
+                        await ConsistencyChecker.tick(account_exchange)
+                        last_consistency = now
+                    await LiveStateMachine.recover_runtime_if_safe(account_exchange)
+                else:
+                    STATS["v702_supervisor_private_checks_skipped_public_only"] = int(STATS.get("v702_supervisor_private_checks_skipped_public_only", 0) or 0) + 1
                 StarvationGuard.tick()
                 StarvationGuard.funnel_invariant_check()
                 # V702 FINAL: retired drawdown halt has no supervisor authority.
@@ -23344,14 +23476,33 @@ async def _position_manager_task(exchange):
 class ExchangeFactory:
 
     @staticmethod
+    def create_mexc_public_async():
+        """Create an unauthenticated MEXC Spot client for public market data only.
+
+        Public OHLCV, ticker, market metadata and order-book reads do not require
+        wallet balance or private API credentials. This client must never be used
+        for private account or order operations.
+        """
+        if not _CCXT_OK:
+            logger.critical(f"[Exchange] ccxt not available: {_CCXT_IMPORT_ERR}")
+            raise SystemExit("ccxt_missing")
+        ex = ccxt_async.mexc({
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        })
+        STATS["v702_public_market_client_created"] = True
+        STATS["v702_public_market_client_authenticated"] = False
+        return ex
+
+    @staticmethod
     def create_mexc_async():
         if not _CCXT_OK:
             logger.critical(f"[Exchange] ccxt not available: {_CCXT_IMPORT_ERR}")
             raise SystemExit("ccxt_missing")
         if not ENV.get("MEXC_API_KEY") or not ENV.get("MEXC_API_SECRET"):
             logger.critical(
-                "[V702-BOOT-STOP] MEXC_API_KEY and MEXC_API_SECRET are required to create the authenticated MEXC client; "
-                "monitor-only mode still requires these credentials in this release. "
+                "[V702-BOOT-STOP][V702-ACCOUNT-STOP] MEXC_API_KEY and MEXC_API_SECRET are required only for private account/position operations. "
+                "Public market discovery uses the unauthenticated client and does not require these credentials. "
                 "Set both through the host secret manager; values are never logged."
             )
             raise SystemExit("missing_exchange_secrets")
@@ -25678,8 +25829,9 @@ class EdgeGate:
 async def run_bot(universe: List[str]):
     """
     universe: list of symbols to scan, e.g. ["BTC/USDT", "ETH/USDT", ...]
-    Requires: MEXC_API_KEY, MEXC_API_SECRET env vars.
-    Optional: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+    Read-only discovery uses public market endpoints and requires no MEXC account keys
+    or wallet balance. Private credentials are only needed to reconcile/protect
+    already-open positions; Telegram credentials are needed for notifications.
     """
     # v4.5.93: install OS signal handlers only after asyncio.run() has
     # created the active event loop.  This closes the get_running_loop()
@@ -25697,6 +25849,7 @@ async def run_bot(universe: List[str]):
     # An interrupted or ambiguous venue submission is a durable incident. Do not
     # submit new entries after restart until the operator/reconciliation path has
     # resolved every outstanding intent against exchange order/fill state.
+    _startup_unresolved_intents = []
     try:
         _startup_unresolved_intents = await DBManager.aunresolved_execution_intents()
         _symbols = sorted({str(x.get("symbol") or "?") for x in _startup_unresolved_intents})
@@ -25736,45 +25889,106 @@ async def run_bot(universe: List[str]):
     recovered = await DBManager.arecover_active_trades()
     ACTIVE_TRADES.update(recovered)
 
-    # Create exchange
-    exchange = ExchangeFactory.create_mexc_async()
+    _monitor_only_release = (
+        str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy", CONFIG.get("LIVE_ENTRY_POLICY", ""))).upper()
+        == "MONITOR_ONLY_NO_NEW_BUYS"
+        or str(FINAL_CANONICAL_RUNTIME.get("production_decision", "")).upper() == "NO_GO_UNATTENDED_LIVE"
+    )
+    _startup_unresolved_count = int(STATS.get("startup_unresolved_execution_intents", 0) or 0)
+    _startup_intent_state = str((STATS.get("v702_a40_unresolved_intents_latest") or {}).get("state", "UNKNOWN")).upper()
+    _need_private_account = bool(ACTIVE_TRADES or _startup_unresolved_count or _startup_intent_state == "ERROR")
+    account_exchange = None
+    _account_protection_ready = False
 
-    # v4.5.68: restore protection state before the scanner can submit NEW entries.
-    try:
-        await _v568_reconcile_recovered_protection(exchange)
-    except Exception as _v568_start_e:
-        logger.critical(
-            f"[V568-START] recovered protection reconciliation failed: {_v568_start_e}"
-        )
+    # Public market-data client is deliberately unauthenticated in monitor-only
+    # release mode. No wallet balance or MEXC API key is needed for discovery.
+    if _monitor_only_release:
+        exchange = ExchangeFactory.create_mexc_public_async()
+        if _need_private_account:
+            if ENV.get("MEXC_API_KEY") and ENV.get("MEXC_API_SECRET"):
+                try:
+                    account_exchange = ExchangeFactory.create_mexc_async()
+                    _account_protection_ready = True
+                except (SystemExit, Exception) as _account_create_exc:
+                    account_exchange = None
+                    STATS["v702_account_client_create_error"] = f"{type(_account_create_exc).__name__}:{str(_account_create_exc)[:160]}"
+                    logger.critical("[V702-ACCOUNT] private client unavailable; public opportunity scan continues; existing positions are not confirmed protected: %s", _account_create_exc)
+            else:
+                STATS["v702_account_client_state"] = "MISSING_CREDENTIALS"
+                logger.critical("[V702-ACCOUNT] no private credentials; public market scan continues, but recovered positions/intents cannot be reconciled or protected by this process")
+        else:
+            STATS["v702_account_client_state"] = "NOT_REQUIRED_READ_ONLY"
+            logger.info("[V702-BOOT] using unauthenticated public MEXC client; wallet balance/API credentials are not required for read-only discovery")
+    else:
+        exchange = ExchangeFactory.create_mexc_async()
+        account_exchange = exchange
+        _account_protection_ready = True
 
-    # v4.5.73: reconcile persisted exit orders + actual spot balance before
-    # the scanner can submit NEW entries. No duplicate target recreation.
-    try:
-        await _v573_reconcile_recovered_exit_state(exchange)
-    except Exception as _v573_start_e:
-        logger.critical(
-            f"[V573-START] recovered exit-state reconciliation failed: {_v573_start_e}"
-        )
+    STATS["v702_read_only_public_scan_mode"] = bool(_monitor_only_release)
+    STATS["v702_read_only_public_scan_requires_balance"] = False
+    STATS["v702_macro_is_observational_not_direction_gate"] = True
+    if _monitor_only_release:
+        LiveStateMachine.block("canonical_monitor_only_read_only_release", where="run_bot.read_only_policy")
 
-    # A58: recovered positions receive an immediate protection cycle before
-    # the first market-universe fetch. Start the manager and its independent
-    # runtime heartbeat now, not after the scan/preflight path.
+    # Reconcile private position state only through the optional authenticated
+    # client. A private/API failure must not kill the public discovery runtime.
+    if account_exchange is not None:
+        try:
+            await _v568_reconcile_recovered_protection(account_exchange)
+        except Exception as _v568_start_e:
+            _account_protection_ready = False
+            live_entries_block("recovered_protection_reconciliation_failed", where="V568.startup")
+            logger.critical("[V568-START] recovered protection reconciliation failed; public scan remains active: %s", _v568_start_e)
+        try:
+            await _v573_reconcile_recovered_exit_state(account_exchange)
+        except Exception as _v573_start_e:
+            _account_protection_ready = False
+            live_entries_block("recovered_exit_state_reconciliation_failed", where="V573.startup")
+            logger.critical("[V573-START] recovered exit-state reconciliation failed; public scan remains active: %s", _v573_start_e)
+    elif ACTIVE_TRADES or _startup_unresolved_count or _startup_intent_state == "ERROR":
+        _account_protection_ready = False
+        live_entries_block("private_account_unavailable_for_recovered_state", where="run_bot.public_only_startup")
+        STATS["v702_existing_position_protection_state"] = "UNVERIFIED_PRIVATE_ACCOUNT_UNAVAILABLE"
+
+    # A58 protection manager is only truthful when a private client exists.
+    # Do not publish a healthy PM lease when account reconciliation is absent.
     _early_protection_tasks = []
     try:
-        if ACTIVE_TRADES:
-            _pm_initial_result = await PositionManager.tick(exchange)
-            if not isinstance(_pm_initial_result, dict) or not bool(_pm_initial_result.get("healthy")):
-                raise RuntimeError("startup_position_protection_cycle_incomplete")
-        _pm_payload = _v702_pm_heartbeat_payload()
-        _pm_payload["timestamp"] = float(time.time())
-        _pm_payload["healthy_ticks"] = max(1, int(STATS.get("v702_pm_healthy_ticks", 0) or 0) + 1)
-        await asyncio.to_thread(
-            _v702_atomic_heartbeat_write,
-            str(os.environ.get("V702_PM_HEARTBEAT_FILE", "/tmp/unified_scalper_pm_heartbeat.json")),
-            _pm_payload,
-        )
-        STATS["v702_pm_last_healthy_ts"] = float(WALL_NOW())
-        STATS["v702_pm_healthy_ticks"] = int(_pm_payload["healthy_ticks"])
+        if account_exchange is not None and _account_protection_ready:
+            if ACTIVE_TRADES:
+                _pm_initial_result = await PositionManager.tick(account_exchange)
+                if not isinstance(_pm_initial_result, dict) or not bool(_pm_initial_result.get("healthy")):
+                    raise RuntimeError("startup_position_protection_cycle_incomplete")
+        if account_exchange is not None and _account_protection_ready:
+            _pm_payload = _v702_pm_heartbeat_payload()
+            _pm_payload["timestamp"] = float(time.time())
+            _pm_payload["healthy_ticks"] = max(1, int(STATS.get("v702_pm_healthy_ticks", 0) or 0) + 1)
+            await asyncio.to_thread(
+                _v702_atomic_heartbeat_write,
+                str(os.environ.get("V702_PM_HEARTBEAT_FILE", "/tmp/unified_scalper_pm_heartbeat.json")),
+                _pm_payload,
+            )
+            STATS["v702_pm_last_healthy_ts"] = float(WALL_NOW())
+            STATS["v702_pm_healthy_ticks"] = int(_pm_payload["healthy_ticks"])
+        else:
+            STATS["v702_pm_task_state"] = "SKIPPED_NO_PRIVATE_ACCOUNT"
+            STATS["v702_pm_last_healthy_ts"] = 0.0
+            STATS["v702_pm_healthy_ticks"] = 0
+            STATS["v702_pm_health_last_reason"] = "private_account_unavailable_or_not_required"
+            if ACTIVE_TRADES:
+                _pm_unverified_payload = {
+                    "timestamp": float(time.time()), "boot_id": _V702_PROCESS_BOOT_ID,
+                    "pid": int(os.getpid()), "state": "UNVERIFIED_NO_PRIVATE_ACCOUNT",
+                    "open_positions": int(len(ACTIVE_TRADES)),
+                    "open_position_ids": _v702_open_position_ids(),
+                    "managed_position_ids": [], "healthy_ticks": 0,
+                    "source": "NO_PRIVATE_ACCOUNT_PROTECTION_UNVERIFIED",
+                }
+                await asyncio.to_thread(
+                    _v702_atomic_heartbeat_write,
+                    str(os.environ.get("V702_PM_HEARTBEAT_FILE", "/tmp/unified_scalper_pm_heartbeat.json")),
+                    _pm_unverified_payload,
+                )
         _rt_payload = {
             "timestamp": float(time.time()), "boot_id": _V702_PROCESS_BOOT_ID,
             "pid": int(os.getpid()), "state": "STARTUP_PROTECTED",
@@ -25795,12 +26009,16 @@ async def run_bot(universe: List[str]):
         )
         logger.critical("[A58-PM-START] protection could not be confirmed before scan: %s", _a58_pm_startup_exc)
     try:
-        _early_protection_tasks.append(asyncio.create_task(_position_manager_task(exchange)))
         _early_protection_tasks.append(asyncio.create_task(_v702_runtime_heartbeat_task()))
-        STATS["v702_pm_started_before_market_scan"] = True
+        if account_exchange is not None and _account_protection_ready:
+            _early_protection_tasks.append(asyncio.create_task(_position_manager_task(account_exchange)))
+            STATS["v702_pm_started_before_market_scan"] = True
+        else:
+            STATS["v702_pm_started_before_market_scan"] = False
+            logger.info("[V702-PM] private PositionManager is not started in public-only monitor mode; no false healthy protection lease is emitted")
     except Exception as _a58_pm_task_exc:
         live_entries_block("startup_protection_task_unavailable", where="A58.startup_protection_before_scan")
-        logger.critical("[A58-PM-START] protection task could not start: %s", _a58_pm_task_exc)
+        logger.critical("[A58-PM-START] heartbeat/protection task could not start: %s", _a58_pm_task_exc)
 
     # A66-STARTUP-UNIVERSE-RECOVERY: resolving the scan universe is NOT a
     # prerequisite for protecting already-open positions. Keep the authenticated
@@ -25849,9 +26067,14 @@ async def run_bot(universe: List[str]):
         f"[Universe] ACTIVE scan universe size={len(universe)} "
         f"mode={'TOP_LIQUIDITY' if not os.environ.get('SCALPER_UNIVERSE','').strip() else 'MANUAL'}")
 
-    # An unresolved/empty universe is not allowed to pass preflight. Do not
-    # attempt a balance/venue capability transition on an incomplete market set.
-    if universe:
+    # Read-only discovery has no balance/private-account prerequisite. The
+    # release policy is hard-locked to MONITOR_ONLY_NO_NEW_BUYS, so never run
+    # private balance TruthSeal/preflight merely to produce Telegram alerts.
+    if _monitor_only_release:
+        STATS["v702_a66_preflight_deferred_read_only"] = True
+        STATS["v702_preflight_balance_not_required_for_discovery"] = True
+        logger.info("[V702-BOOT] private balance preflight skipped: read-only discovery does not require wallet balance; live orders remain disabled")
+    elif universe:
         ok = await BootOrchestrator.run_preflight(exchange, universe)
         if not ok:
             logger.critical(f"[Bot] Preflight FAILED — {LIVE_STATE.blocked_reason}. "
@@ -25900,6 +26123,11 @@ async def run_bot(universe: List[str]):
             "closing exchange and refusing live loop",
             _runtime_actual, _runtime_config, _runtime_build, _runtime_expected
         )
+        if account_exchange is not None and account_exchange is not exchange:
+            try:
+                await account_exchange.close()
+            except Exception:
+                pass
         try:
             await exchange.close()
         except Exception as _runtime_close_exc:
@@ -25909,7 +26137,9 @@ async def run_bot(universe: List[str]):
             )
         raise SystemExit("runtime_identity_mismatch")
 
-    if bool(CONFIG.get("V649_TELEGRAM_BOOTSTRAP_ENABLE", True)) and bool(CONFIG.get("V561_TELEGRAM_COMMANDS_ENABLE", True)):
+    if (not _monitor_only_release and account_exchange is not None
+            and bool(CONFIG.get("V649_TELEGRAM_BOOTSTRAP_ENABLE", True))
+            and bool(CONFIG.get("V561_TELEGRAM_COMMANDS_ENABLE", True))):
         try:
             _tg_boot_ok = await TelegramCommandController.bootstrap()
             STATS["v649_telegram_bootstrap_ok"] = bool(_tg_boot_ok)
@@ -25920,24 +26150,24 @@ async def run_bot(universe: List[str]):
 
     # Spawn supervisor + telegram
     tasks = [
-        asyncio.create_task(Supervisor.run_loop(exchange)),
+        asyncio.create_task(Supervisor.run_loop(exchange, account_exchange if _account_protection_ready else None)),
         asyncio.create_task(TelegramDispatcher.run_forever()),
         *_early_protection_tasks,
     ]
-    if bool(CONFIG.get("V702_A39_BALANCE_ENTRY_RECOVERY_ENABLE", True)):
+    if account_exchange is not None and not _monitor_only_release and bool(CONFIG.get("V702_A39_BALANCE_ENTRY_RECOVERY_ENABLE", True)):
         try:
             tasks.append(asyncio.create_task(_v702_a39_balance_entry_recovery_task(exchange)))
         except Exception as _a39_balance_task_exc:
             logger.critical("[V702-A39-BALANCE] independent recovery task failed to start: %s", _a39_balance_task_exc)
-    if bool(CONFIG.get("V702_A40_ENTRY_BLOCK_DIAGNOSTICS_ENABLE", True)):
+    if account_exchange is not None and not _monitor_only_release and bool(CONFIG.get("V702_A40_ENTRY_BLOCK_DIAGNOSTICS_ENABLE", True)):
         try:
-            tasks.append(asyncio.create_task(_v702_a40_entry_block_diagnostic_task(exchange)))
+            tasks.append(asyncio.create_task(_v702_a40_entry_block_diagnostic_task(account_exchange)))
         except Exception as _a40_block_diag_task_exc:
             STATS["v702_a40_diagnostic_task_start_error"] = f"{type(_a40_block_diag_task_exc).__name__}:{str(_a40_block_diag_task_exc)[:160]}"
             logger.critical("[V702-A40-ENTRY-DIAG] read-only diagnostic task failed to start: %s", _a40_block_diag_task_exc)
-    if bool(CONFIG.get("V702_A41_EXECUTION_INTENT_RECONCILIATION_ENABLE", True)):
+    if account_exchange is not None and _account_protection_ready and bool(CONFIG.get("V702_A41_EXECUTION_INTENT_RECONCILIATION_ENABLE", True)) and (not _monitor_only_release or _startup_unresolved_count > 0 or _startup_intent_state == "ERROR"):
         try:
-            tasks.append(asyncio.create_task(_v702_a41_execution_intent_reconciliation_task(exchange)))
+            tasks.append(asyncio.create_task(_v702_a41_execution_intent_reconciliation_task(account_exchange)))
         except Exception as _a41_intent_task_exc:
             STATS["v702_a41_task_start_error"] = f"{type(_a41_intent_task_exc).__name__}:{str(_a41_intent_task_exc)[:160]}"
             live_entries_block("execution_intent_reconciliation_task_unavailable", where="run_bot.a41_intent_reconciliation")
@@ -25954,9 +26184,10 @@ async def run_bot(universe: List[str]):
             tasks.append(asyncio.create_task(_v652_task_factory()))
     except Exception as _v652_task_e:
         logger.warning(f"[V652-TG] operator watch task start suppressed: {_v652_task_e}")
-    if bool(CONFIG.get("V561_TELEGRAM_COMMANDS_ENABLE", True)):
+    if (not _monitor_only_release and account_exchange is not None
+            and bool(CONFIG.get("V561_TELEGRAM_COMMANDS_ENABLE", True))):
         try:
-            tasks.append(asyncio.create_task(TelegramCommandController.run_forever(exchange)))
+            tasks.append(asyncio.create_task(TelegramCommandController.run_forever(account_exchange)))
         except Exception as _v561_tg_e:
             logger.critical(f"[V561-TG] command controller could not start: {_v561_tg_e}")
     # A58 position-manager task was started before the first scanner fetch.
@@ -25973,6 +26204,18 @@ async def run_bot(universe: List[str]):
             tasks.append(asyncio.create_task(_v425_watchdog_task()))
         except Exception as _v425_task_e:
             logger.warning(f"[V425-WatchdogTask] task start suppressed: {_v425_task_e}")
+
+    if _monitor_only_release and (ACTIVE_TRADES or _startup_unresolved_count or _startup_intent_state == "ERROR") and (account_exchange is None or not _account_protection_ready):
+        try:
+            await TelegramDispatcher.enqueue(
+                "<b>ACCOUNT PROTECTION WARNING</b>\n"
+                "Public market discovery and opportunity alerts remain active.\n"
+                "However, recovered open positions / unresolved intents may exist and private MEXC account access is unavailable or unverified. "
+                "This process cannot confirm or manage their protection. Do not assume existing positions are protected; restore valid account access and reconcile them.\n"
+                "No new live BUY orders are enabled."
+            )
+        except Exception as _account_warning_exc:
+            logger.warning("[V702-ACCOUNT-WARNING] Telegram warning enqueue failed: %s", _account_warning_exc)
 
     # Main scanner loop
     try:
@@ -26106,27 +26349,6 @@ async def run_bot(universe: List[str]):
                 STATS["v702_a66_universe_status"] = "STALE_FALLBACK" if scan_universe else "EMPTY"
                 STATS["v702_a66_universe_size"] = int(len(scan_universe))
                 STATS["v702_a66_universe_last_error"] = f"{type(_u_outer).__name__}:{str(_u_outer)[:160]}"
-
-            if not scan_universe:
-                STATS["v702_a66_universe_status"] = "EMPTY"
-                STATS["v702_a66_universe_size"] = 0
-                STATS["v702_a66_scan_status"] = "DEFERRED_NO_UNIVERSE"
-                STATS["v702_a66_scan_symbols_attempted"] = 0
-                STATS["v702_a66_scan_ticker_rows"] = 0
-                # Never spin through BTC/4TF/candidate plumbing with no symbols.
-                # PositionManager, Telegram and heartbeat tasks remain independent.
-                STATS["v702_a66_scan_deferred_no_universe"] = int(
-                    STATS.get("v702_a66_scan_deferred_no_universe", 0) or 0
-                ) + 1
-                _no_universe_log_ts = float(STATS.get("v702_a66_no_universe_last_log_ts", 0.0) or 0.0)
-                if WALL_NOW() - _no_universe_log_ts >= 180.0:
-                    logger.warning(
-                        "[A66-MONITOR] no verified universe; no Candidate/Builder/BUY route is entered; "
-                        "PositionManager remains active"
-                    )
-                    STATS["v702_a66_no_universe_last_log_ts"] = WALL_NOW()
-                await asyncio.sleep(max(5.0, min(30.0, _empty_retry_sec / 2.0)))
-                continue
 
             # ---- Fetch BTC context ONCE per scan cycle (shared across ALL symbols) ----
             btc_pair = "BTC/USDT"
@@ -26291,6 +26513,38 @@ async def run_bot(universe: List[str]):
                     _set_mse_status("DEGRADED",f"mse_missing_btc_context:fetch:{type(e).__name__}")
                     logger.warning(
                         f"[Scanner] BTC context fetch failed: {e} — MSE snapshots will be rejected")
+
+            # BTC macro is an independent, observational market-context stream.
+            # It reports BULLISH/BEARISH/NEUTRAL/UNKNOWN and never requires a
+            # bullish direction for discovery/Telegram alerts. Strategy-specific
+            # crash and risk gates remain unchanged.
+            _btc_macro_context = _v702_classify_btc_macro_context(shared_btc_1h, shared_btc_4h)
+            STATS["v702_btc_macro_context"] = dict(_btc_macro_context)
+            STATS["v702_btc_macro_context_last_regime"] = str(_btc_macro_context.get("regime") or "UNKNOWN")
+            STATS["v702_btc_macro_context_cycles"] = int(STATS.get("v702_btc_macro_context_cycles", 0) or 0) + 1
+            await _v702_notify_btc_macro_context(_btc_macro_context)
+
+            if not scan_universe:
+                STATS["v702_a66_universe_status"] = "EMPTY"
+                STATS["v702_a66_universe_size"] = 0
+                STATS["v702_a66_scan_status"] = "DEFERRED_NO_UNIVERSE"
+                STATS["v702_a66_scan_symbols_attempted"] = 0
+                STATS["v702_a66_scan_ticker_rows"] = 0
+                # BTC macro was fetched/notified above. Skip only symbol-specific
+                # OHLCV, Candidate, Builder, queue and execution work when empty.
+                STATS["v702_a66_scan_deferred_no_universe"] = int(
+                    STATS.get("v702_a66_scan_deferred_no_universe", 0) or 0
+                ) + 1
+                _no_universe_log_ts = float(STATS.get("v702_a66_no_universe_last_log_ts", 0.0) or 0.0)
+                if WALL_NOW() - _no_universe_log_ts >= 180.0:
+                    logger.warning(
+                        "[A72-MONITOR] no verified universe; BTC macro/Telegram remain independent; "
+                        "symbol Candidate/Builder/BUY route is deferred"
+                    )
+                    STATS["v702_a66_no_universe_last_log_ts"] = WALL_NOW()
+                await asyncio.sleep(max(5.0, min(30.0, _empty_retry_sec / 2.0)))
+                continue
+
 
             # v4.5 — GLOBAL OPPORTUNITY BRAIN:
             # 1) fetch/validate the full scan universe,
@@ -28728,6 +28982,12 @@ async def run_bot(universe: List[str]):
                     "run_bot.shutdown_task_gather", _gather_exc
                 )
                 logger.warning(f"[V594] task gather suppressed: {_gather_exc}")
+        if account_exchange is not None and account_exchange is not exchange:
+            try:
+                await account_exchange.close()
+            except Exception as _account_close_exc:
+                _v593_note_suppressed_exception("run_bot.account_exchange_close", _account_close_exc)
+                logger.warning("[V702-ACCOUNT] private exchange close suppressed: %s", _account_close_exc)
         try:
             await exchange.close()
         except Exception as _close_exc:
@@ -103197,7 +103457,9 @@ STATS["v702_a69_dotenv_config_closure"] = {
     "revision": V702_A69_DOTENV_CONFIG_REVISION,
     "db_path_applied_after_dotenv": True,
     "telegram_display_aliases_applied_after_dotenv": True,
-    "mexc_credentials_required_for_runtime_client": True,
+    "mexc_credentials_required_for_runtime_client": False,
+    "mexc_credentials_required_for_private_account_operations": True,
+    "public_market_data_client_authentication": "NONE",
     "live_authority_changed": False,
     "hard_gate_bypass": False,
 }
@@ -103300,18 +103562,28 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
         checks["universe_failure_keeps_protection_tasks"] = "retaining exchange and protection tasks" in _handler
         checks["preflight_requires_verified_universe"] = "if universe:" in _boot and "preflight deferred" in _boot
         _loop_start = _src.index("_liq_universe_last_attempt_ts", _end)
-        _loop_end = _src.index("# ---- Fetch BTC context ONCE per scan cycle", _loop_start)
-        _loop = _src[_loop_start:_loop_end]
+        _btc_fetch_start = _src.index("# ---- Fetch BTC context ONCE per scan cycle", _loop_start)
+        _macro_brain_start = _src.index("# v4.5 — GLOBAL OPPORTUNITY BRAIN:", _btc_fetch_start)
+        _loop = _src[_loop_start:_btc_fetch_start]
+        _post_macro = _src[_macro_brain_start - 8000:_macro_brain_start + 800]
+        _empty_pos = _src.find("if not scan_universe:", _btc_fetch_start, _macro_brain_start)
         checks["empty_universe_retry_is_bounded"] = (
             "V702_A66_UNIVERSE_EMPTY_RETRY_SEC" in _loop
             and "load_markets_empty_universe_retry" in _loop
             and "_empty_retry_sec" in _loop
         )
-        checks["empty_universe_skips_scan_pipeline"] = (
-            "if not scan_universe:" in _loop
-            and "await asyncio.sleep" in _loop
-            and "continue" in _loop
+        checks["btc_context_and_macro_run_before_empty_universe_defer"] = (
+            _empty_pos > _btc_fetch_start
+            and "_v702_classify_btc_macro_context" in _post_macro
+            and "_v702_notify_btc_macro_context" in _post_macro
         )
+        _empty_skip_ok = (
+            _empty_pos > _btc_fetch_start
+            and "await asyncio.sleep" in _src[_empty_pos:_macro_brain_start + 1200]
+            and "continue" in _src[_empty_pos:_macro_brain_start + 1200]
+        )
+        checks["empty_universe_still_skips_symbol_scan_pipeline"] = _empty_skip_ok
+        checks["empty_universe_skips_scan_pipeline"] = _empty_skip_ok  # compatibility alias for prior audit consumers
         checks["no_live_policy_relaxation"] = (
             FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE"
             and FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
@@ -103322,8 +103594,9 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
         _validator_end = _src.index('globals()["validate_config"] = _v702_a66_validate_config', _validator_start)
         _validator_src = _src[_validator_start:_validator_end]
         checks["inherited_validator_failure_cannot_be_overridden"] = (
-            '_result = {**_audit, "base_previous": _base_ok}' in _validator_src
+            '_result = {**_audit, "a72_read_only_runtime": _a72_audit, "base_previous": _base_ok}' in _validator_src
             and '_result["pass"] = bool(_base_ok and _audit.get("pass", False))' in _validator_src
+            and 'a72_read_only_runtime' in _validator_src
         )
         _pm_start = _src.index("    async def _tick_locked(exchange):")
         _pm_end = _src.index("# =============================================================================\n#  v4.5.68", _pm_start)
@@ -103420,11 +103693,41 @@ def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
 
 
 _V702_A66_PREVIOUS_VALIDATE_CONFIG = globals().get("validate_config")
+def _v702_a72_read_only_runtime_source_check() -> Dict[str, Any]:
+    """Source-level guard for public discovery/account separation and macro observability."""
+    try:
+        source = Path(__file__).read_text(encoding="utf-8")
+        factory = source.split("class ExchangeFactory:", 1)[1].split("# =============================================================================", 1)[0]
+        run_src = source.split("async def run_bot(", 1)[1].split("# =============================================================================\n#  SECTION 41", 1)[0]
+        supervisor = source.split("class Supervisor:", 1)[1].split("async def _position_manager_task", 1)[0]
+        _private_client_pos = run_src.find("account_exchange = ExchangeFactory.create_mexc_async()")
+        _private_state_guard_pos = run_src.rfind("if _need_private_account:", 0, _private_client_pos) if _private_client_pos >= 0 else -1
+        checks = {
+            "public_client_has_no_api_credentials": '"apiKey"' not in factory.split("def create_mexc_async", 1)[0] and '"secret"' not in factory.split("def create_mexc_async", 1)[0],
+            "monitor_release_uses_public_client": "exchange = ExchangeFactory.create_mexc_public_async()" in run_src,
+            "private_client_is_only_attempted_for_recovered_state": _private_client_pos >= 0 and _private_state_guard_pos >= 0,
+            "private_client_failure_keeps_public_scanning": "public scan remains active" in run_src.lower(),
+            "read_only_preflight_skips_private_balance": "v702_preflight_balance_not_required_for_discovery" in run_src,
+            "private_recovery_requires_account_client": "if account_exchange is not None:" in run_src,
+            "public_scanner_continues_with_missing_account": "public market scan continues" in run_src.lower(),
+            "telegram_dispatcher_starts_without_account_client": "TelegramDispatcher.run_forever()" in run_src,
+            "private_supervisor_calls_are_conditional": "if account_exchange is not None:" in supervisor,
+            "macro_direction_is_observational": "discovery_direction_gate\": False" in source and "_v702_classify_btc_macro_context" in run_src,
+            "macro_notifier_runs_before_empty_universe_continue": run_src.find("_v702_notify_btc_macro_context(_btc_macro_context)") < run_src.find("if not scan_universe:", run_src.find("_v702_notify_btc_macro_context(_btc_macro_context)")),
+            "live_authority_remains_monitor_only": FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS" and FINAL_CANONICAL_RUNTIME.get("production_decision") == "NO_GO_UNATTENDED_LIVE" and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False,
+        }
+        return {"pass": all(checks.values()), "checks": checks, "failed": [k for k,v in checks.items() if not v], "live_gates_relaxed": False}
+    except Exception as exc:
+        return {"pass": False, "checks": {}, "failed": [f"source_check_error:{type(exc).__name__}"], "live_gates_relaxed": False}
+
+
 def _v702_a66_validate_config() -> bool:
     try:
         _base_ok = bool(callable(_V702_A66_PREVIOUS_VALIDATE_CONFIG) and _V702_A66_PREVIOUS_VALIDATE_CONFIG())
         _audit = _v702_a66_startup_recovery_source_check()
-        _result = {**_audit, "base_previous": _base_ok}
+        _a72_audit = _v702_a72_read_only_runtime_source_check()
+        _result = {**_audit, "a72_read_only_runtime": _a72_audit, "base_previous": _base_ok}
+        _result["pass"] = bool(_result.get("pass", False) and _a72_audit.get("pass", False))
         # The final authority is the conjunction of the inherited chain and
         # the active A66 checks. Never let an expanded audit report overwrite it.
         _base_failures = []
@@ -103434,7 +103737,9 @@ def _v702_a66_validate_config() -> bool:
             if isinstance(_prior, dict) and _prior.get("pass") is False:
                 _base_failures.extend(str(x) for x in (_prior.get("failed", []) or []))
         _result["failed"] = list(dict.fromkeys(
-            list(_result.get("failed", []) or []) + _base_failures
+            list(_result.get("failed", []) or [])
+            + [f"a72:{x}" for x in (_a72_audit.get("failed", []) or [])]
+            + _base_failures
         ))
         _result["pass"] = bool(_base_ok and _audit.get("pass", False))
         STATS["v702_a66_final_validation"] = _result

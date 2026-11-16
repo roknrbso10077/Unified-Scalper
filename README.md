@@ -12,7 +12,7 @@ A71 is a corrective integration layer over the A70 package identity. It does not
 
 **Verification:** full offline suite `535 passed, 1 skipped, 0 failed` (64.72s); `python -u main.py --validate-only` passed 23 checks with exit 0, `bot_started=false`, peak RSS 551,132 KiB (538.21 MiB). This measured peak is below the earlier ~1001 MiB audit measurement but remains above 512 MiB. Railway's actual memory quota and termination reason were not available; OOM is not confirmed.
 
-**Railway operator checks:** use `python -u main.py` as the persistent Start Command; mount a persistent Volume at `/data`; set `SCALPER_DB=/data/unified_scalper.db`; disable every validate-only variable; keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`; and confirm a memory limit with adequate headroom. The app's monitor factory still requires MEXC credentials in this release. Do not use an HTTP health path unless the service actually serves HTTP; the packaged healthcheck is a process/container heartbeat check with a 360-second Docker start period.
+**Railway operator checks:** use `python -u main.py` as the persistent Start Command; mount a persistent Volume at `/data`; set `SCALPER_DB=/data/unified_scalper.db`; disable every validate-only variable; keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`; and confirm a memory limit with adequate headroom. The monitor-only runtime uses an unauthenticated public MEXC Spot client for discovery; MEXC keys and wallet balance are not required unless recovered private positions/order intents need account reconciliation or protection. Do not use an HTTP health path unless the service actually serves HTTP; the packaged healthcheck is a process/container heartbeat check with a 360-second Docker start period.
 
 The package remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`. Railway deployment, real MEXC orders, native stop protection, real Telegram delivery and profitability are not certified.
 
@@ -56,6 +56,12 @@ The bounded closed-candle scanner evaluates **BREAKOUT_CONTINUATION**, **PULLBAC
 Default resource limits: a configured ceiling of 240 symbols per cycle, 6 new pattern alerts per scan, and a hard maximum of 3 alerts per minute; the internal ranking floor remains 55/100, opportunity TTL 3,600 seconds, and active-record cap 1,200. **240 is not the actual scan count:** the Hunter reads only keys already present in `market_data_map`. That map is bounded upstream by the existing deep-scan selection (V699 targets normal=130, elevated=150, starving=170 when that arbiter is active; actual coverage can be lower when snapshots fail validation). No additional exchange request is made for Hunter discovery. Delivery callbacks are preserved on the direct dispatcher path, so the 3/minute hard cap is enforced locally rather than sacrificing ACK/failure handling. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
 
 The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
+
+### A72 — independent public discovery and descriptive BTC macro
+
+The monitor-only process uses a dedicated unauthenticated MEXC Spot client for public market data. It does not run private-balance/TruthSeal preflight merely to publish opportunities. A separate authenticated account client is created only when recovered open positions or unresolved execution intents require private reconciliation/protection; failure of that private client does not terminate the public scan.
+
+BTC macro is fetched/classified independently before the empty-Universe defer. Its report can be `BULLISH`, `BEARISH`, `NEUTRAL`, or `UNKNOWN`; no bullish macro regime is required for the macro report or for running public discovery. This is **not** a blanket bypass of strategy-specific regime/crash, local-evidence, risk, liquidity, cost, or protection policies. The Telegram macro digest is informational and rate-limited. Opportunity alerts still require valid market data plus an actual candidate/idea from the existing discovery lanes, and require Telegram token/chat configuration for delivery.
 
 ## A68 — Closed-candle TP/SL outcome follow-up
 
@@ -148,7 +154,24 @@ files.upload()  # choose FINAL_PRODUCTION_RELEASE.zip
 !python -u main.py --validate-only
 ```
 
-The declared target is Python 3.12; confirm the Colab runtime version before installing. A normal monitor/Paper session still needs MEXC credentials in the process environment in this release, even though Telegram is optional. Store **read-only** MEXC credentials in Colab Secrets (no trade/withdraw permissions), and keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`. Never paste secret values into notebook cells or output. `python -u main.py` is a foreground process and Colab can disconnect or reset at any time; Colab is not a persistent production host and this release remains `NO_GO_UNATTENDED_LIVE`.
+To receive Telegram alerts, configure the bot token and chat ID in a separate Colab cell without writing the token into notebook source:
+
+```python
+import os
+from getpass import getpass
+os.environ["TELEGRAM_BOT_TOKEN"] = getpass("Telegram bot token: ")
+os.environ["TELEGRAM_CHAT_ID"] = input("Telegram chat ID: ").strip()
+os.environ["UNIFIED_LIVE_PILOT_ENABLE"] = "0"
+os.environ["UNIFIED_A55_LIVE_ARM"] = "0"
+```
+
+Then start the read-only monitor in a foreground cell:
+
+```bash
+!python -u main.py
+```
+
+The declared target is Python 3.12; confirm the Colab runtime version before installing. In the monitor-only release, public MEXC market discovery does **not** require MEXC API keys or wallet balance. Telegram opportunity/macro alerts require `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_TOKEN`) and `TELEGRAM_CHAT_ID` (or `TELEGRAM_CHAT`); without them the scan may continue, but no Telegram message can be delivered. MEXC private credentials are only needed when the database contains recovered open positions or unresolved order intents that must be reconciled/protected. If those private credentials are absent/invalid, public discovery continues, but existing position protection is explicitly reported as unverified and no new execution is enabled. Keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`. Never paste secret values into notebook cells or output. `python -u main.py` is a foreground process and Colab can disconnect or reset at any time; Colab is not a persistent production host and this release remains `NO_GO_UNATTENDED_LIVE`.
 
 ### Railway persistent-service settings
 
@@ -175,7 +198,7 @@ The screenshot's `ENV-BOOT` telemetry reports `dotenv_loaded=False` while the ME
 
 A further screenshot supplied on 2026-11-16 shows Railway deployment revision `9d951f72` with status `Crashed` and another repeated startup sequence (visible log times around 14:56:17–14:56:30). It again shows `api_secret_present=True`, `telegram_token_present=True`, and `telegram_chat_present=True`; the `__boom__`, `T17/T18 stage=selftest`, and DailyCB synthetic loss rows remain expected test probes. The visible capture does not include the final `V702-STARTUP-PHASE` / `V702-CRASH` tail or a traceback. This short revision cannot be matched to the ZIP because `.git` metadata and Railway deployment settings are not included. Root cause remains unproven; compare the Railway Start Command with `python -u main.py`, make sure no `--validate-only` argument or `UNIFIED_V699_VALIDATE_ONLY` / `UNIFIED_V702_VALIDATE_ONLY` / `UNIFIED_VALIDATE_ONLY` flag is active, and inspect the final traceback and memory metrics. The local validate-only peak was about 539 MiB RSS in this audit environment; it is a measurement to compare with the service memory limit, not proof of OOM. See section 20 of `FINAL_AUDIT_REPORT.md`.
 
-**Required runtime credentials:** this release creates an authenticated MEXC CCXT client even in `MONITOR_ONLY_NO_NEW_BUYS` mode. Both `MEXC_API_KEY` and `MEXC_API_SECRET` must therefore be present in Railway Variables/Secrets or the project-root `.env`; otherwise startup stops with `[V702-BOOT-STOP]` / `missing_exchange_secrets`. The startup log reports presence booleans only and never prints secret values. Keep withdrawal permission disabled. Telegram credentials are optional; missing Telegram credentials disable alert delivery but do not authorize or block exchange execution.
+**Runtime credential separation (A72):** `MONITOR_ONLY_NO_NEW_BUYS` creates an unauthenticated public MEXC Spot client for tickers, markets, OHLCV, and order-book data. No API key, private account access, or wallet balance is required to discover/read-only opportunities. If recovered positions or unresolved execution intents exist, the runtime may create a separate authenticated client to reconcile/protect them; if credentials are absent or invalid, public discovery continues but protection of those existing positions is explicitly `UNVERIFIED` and new execution stays blocked. Telegram delivery requires `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_TOKEN`) plus `TELEGRAM_CHAT_ID` (or `TELEGRAM_CHAT`). Without those Telegram values, alerts cannot be delivered even if scanning works. A bad MEXC private API key must not disable public discovery. Secrets are never logged. Keep MEXC withdrawal permission disabled and keep all live arms at `0`.
 
 For durable state, attach a Railway Volume at `/data` and set `SCALPER_DB=/data/unified_scalper.db` (plus the documented knowledge/export paths). `SCALPER_DB` and Telegram display/link aliases supplied in `.env` are applied after dotenv loading; process-injected variables retain precedence. Temporary files named `/tmp/v702_r4_streak_*.db` or `/tmp/v702_a42_selftest_*.db` are isolated, disposable self-test databases; they are not evidence that the production ledger is configured to `/tmp`.
 
