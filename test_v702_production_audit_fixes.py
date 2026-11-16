@@ -246,6 +246,90 @@ def test_a52_composite_scorer_rejects_non_finite_values_across_numeric_contract(
             assert detail.get("reason") == "invalid_score_input"
 
 
+def test_sizing_engine_rejects_nonfinite_price_geometry_before_balance_lookup(monkeypatch):
+    async def balance_must_not_be_read(_exchange):
+        raise AssertionError("invalid price geometry must be rejected before balance/API reads")
+
+    monkeypatch.setattr(bot.BalanceReconciler, "fetch", balance_must_not_be_read)
+    valid = {"entry": 100.0, "sl": 99.5, "tp1": 101.2, "tp2": 102.0, "tp3": 103.0}
+    cases = (
+        {"entry": math.nan},
+        {"entry": math.inf},
+        {"sl": math.nan},
+        {"sl": math.inf},
+        {"tp1": math.nan},
+        {"tp2": math.inf},
+        {"tp3": math.nan},
+        {"spread_pct": math.nan},
+        {"spread_pct": -0.01},
+    )
+    for bad_fields in cases:
+        values = {**valid, **bad_fields}
+        spread = values.pop("spread_pct", None)
+        decision = asyncio.run(
+            bot.SizingEngine.decide(
+                None, "TEST/USDT", values["entry"], values["sl"],
+                values["tp1"], values["tp2"], tp3=values["tp3"],
+                strategy_score=90.0, quality_grade="A+", spread_pct=spread,
+            )
+        )
+        assert decision.status == "REJECT"
+        assert decision.reject_reason == "invalid_price_geometry"
+        assert math.isfinite(decision.quantity_asset) and decision.quantity_asset == 0.0
+        assert math.isfinite(decision.raw_position_value) and decision.raw_position_value == 0.0
+
+
+def test_sizing_engine_rejects_invalid_price_order_before_balance_lookup(monkeypatch):
+    async def balance_must_not_be_read(_exchange):
+        raise AssertionError("invalid price ordering must be rejected before balance/API reads")
+
+    monkeypatch.setattr(bot.BalanceReconciler, "fetch", balance_must_not_be_read)
+    decision = asyncio.run(
+        bot.SizingEngine.decide(
+            None, "TEST/USDT", 100.0, 100.0, 101.0, 102.0,
+            strategy_score=90.0, quality_grade="A+",
+        )
+    )
+    assert decision.status == "REJECT"
+    assert decision.reject_reason == "invalid_price_geometry"
+
+
+def test_sizing_engine_valid_geometry_produces_finite_risk_capped_paper_decision(monkeypatch):
+    async def fake_balance(_exchange):
+        return 100.0, "REAL"
+
+    monkeypatch.setattr(bot.BalanceReconciler, "fetch", fake_balance)
+    monkeypatch.setattr(bot, "ACTIVE_TRADES", {})
+    settings = {
+        "RISK_PER_TRADE_PCT": 1.0, "MIN_SL_PCT": 0.4, "MAX_SL_PCT": 5.0,
+        "MAX_POSITION_SIZE_USDT": 75.0, "MIN_POSITION_SIZE_USDT": 15.0,
+        "FIXED_POSITION_SIZE_USDT": 75.0, "POSITION_SIZING_MODE": "HYBRID_CAP",
+        "ENABLE_LIVE_TRADING": False, "PAPER_TRADING_MODE": True,
+        "V702_GRADE_TICKET_SIZING_ENABLE": False,
+        "V702_QUALITY_SCALED_TICKET_ENABLE": False,
+        "V702_SMALL_NET_PROFIT_MODE_ENABLE": False,
+        "MAX_TOTAL_EXPOSURE_PCT": 99.0, "TRADING_BALANCE_RESERVE_USDT": 0.0,
+        "TAKER_FEE_PCT": 0.1, "ROUNDTRIP_FEE_MULT": 2.0,
+        "MIN_NET_RR_TP1": 0.1, "MIN_TP1_TO_FEE_RATIO": 2.5,
+        "TP1_EXIT_PCT": 0.5, "TP2_EXIT_PCT": 0.3,
+        "RUNNER_KEEP_PCT_AT_TP3": 0.2, "ENABLE_RUNNER_MODE": True,
+    }
+    for key, value in settings.items():
+        monkeypatch.setitem(bot.CONFIG, key, value)
+
+    decision = asyncio.run(
+        bot.SizingEngine.decide(
+            None, "TEST/USDT", 100.0, 99.5, 103.0, 105.0, tp3=107.0,
+            strategy_score=90.0, quality_grade="A+",
+        )
+    )
+    assert decision.status == "OK"
+    assert decision.notional_after_caps <= settings["MAX_POSITION_SIZE_USDT"]
+    assert math.isfinite(decision.quantity_asset) and decision.quantity_asset > 0.0
+    assert math.isfinite(decision.effective_risk_usdt)
+    assert decision.effective_risk_usdt <= decision.target_risk_usdt
+
+
 def test_a52_composite_scorer_treats_htf_sentinel_as_missing_not_quality():
     values = _a52_valid_score_kwargs()
     values["htf_strength"] = bot.CompositeScorer._MISSING

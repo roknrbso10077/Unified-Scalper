@@ -5710,6 +5710,39 @@ class SizingEngine:
                      strategy_risk_factor: float = 1.0, quality_grade: str = "",
                      spread_pct: Optional[float] = None) -> SizingDecision:
         d = SizingDecision(mode=str(CONFIG["POSITION_SIZING_MODE"]), strategy_mode=str(strategy_mode or ""))
+
+        # Reject malformed/non-finite price geometry before any balance/API read
+        # or arithmetic.  In particular, min()/max() can mask NaN values and
+        # otherwise leave NaN quantities in an otherwise rejected decision.
+        try:
+            entry = float(entry)
+            sl = float(sl)
+            tp1 = float(tp1)
+            tp2 = float(tp2)
+            tp3 = float(tp3) if tp3 is not None else None
+            spread_pct = float(spread_pct) if spread_pct is not None else None
+        except (TypeError, ValueError, OverflowError):
+            d.status = "REJECT"
+            d.reject_reason = "invalid_price_geometry"
+            STATS["sizing_reject_invalid_price_geometry"] = int(
+                STATS.get("sizing_reject_invalid_price_geometry", 0) or 0
+            ) + 1
+            return d
+
+        _required_prices = (entry, sl, tp1, tp2)
+        _optional_prices = (tp3,) if tp3 is not None else ()
+        _spread_valid = spread_pct is None or (math.isfinite(spread_pct) and spread_pct >= 0.0)
+        if (not all(math.isfinite(value) for value in (*_required_prices, *_optional_prices))
+                or not _spread_valid
+                or entry <= 0.0 or not (0.0 < sl < entry)
+                or tp1 <= entry or tp2 <= entry):
+            d.status = "REJECT"
+            d.reject_reason = "invalid_price_geometry"
+            STATS["sizing_reject_invalid_price_geometry"] = int(
+                STATS.get("sizing_reject_invalid_price_geometry", 0) or 0
+            ) + 1
+            return d
+
         # v4.4: quality-aware risk. This can only scale BELOW the canonical
         # base risk and is hard-clamped; no strategy can increase base risk.
         try:

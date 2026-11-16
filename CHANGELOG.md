@@ -2434,3 +2434,13 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Corrected stale release-manifest source digests and regenerated the current package checksum list.
 - Re-ran Python compilation, the offline validation entry point, and the full offline regression suite. The detailed results, limits, and Railway screenshot assessment are recorded in `FINAL_AUDIT_REPORT.md`.
 - No strategy thresholds, risk limits, exchange execution authority, or live-trading defaults were relaxed.
+
+
+## 2026-11-16 — Post-A69 risk-input audit closure
+
+- Hardened `SizingEngine.decide` to normalize and reject non-finite Entry/SL/TP inputs, invalid price ordering, and invalid spread before balance retrieval or quantity/risk arithmetic. Invalid geometry returns `REJECT / invalid_price_geometry`; no NaN quantity or risk fields are created.
+- Added three regression tests covering NaN/Infinity, invalid price order, and a valid risk-capped Paper sizing path.
+- Added optional Telegram variable names to `.env.example` without adding credentials.
+- Refreshed the A66 and canonical source hashes, release verification metadata, and package checksum inventory.
+- Verification: 525 passed, 1 historical A51 fixture skipped; 109 focused integration/mock tests passed; Python compile and offline `--validate-only` passed. Python 3.12/Docker/real MEXC/Telegram remain unverified because the environment lacks the required network/dependencies and live credentials.
+- No market thresholds or execution authority were relaxed; the release remains `NO_GO_UNATTENDED_LIVE`.

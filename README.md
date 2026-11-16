@@ -172,3 +172,8 @@ sha256sum -c A66_SHA256SUMS.txt
 - The cumulative package-audit revision includes `A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15`. The stable A66 release tag and R40 runtime identity remain compatibility identifiers; neither is a claim that the package contains only A66 code.
 
 The package remains `NO_GO_UNATTENDED_LIVE` and `MONITOR_ONLY_NO_NEW_BUYS`. A real MEXC connection, native stop verification, real Telegram delivery, target-platform Docker/CI, a complete transitive hash lock, and profitability from real fills are not established by offline tests.
+
+
+## 2026-11-16 — Numeric risk-input closure
+
+`SizingEngine.decide` now rejects non-finite Entry/SL/TP inputs and invalid spread/price geometry before reading the balance or calculating a quantity. Rejections are tagged `invalid_price_geometry`. The release also lists the optional Telegram environment-variable names in `.env.example`; every value remains blank/commented. See `FINAL_AUDIT_REPORT.md` section 18 for the rerun results and the remaining Python 3.12, dependency, Docker, Railway, and live-integration limits. This change does **not** lift `NO_GO_UNATTENDED_LIVE` or enable live entries.
