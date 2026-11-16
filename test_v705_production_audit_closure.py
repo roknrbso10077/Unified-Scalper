@@ -200,3 +200,37 @@ def test_a58_rate_limiter_and_sqlite_async_boundary_contracts():
     assert "V702_EQUITY_IGNORE_ASSETS" in source
     assert "V702_EQUITY_TICKER_CACHE_TTL_SEC" in source
     assert "entry_policy_authority_missing" in inspect.getsource(main.V702PortfolioDrawdownGuard.authorize_entry.__func__)
+
+
+def test_a69_canonical_release_identity_and_current_audit_revision_are_coherent():
+    runtime = main.FINAL_CANONICAL_RUNTIME
+    identity = main.V702_A66_RELEASE_TAG
+    compatibility_identity = main.V702_A64_RELEASE_TAG
+    active_patch = main.V702_A66_POST_AUDIT_PATCH_REVISION
+    active_audit_merge = "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15"
+
+    assert main.V702_FINAL_CANONICAL_RELEASE == compatibility_identity
+    assert main.CONFIG["V702_FINAL_CANONICAL_RUNTIME_IDENTITY"] == compatibility_identity
+    assert main.CONFIG["V702_FINAL_DISTRIBUTION_RELEASE_TAG"] == identity
+    assert runtime["active_release_tag"] == identity
+    assert runtime["active_distribution_release_tag"] == identity
+    assert runtime["active_post_audit_patch_revision_current"] == active_patch
+    assert runtime["active_audit_merge_revision_current"] == active_audit_merge
+    assert runtime["package_revision"] == main.V702_PACKAGE_AUDIT_REVISION
+    assert runtime["active_package_revision_current"] == main.V702_PACKAGE_AUDIT_REVISION
+    assert main.STATS["v702_a69_canonical_identity_closure"]["pass"] is True
+    assert runtime["effective_entry_policy"] == "MONITOR_ONLY_NO_NEW_BUYS"
+    assert runtime["production_decision"] == "NO_GO_UNATTENDED_LIVE"
+    assert runtime["hard_gate_bypass"] is False
+    assert runtime["live_gates_relaxed"] is False
+
+    # Historical A51 remains available for backwards-compatible readers, but
+    # live startup and the operator Telegram view must prefer the *_current key.
+    assert runtime["active_post_audit_patch_revision"].startswith("V702-A51-")
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    assert source.count('get("active_post_audit_patch_revision_current")') >= 1
+    assert 'get("active_post_audit_patch_revision_current")' in source
+    assert "post_audit_patch_revision={_post_audit_patch_revision}" in source
+    assert "[V702-STARTUP-PHASE] phase=validate_config_begin" in source
+    assert "[V702-STARTUP-PHASE] phase=validate_config_end" in source
+    assert "[V702-STARTUP-PHASE] phase=run_bot_enter" in source

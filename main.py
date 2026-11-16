@@ -23525,10 +23525,14 @@ async def _v649_tg_bootstrap(cls) -> bool:
             CONFIG["TELEGRAM_BOT_USERNAME"] = _bot_username
             STATS["v657_telegram_bot_username_autocached"] = True
         logger.info("[V649-TG] authenticated username=@%s id=%s", bot.get("username", "?"), bot.get("id", "?"))
+        _post_audit_patch_revision = str(
+            (globals().get("FINAL_CANONICAL_RUNTIME") or {}).get("active_post_audit_patch_revision_current")
+            or (globals().get("FINAL_CANONICAL_RUNTIME") or {}).get("active_post_audit_patch_revision", "UNREPORTED")
+        )
         ok, _perm = await TelegramDispatcher._send_one(
             f"<b>Unified Scalper {SCRIPT_VERSION}</b>\n"
             f"Package: {V702_PACKAGE_AUDIT_REVISION}\n"
-            f"Post-audit patch: {(globals().get('FINAL_CANONICAL_RUNTIME') or {}).get('active_post_audit_patch_revision', 'UNREPORTED')}\n"
+            f"Post-audit patch: {_post_audit_patch_revision}\n"
             f"Entry policy: {STATS.get('v702_runtime_entry_policy', 'MONITOR_ONLY_NO_NEW_BUYS')}\n"
             "Telegram channel ONLINE — polling/control ready."
         )
@@ -28632,18 +28636,41 @@ def main():
                 float(CONFIG.get("TP1_EXIT_PCT", 0.60)), float(CONFIG.get("TP2_EXIT_PCT", 0.30)),
                 float(CONFIG.get("RUNNER_KEEP_PCT_AT_TP3", 0.10)),
                 int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 0) or 0))
-    _post_audit_patch_revision = str((globals().get("FINAL_CANONICAL_RUNTIME") or {}).get("active_post_audit_patch_revision", "UNREPORTED"))
-    logger.info(f"[Main] Starting Unified Scalper release={globals().get('V702_FINAL_CANONICAL_RELEASE', 'V702')} package_revision={globals().get('V702_PACKAGE_AUDIT_REVISION', 'UNKNOWN')} post_audit_patch_revision={_post_audit_patch_revision} runtime_identity={SCRIPT_VERSION} provenance={V699_FINAL_IDENTITY} with {len(universe)} symbols")
+    _runtime_identity = globals().get("FINAL_CANONICAL_RUNTIME") or {}
+    _post_audit_patch_revision = str(
+        _runtime_identity.get("active_post_audit_patch_revision_current")
+        or _runtime_identity.get("active_post_audit_patch_revision")
+        or "UNREPORTED"
+    )
+    _distribution_release = str(
+        _runtime_identity.get("active_distribution_release_tag")
+        or _runtime_identity.get("active_release_tag")
+        or globals().get("V702_FINAL_CANONICAL_RELEASE", "V702")
+    )
+    logger.info(
+        f"[Main] Starting Unified Scalper release={_distribution_release} "
+        f"package_revision={globals().get('V702_PACKAGE_AUDIT_REVISION', 'UNKNOWN')} "
+        f"post_audit_patch_revision={_post_audit_patch_revision} "
+        f"runtime_identity={SCRIPT_VERSION} provenance={V699_FINAL_IDENTITY} with {len(universe)} symbols"
+    )
     # v4.2.2 FIX — boot validation is FAIL-CLOSED. Previously validate_config()
     # was called and its False return silently ignored, so a broken config
     # still reached the live loop. Now: any failure (False return, SystemExit
     # from tp_invariant_check, or an unexpected exception) aborts the boot
     # with SystemExit("config_invalid") BEFORE the exchange loop starts.
+    _startup_validation_started = float(MONO_NOW())
+    _cfg_ok = None
+    logger.info(
+        "[V702-STARTUP-PHASE] phase=validate_config_begin release=%s package_revision=%s",
+        _distribution_release,
+        globals().get("V702_PACKAGE_AUDIT_REVISION", "UNKNOWN"),
+    )
     try:
         _cfg_ok = validate_config()
-    except SystemExit:
-        # tp_invariant_check / secrets_check already raised a precise
-        # SystemExit — propagate it untouched (fail-closed).
+    except SystemExit as _se:
+        # Preserve the precise fail-closed exit while making the failed stage
+        # explicit in hosted logs (Railway may truncate the final traceback).
+        logger.critical("[V702-BOOT-STOP] stage=validate_config reason=%s", str(_se)[:240])
         raise
     except Exception as _e:
         # Preserve the actual traceback in Railway/container logs. The previous
@@ -28656,6 +28683,13 @@ def main():
     finally:
         # The static AST has no runtime role after the canonical validator.
         _v702_release_startup_memory()
+        try:
+            logger.info(
+                "[V702-STARTUP-PHASE] phase=validate_config_end passed=%s elapsed_sec=%.3f",
+                bool(_cfg_ok), max(0.0, float(MONO_NOW()) - _startup_validation_started),
+            )
+        except Exception:
+            pass
     if not _cfg_ok:
         # Report the *active* terminal validators. Older deployments printed only
         # R23/V704 fields here, which can be empty when the A7-A24 terminal layer
@@ -28738,10 +28772,13 @@ def main():
     # invariant above has passed. A failed configuration exits without arming.
     try:
         _v699_arm_live_epoch()
+        logger.info("[V702-STARTUP-PHASE] phase=runtime_epoch_armed entry_policy=%s",
+                    FINAL_CANONICAL_RUNTIME.get("effective_entry_policy", "UNKNOWN"))
     except Exception as _arm_exc:
         logger.critical("[V702-BOOT] runtime epoch arm failed after validation: %s", _arm_exc)
         raise SystemExit("runtime_epoch_arm_failed")
     try:
+        logger.info("[V702-STARTUP-PHASE] phase=run_bot_enter universe_symbols=%d", len(universe))
         asyncio.run(run_bot(universe))
     except KeyboardInterrupt:
         logger.info("[Main] KeyboardInterrupt — shutting down")
@@ -103843,3 +103880,50 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[V702-BOOT] fingerprint logging failed: {type(exc).__name__}: {exc}", flush=True)
     main()
+
+# A69 final production-audit identity closure. Historical A51 fields remain
+# available for readers that explicitly ask for the legacy value; all active
+# consumers use the authoritative *_current field. Keep the long-lived A66
+# distribution tag stable while publishing the complete A69 package revision.
+V702_A69_MERGED_AUDIT_REVISION = "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15"
+# Keep the historical compatibility identity (A64) and active A66 operational
+# patch contract intact. A69 is separately exposed as the current merged audit
+# revision; it must not overwrite fields consumed by the inherited A64/A66 tests.
+CONFIG["V702_FINAL_DISTRIBUTION_RELEASE_TAG"] = V702_A66_RELEASE_TAG
+FINAL_CANONICAL_RUNTIME.update({
+    "active_release_tag": V702_A66_RELEASE_TAG,
+    "active_distribution_release_tag": V702_A66_RELEASE_TAG,
+    "active_distribution_revision": V702_A66_RELEASE_REVISION,
+    "active_post_audit_patch_revision_current": V702_A66_POST_AUDIT_PATCH_REVISION,
+    "active_audit_merge_revision_current": V702_A69_MERGED_AUDIT_REVISION,
+    "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "release_revision": (
+        V702_A66_RELEASE_REVISION + "-" + V702_A66_POST_AUDIT_PATCH_REVISION
+        + "-" + V702_A69_MERGED_AUDIT_REVISION
+    ),
+    "supplemental_audit_merge_revision": V702_A69_MERGED_AUDIT_REVISION,
+})
+STATS["v702_a69_canonical_identity_closure"] = {
+    "pass": bool(
+        V702_FINAL_CANONICAL_RELEASE == V702_A64_RELEASE_TAG
+        and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A64_RELEASE_TAG
+        and CONFIG.get("V702_FINAL_DISTRIBUTION_RELEASE_TAG") == V702_A66_RELEASE_TAG
+        and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A66_RELEASE_TAG
+        and FINAL_CANONICAL_RUNTIME.get("active_post_audit_patch_revision_current") == V702_A66_POST_AUDIT_PATCH_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("active_audit_merge_revision_current") == V702_A69_MERGED_AUDIT_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("package_revision") == V702_PACKAGE_AUDIT_REVISION
+    ),
+    "revision": V702_A69_MERGED_AUDIT_REVISION,
+    "compatibility_runtime_identity_preserved": True,
+    "historical_legacy_patch_field_preserved": True,
+    "live_authority_changed": False,
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+}
+
