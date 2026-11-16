@@ -28675,6 +28675,12 @@ def main():
         or _runtime_identity.get("active_post_audit_patch_revision")
         or "UNREPORTED"
     )
+    _audit_merge_revision = str(
+        _runtime_identity.get("active_audit_merge_revision_current") or "UNREPORTED"
+    )
+    _entrypoint_identity_revision = str(
+        _runtime_identity.get("active_entrypoint_identity_revision_current") or "UNREPORTED"
+    )
     _distribution_release = str(
         _runtime_identity.get("active_distribution_release_tag")
         or _runtime_identity.get("active_release_tag")
@@ -28684,6 +28690,8 @@ def main():
         f"[Main] Starting Unified Scalper release={_distribution_release} "
         f"package_revision={globals().get('V702_PACKAGE_AUDIT_REVISION', 'UNKNOWN')} "
         f"post_audit_patch_revision={_post_audit_patch_revision} "
+        f"audit_merge_revision={_audit_merge_revision} "
+        f"entrypoint_identity_revision={_entrypoint_identity_revision} "
         f"runtime_identity={SCRIPT_VERSION} provenance={V699_FINAL_IDENTITY} with {len(universe)} symbols"
     )
     # v4.2.2 FIX — boot validation is FAIL-CLOSED. Previously validate_config()
@@ -102967,6 +102975,86 @@ STATS["v702_a69_dotenv_config_closure"] = {
 }
 
 
+# A70 closes an entrypoint-order defect: the active audit identity must be
+# finalized before either the one-shot validator or the persistent main() call.
+# Keep the A66 distribution tag and A69 merged-audit identity stable; A70 is
+# an additive package/entrypoint closure, not a new order authority.
+V702_A70_ENTRYPOINT_IDENTITY_REVISION = "A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16"
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A70_ENTRYPOINT_IDENTITY_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "supplemental_entrypoint_identity_closure": V702_A70_ENTRYPOINT_IDENTITY_REVISION,
+    "active_entrypoint_identity_revision_current": V702_A70_ENTRYPOINT_IDENTITY_REVISION,
+    "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+})
+# A69 final production-audit identity closure. Historical A51 fields remain
+# available for readers that explicitly ask for the legacy value; all active
+# consumers use the authoritative *_current field. Keep the long-lived A66
+# distribution tag stable while publishing the complete A69 package revision.
+V702_A69_MERGED_AUDIT_REVISION = "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15"
+# Keep the historical compatibility identity (A64) and active A66 operational
+# patch contract intact. A69 is separately exposed as the current merged audit
+# revision; it must not overwrite fields consumed by the inherited A64/A66 tests.
+CONFIG["V702_FINAL_DISTRIBUTION_RELEASE_TAG"] = V702_A66_RELEASE_TAG
+FINAL_CANONICAL_RUNTIME.update({
+    "active_release_tag": V702_A66_RELEASE_TAG,
+    "active_distribution_release_tag": V702_A66_RELEASE_TAG,
+    "active_distribution_revision": V702_A66_RELEASE_REVISION,
+    "active_post_audit_patch_revision_current": V702_A66_POST_AUDIT_PATCH_REVISION,
+    "active_audit_merge_revision_current": V702_A69_MERGED_AUDIT_REVISION,
+    "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "release_revision": (
+        V702_A66_RELEASE_REVISION + "-" + V702_A66_POST_AUDIT_PATCH_REVISION
+        + "-" + V702_A69_MERGED_AUDIT_REVISION + "-" + V702_A70_ENTRYPOINT_IDENTITY_REVISION
+    ),
+    "supplemental_audit_merge_revision": V702_A69_MERGED_AUDIT_REVISION,
+})
+STATS["v702_a69_canonical_identity_closure"] = {
+    "pass": bool(
+        V702_FINAL_CANONICAL_RELEASE == V702_A64_RELEASE_TAG
+        and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A64_RELEASE_TAG
+        and CONFIG.get("V702_FINAL_DISTRIBUTION_RELEASE_TAG") == V702_A66_RELEASE_TAG
+        and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A66_RELEASE_TAG
+        and FINAL_CANONICAL_RUNTIME.get("active_post_audit_patch_revision_current") == V702_A66_POST_AUDIT_PATCH_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("active_audit_merge_revision_current") == V702_A69_MERGED_AUDIT_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("package_revision") == V702_PACKAGE_AUDIT_REVISION
+    ),
+    "revision": V702_A69_MERGED_AUDIT_REVISION,
+    "compatibility_runtime_identity_preserved": True,
+    "historical_legacy_patch_field_preserved": True,
+    "live_authority_changed": False,
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+}
+STATS["v702_a70_entrypoint_identity_closure"] = {
+    "pass": bool(
+        FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A66_RELEASE_TAG
+        and FINAL_CANONICAL_RUNTIME.get("active_post_audit_patch_revision_current") == V702_A66_POST_AUDIT_PATCH_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("active_audit_merge_revision_current") == V702_A69_MERGED_AUDIT_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("active_entrypoint_identity_revision_current") == V702_A70_ENTRYPOINT_IDENTITY_REVISION
+        and FINAL_CANONICAL_RUNTIME.get("active_package_revision_current") == V702_PACKAGE_AUDIT_REVISION
+        and CONFIG.get("V702_FINAL_DISTRIBUTION_RELEASE_TAG") == V702_A66_RELEASE_TAG
+    ),
+    "revision": V702_A70_ENTRYPOINT_IDENTITY_REVISION,
+    "applied_before_validate_only": True,
+    "applied_before_main_entrypoint": True,
+    "live_authority_changed": False,
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+}
+
+
 def _v702_a66_startup_recovery_source_check() -> Dict[str, Any]:
     """Verify critical boot-continuity invariants against the active source."""
     checks: Dict[str, bool] = {}
@@ -103909,54 +103997,20 @@ if __name__ == "__main__":
     try:
         # Identity/fingerprint logging is read-only. The LIVE epoch is armed by
         # main() only after the active canonical validator succeeds.
-        logger.info("[V702-BOOT] source_sha256=%s validator_revision=%s package_revision=%s release=%s runtime=%s", _v702_r26_source_sha256(), str(globals().get("V702_R38_FINAL_CANONICAL_REVISION", "UNKNOWN")) + "+" + str(globals().get("V705_AUDIT_REVISION", "")), globals().get("V702_PACKAGE_AUDIT_REVISION", "UNKNOWN"), str(FINAL_CANONICAL_RUNTIME.get("active_release_tag", "UNIFIED-SCALPER-V702-CANONICAL-FINAL")), globals().get("V702_FINAL_RUNTIME_IDENTITY", CANONICAL_RUNTIME_IDENTITY))
+        logger.info(
+            "[V702-BOOT] source_sha256=%s validator_revision=%s package_revision=%s "
+            "audit_merge_revision=%s entrypoint_identity_revision=%s release=%s runtime=%s",
+            _v702_r26_source_sha256(),
+            str(globals().get("V702_R38_FINAL_CANONICAL_REVISION", "UNKNOWN")) + "+" + str(globals().get("V705_AUDIT_REVISION", "")),
+            globals().get("V702_PACKAGE_AUDIT_REVISION", "UNKNOWN"),
+            FINAL_CANONICAL_RUNTIME.get("active_audit_merge_revision_current", "UNREPORTED"),
+            FINAL_CANONICAL_RUNTIME.get("active_entrypoint_identity_revision_current", "UNREPORTED"),
+            str(FINAL_CANONICAL_RUNTIME.get("active_release_tag", "UNIFIED-SCALPER-V702-CANONICAL-FINAL")),
+            globals().get("V702_FINAL_RUNTIME_IDENTITY", CANONICAL_RUNTIME_IDENTITY),
+        )
     except Exception as exc:
         print(f"[V702-BOOT] fingerprint logging failed: {type(exc).__name__}: {exc}", flush=True)
     main()
 
-# A69 final production-audit identity closure. Historical A51 fields remain
-# available for readers that explicitly ask for the legacy value; all active
-# consumers use the authoritative *_current field. Keep the long-lived A66
-# distribution tag stable while publishing the complete A69 package revision.
-V702_A69_MERGED_AUDIT_REVISION = "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15"
-# Keep the historical compatibility identity (A64) and active A66 operational
-# patch contract intact. A69 is separately exposed as the current merged audit
-# revision; it must not overwrite fields consumed by the inherited A64/A66 tests.
-CONFIG["V702_FINAL_DISTRIBUTION_RELEASE_TAG"] = V702_A66_RELEASE_TAG
-FINAL_CANONICAL_RUNTIME.update({
-    "active_release_tag": V702_A66_RELEASE_TAG,
-    "active_distribution_release_tag": V702_A66_RELEASE_TAG,
-    "active_distribution_revision": V702_A66_RELEASE_REVISION,
-    "active_post_audit_patch_revision_current": V702_A66_POST_AUDIT_PATCH_REVISION,
-    "active_audit_merge_revision_current": V702_A69_MERGED_AUDIT_REVISION,
-    "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
-    "active_audit_revision": V702_PACKAGE_AUDIT_REVISION,
-    "active_package_revision_current": V702_PACKAGE_AUDIT_REVISION,
-    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
-    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
-    "package_revision": V702_PACKAGE_AUDIT_REVISION,
-    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
-    "release_revision": (
-        V702_A66_RELEASE_REVISION + "-" + V702_A66_POST_AUDIT_PATCH_REVISION
-        + "-" + V702_A69_MERGED_AUDIT_REVISION
-    ),
-    "supplemental_audit_merge_revision": V702_A69_MERGED_AUDIT_REVISION,
-})
-STATS["v702_a69_canonical_identity_closure"] = {
-    "pass": bool(
-        V702_FINAL_CANONICAL_RELEASE == V702_A64_RELEASE_TAG
-        and CONFIG.get("V702_FINAL_CANONICAL_RUNTIME_IDENTITY") == V702_A64_RELEASE_TAG
-        and CONFIG.get("V702_FINAL_DISTRIBUTION_RELEASE_TAG") == V702_A66_RELEASE_TAG
-        and FINAL_CANONICAL_RUNTIME.get("active_release_tag") == V702_A66_RELEASE_TAG
-        and FINAL_CANONICAL_RUNTIME.get("active_post_audit_patch_revision_current") == V702_A66_POST_AUDIT_PATCH_REVISION
-        and FINAL_CANONICAL_RUNTIME.get("active_audit_merge_revision_current") == V702_A69_MERGED_AUDIT_REVISION
-        and FINAL_CANONICAL_RUNTIME.get("package_revision") == V702_PACKAGE_AUDIT_REVISION
-    ),
-    "revision": V702_A69_MERGED_AUDIT_REVISION,
-    "compatibility_runtime_identity_preserved": True,
-    "historical_legacy_patch_field_preserved": True,
-    "live_authority_changed": False,
-    "hard_gate_bypass": False,
-    "live_gates_relaxed": False,
-}
+
 

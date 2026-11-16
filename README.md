@@ -1,7 +1,7 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT IDENTITY
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures)  
-**Release date:** 2026-11-15  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures + A70 entrypoint identity closure)  
+**Release date:** 2026-11-15 (A70 audit closure: 2026-11-16)  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
@@ -18,6 +18,12 @@ UNIFIED_A55_LIVE_ARM=0
 ```
 
 The inherited A65 runtime guard also fixes the stale CONFIG reference: authorization reads the current guarded CONFIG object at decision time. That fixes an inconsistent authorization read; it does not loosen a gate. The effective default remains `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## A70 — entrypoint identity closure (2026-11-16)
+
+A70 fixes a boot-order defect in `main.py`: the A69 canonical audit-identity closure previously appeared below the `if __name__ == "__main__": main()` call. A persistent service could enter `main()` before that closure executed, and the one-shot `--validate-only` path could exit before it. The identity closure now executes before both the validation CLI branch and the persistent entrypoint. The stable A66 distribution tag, A69 merged-audit identity, live-authority gates, and strategy behavior are preserved; A70 is an additive package identity/ordering closure only.
+
+A dedicated regression now checks source ordering (`A70` closure → A69 identity merge → validation CLI → `__main__` → `main()`), active runtime identity fields, and boot-log identity fields. The distribution is still offline/monitor-only and is not certified for unattended live trading.
 
 ## A67 — Intelligent Opportunity Hunter (read-only)
 

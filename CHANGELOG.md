@@ -1,3 +1,13 @@
+# V702 A70 — entrypoint audit-identity closure (2026-11-16)
+
+- Move the A69 canonical audit-identity closure above both the `--validate-only` CLI exit and the persistent `__main__` entrypoint. The old placement allowed script startup to block inside `main()` before the final identity fields were applied, while module-import tests masked the ordering defect.
+- Add an A70 package revision and expose the active entrypoint identity in runtime state and `[V702-BOOT]` / `[Main] Starting` diagnostics. Preserve the A66 distribution tag and A69 merged-audit revision.
+- Add a regression that asserts the actual source execution order, active package/runtime identity, A69/A70 closure status, and identity diagnostics.
+- No strategy, scoring, risk, PreSend, queue, Telegram, order, or PositionManager authority/gate is relaxed or replaced. `MONITOR_ONLY_NO_NEW_BUYS` and `NO_GO_UNATTENDED_LIVE` remain unchanged.
+- Railway's underlying Crash cause remains unproven from the supplied log excerpts; A70 fixes a confirmed identity-ordering defect, not a proven explanation for the platform crash.
+
+---
+
 # V702 A69 — dotenv runtime config and boot-stop diagnostics (2026-11-15)
 
 - Reapply `SCALPER_DB` and Telegram display/link aliases after `load_dotenv`, fixing configuration values that were captured before the `.env` file was loaded. Host-injected environment values retain precedence.

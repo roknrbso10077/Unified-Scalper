@@ -205,5 +205,8 @@ def test_a44_release_manifest_marks_offline_only_no_go_and_policy_bucket():
     revision = manifest.get("active_package_revision", "")
     assert "A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21" in revision
     assert "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15" in revision
-    assert revision.endswith("A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15")
+    assert "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15" in revision
+    assert "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15" in revision
+    assert "A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15" in revision
+    assert revision.endswith("A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16")
     assert manifest["canonical_source_sha256"] == hashlib.sha256((ROOT / "main.py").read_bytes()).hexdigest()

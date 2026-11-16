@@ -234,3 +234,23 @@ def test_a69_canonical_release_identity_and_current_audit_revision_are_coherent(
     assert "[V702-STARTUP-PHASE] phase=validate_config_begin" in source
     assert "[V702-STARTUP-PHASE] phase=validate_config_end" in source
     assert "[V702-STARTUP-PHASE] phase=run_bot_enter" in source
+
+
+def test_a70_audit_identity_is_applied_before_validate_only_and_persistent_entrypoint():
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    revision_pos = source.index('V702_A70_ENTRYPOINT_IDENTITY_REVISION = "A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16"')
+    merge_identity_pos = source.index('V702_A69_MERGED_AUDIT_REVISION = "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15"')
+    validate_cli_pos = source.index("\nif _V699_VALIDATE_ONLY_REQUEST:")
+    main_guard_pos = source.index('\nif __name__ == "__main__":')
+    main_call_pos = source.index("    main()", main_guard_pos)
+
+    assert revision_pos < merge_identity_pos < validate_cli_pos < main_guard_pos < main_call_pos
+    assert main.V702_PACKAGE_AUDIT_REVISION.endswith(main.V702_A70_ENTRYPOINT_IDENTITY_REVISION)
+    assert main.FINAL_CANONICAL_RUNTIME["active_audit_merge_revision_current"] == main.V702_A69_MERGED_AUDIT_REVISION
+    assert main.FINAL_CANONICAL_RUNTIME["active_entrypoint_identity_revision_current"] == main.V702_A70_ENTRYPOINT_IDENTITY_REVISION
+    assert main.FINAL_CANONICAL_RUNTIME["active_package_revision_current"] == main.V702_PACKAGE_AUDIT_REVISION
+    assert main.STATS["v702_a69_canonical_identity_closure"]["pass"] is True
+    assert main.STATS["v702_a70_entrypoint_identity_closure"]["pass"] is True
+    assert main.STATS["v702_a70_entrypoint_identity_closure"]["live_authority_changed"] is False
+    assert 'audit_merge_revision={_audit_merge_revision}' in source
+    assert 'entrypoint_identity_revision={_entrypoint_identity_revision}' in source
