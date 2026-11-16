@@ -81,7 +81,7 @@ def test_a55_live_authorization_requires_two_keys_and_nonempty_candidate_context
 def test_a55_release_defaults_are_monitor_first_and_recipe_sample_is_conservative():
     assert bot.CONFIG["V702_KNOWLEDGE_OUTCOME_MAX_ACTIVE"] == 20
     assert bot.CONFIG["V702_KNOWLEDGE_RECIPE_MIN_OBS"] == 100
-    env_example = Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")
+    env_example = Path(__file__).with_name(".env.example").read_text(encoding="utf-8")
     assert "\nUNIFIED_LIVE_PILOT_ENABLE=0\n" in "\n" + env_example + "\n"
     assert "\nUNIFIED_A55_LIVE_ARM=0\n" in "\n" + env_example + "\n"
 

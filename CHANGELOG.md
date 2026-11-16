@@ -2425,3 +2425,12 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Opportunity Hunter alert rate is hard-limited to 3/minute while preserving Telegram success/failure callbacks. Its 240-symbol configuration is documented as an upper ceiling only; actual coverage is the bounded existing `market_data_map`.
 - Cumulative package-audit revision now includes `A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15`. A66 release tag and R40 runtime identity are intentionally retained as compatibility identifiers.
 - Live execution authority and risk gates were not relaxed. Decision remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.
+
+
+# 2026-11-16 — Final production audit handoff
+
+- Aligned the safe sample environment file with the conventional `.env.example` name across runtime validation, Docker, ignore rules, and tests; no credentials are included.
+- Added a regression contract requiring the A66 and canonical manifests to report the actual `main.py` SHA-256 and the same 99-file archive inventory.
+- Corrected stale release-manifest source digests and regenerated the current package checksum list.
+- Re-ran Python compilation, the offline validation entry point, and the full offline regression suite. The detailed results, limits, and Railway screenshot assessment are recorded in `FINAL_AUDIT_REPORT.md`.
+- No strategy thresholds, risk limits, exchange execution authority, or live-trading defaults were relaxed.

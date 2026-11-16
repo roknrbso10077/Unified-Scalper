@@ -5,6 +5,7 @@
   "active_release_tag": "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL",
   "archive_contents": [
     ".dockerignore",
+    ".env.example",
     ".github/workflows/a65-production-audit.yml",
     ".gitignore",
     "A64_FINAL_PRODUCTION_AUDIT_AR.md",
@@ -13,15 +14,14 @@
     "A65_FINAL_PRODUCTION_AUDIT_AR.md",
     "A65_RELEASE_MANIFEST.json",
     "A65_SHA256SUMS.txt",
-    "A66_FINAL_PRODUCTION_AUDIT_AR.md",
     "A66_RELEASE_MANIFEST.json",
     "A66_SHA256SUMS.txt",
     "CHANGELOG.md",
     "DOCS__architecture__V702_A44_MODULARIZATION_AND_RELEASE_GATES_AR.md",
     "Dockerfile",
+    "FINAL_AUDIT_REPORT.md",
     "FINAL_MANIFEST.json",
     "HISTORICAL_AUDITS_INDEX_AR.md",
-    "LIVE_RELEASE_ENV.example",
     "LOCKFILE_NOTES.md",
     "R40_SMALL_NET_PROFIT_AR.md",
     "README.md",
@@ -112,10 +112,10 @@
     ".git metadata and developer-local caches"
   ],
   "canonical_executable": "main.py",
-  "canonical_main_sha256": "b773d40eaf88e9cfb4f0b74b66d159706702daf16a31b075ecfa0cfcdc6cf5b1",
+  "canonical_main_sha256": "55af75485403b63f88c1f2c09da0bbe54851f61c68ea1902cc9bac0575090b82",
   "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15",
-  "canonical_source_sha256": "b773d40eaf88e9cfb4f0b74b66d159706702daf16a31b075ecfa0cfcdc6cf5b1",
-  "created_utc_date": "2026-11-15",
+  "canonical_source_sha256": "55af75485403b63f88c1f2c09da0bbe54851f61c68ea1902cc9bac0575090b82",
+  "created_utc_date": "2026-11-16",
   "dependency_lock_status": {
     "complete_lockfile": false,
     "direct_dependencies_pinned": true,
@@ -450,14 +450,14 @@
     "opportunity_hunter_regressions": "PASS (8/8 existing A67 Hunter lifecycle/Telegram regressions; Hunter hard-cap behavior also covered in the 6/6 new A69 merged audit tests)."
   },
   "verification": {
-    "pytest": "PASS (520 passed, 1 skipped, 0 failed; 521 collected; complete single-process run; Python 3.13.5; 28.23 seconds).",
+    "pytest": "PASS (522 passed, 1 skipped, 0 failed; 523 collected; Python 3.13.5; 29.81 seconds; exit 0).",
     "opportunity_hunter_regressions": "PASS (8/8 existing A67 Hunter lifecycle/Telegram regressions; Hunter hard-cap behavior also covered in the 6/6 new A69 merged audit tests).",
-    "python_compile": "PASS (73/73 Python source files; py_compile).",
-    "compileall": "PASS (python -m compileall -q .; Python 3.13.5).",
-    "validate_only": "PASS (exit=0; A66 validator source checks=23/23; bot_started=false; live_threads=[]; one-shot validation only).",
-    "archive_inventory": "PASS (99/99 files exactly match archive_contents; hard limit 99).",
-    "archive_crc": "PASS (99/99 ZIP entries; CRC verified; no duplicate names).",
-    "sha256_checksums": "PASS (98/98 non-self package files verified against A66_SHA256SUMS.txt).",
+    "python_compile": "PASS (73/73 Python source files).",
+    "compileall": "PASS (python -m compileall -q .; Python 3.13.5; 73 source files).",
+    "validate_only": "PASS (exit=0; A66 validator source checks=23/23; bot_started=false; live_threads=[]; 10.59 seconds; peak RSS 551224 KiB).",
+    "archive_inventory": "PASS (99/99 files; hard limit 99).",
+    "archive_crc": "PASS (final FINAL_PRODUCTION_RELEASE.zip; all 99 entries CRC-verified).",
+    "sha256_checksums": "PASS (98/98 non-self files verified against A66_SHA256SUMS.txt).",
     "target_python_312_linux_amd64": false,
     "docker_build_tested": false,
     "live_network_tested": false,
@@ -476,16 +476,20 @@
     "opportunity_hunter_execution_authority": false,
     "selftest_log_context_isolation": "PASS (synthetic loss/Prequal/Telegram self-test records demoted only in ContextVar scope; concurrent thread remains outside test context)",
     "railway_startup_runbook": "PASS (README documents persistent command and validation-only markers; deployment root cause remains unproven without terminal Railway log/settings)",
-    "canonical_zip_name": "UNIFIED_SCALPER_V702_A66_A67_A68_A69_CANONICAL_FINAL_AUDITED.zip",
+    "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
     "opportunity_outcome_tracking": "PASS (A68 shadow 5m TP/SL ledger, additive migration, stop-first ambiguity, TP3 COMPLETED, geometry freeze).",
     "opportunity_outcome_not_execution": "CONFIRMED (shadow target/stop touches do not assert live fills, realized P&L or profitability).",
     "dotenv_config_load_order": "PASS (SCALPER_DB and Telegram display/link aliases applied after load_dotenv; injected environment precedence retained).",
     "boot_missing_credentials_diagnostic": "PASS ([V702-BOOT-STOP] emitted without secret values; mandatory authenticated MEXC requirement retained).",
-    "a69_regression_tests": "PASS (2 tests: post-dotenv runtime config and safe missing-credential boot diagnostic; included in the 514 passing tests).",
-    "full_pytest": "PASS (520 passed, 1 skipped, 0 failed; 521 collected; complete single-process run; Python 3.13.5; 28.23 seconds).",
-    "pytest_collection": "521 collected; 520 passed, 1 historical A51 fixture skipped; all tests run in one process.",
-    "pytest_single_process": "PASS (521 collected; 520 passed; 1 historical A51 fixture skipped; 0 failed).",
-    "a69_merged_audit_regressions": "PASS (6/6 new A69 merged audit regressions; all included in the full 520-pass suite)."
+    "a69_regression_tests": "PASS (2 tests: post-dotenv runtime config and safe missing-credential boot diagnostic; included in the 522 passing tests).",
+    "full_pytest": "PASS (522 passed, 1 skipped, 0 failed; 523 collected; Python 3.13.5; 29.81 seconds; exit 0).",
+    "pytest_collection": "523 collected; 522 passed, 1 historical A51 fixture skipped; all tests run in one process.",
+    "pytest_single_process": "PASS (523 collected; 522 passed; 1 historical A51 fixture skipped; 0 failed; exit 0).",
+    "a69_merged_audit_regressions": "PASS (6/6 new A69 merged audit regressions; all included in the full 520-pass suite).",
+    "integration_subset": "PASS (76 targeted tests; subset overlaps full suite).",
+    "module_imports": "PASS (14/14 production/helper modules; 0 missing internal imports; no live network).",
+    "railway_startup_diagnosis": "Root cause NOT PROVEN from screenshots; repeated MSE/T17/T18/timeout rows reproduced as synthetic self-tests. Compare actual service Start Command and memory limit with local validation peak RSS.",
+    "zip_inventory": "PASS (99 unique entries; exact match with FINAL_MANIFEST.archive_contents)."
   },
   "active_package_revision_current": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15",
   "active_audit_revision_current": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15",
@@ -614,8 +618,8 @@
     "telegram_presence_flags_in_screenshot": true,
     "root_cause_proven": false,
     "missing_evidence": "Complete terminal deployment log with new V702-STARTUP-PHASE markers and any final V702-BOOT-STOP/V702-CRASH traceback, exact Railway Start Command/environment settings, deployed source commit mapping, and service memory limit.",
-    "local_validate_only_elapsed_seconds": 10.84,
-    "local_validate_only_peak_rss_kib": 551064,
+    "local_validate_only_elapsed_seconds": 10.59,
+    "local_validate_only_peak_rss_kib": 551224,
     "note": "Local validation peak RSS is environment-specific and is not a measurement of Railway. It indicates a meaningful memory budget to compare against the host limit; no OOM conclusion is made without the service limit or platform termination reason.",
     "safe_normal_boot_reached_run_bot": true,
     "safe_normal_boot_validate_config_passed": true,
@@ -663,7 +667,7 @@
     "tp3_terminal_state": "COMPLETED",
     "actual_positions_remain_in_position_manager": true
   },
-  "canonical_zip_name": "UNIFIED_SCALPER_V702_A66_A67_A68_A69_CANONICAL_FINAL_AUDITED.zip",
+  "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
   "archive_file_limit": 99,
   "supplemental_config_closure": "A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15",
   "supplemental_audit_merge_revision": "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15",
@@ -686,42 +690,91 @@
   },
   "active_audit_merge_revision_current": "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15",
   "final_audit_verification": {
-    "status": "PASS_OFFLINE_SOURCE_AUDIT",
-    "pytest": {
-      "passed": 521,
-      "skipped": 1,
-      "failed": 0,
-      "duration_seconds": 30.13,
-      "skip_reason": "historical A51 log fixture is not packaged in the clean source release"
+    "status": "PASS_OFFLINE_SOURCE_AUDIT_WITH_DEPLOYMENT_LIMITS",
+    "python_version": "3.13.5",
+    "target_python": "3.12",
+    "python_source_count": 73,
+    "python_source_lines": 119183,
+    "main_py_lines": 103929,
+    "compileall": {
+      "status": "PASS",
+      "files": 73
     },
-    "compileall": "PASS",
     "py_compile": {
       "passed": 73,
       "total": 73
+    },
+    "internal_imports_missing": 0,
+    "production_module_imports": {
+      "passed": 14,
+      "total": 14
+    },
+    "pytest": {
+      "collected": 523,
+      "passed": 522,
+      "skipped": 1,
+      "failed": 0,
+      "exit_code": 0,
+      "duration_seconds": 29.81,
+      "max_rss_kib": 819164,
+      "skip_reason": "historical A51 log fixture is not packaged in the clean source release"
+    },
+    "integration_subset": {
+      "passed": 76,
+      "failed": 0,
+      "note": "subset overlaps the full regression suite"
     },
     "validate_only": {
       "exit_code": 0,
       "source_checks": 23,
       "bot_started": false,
       "live_threads": [],
-      "elapsed_seconds": 10.84,
-      "max_rss_kib": 551064
+      "elapsed_seconds": 10.59,
+      "max_rss_kib": 551224
     },
-    "safe_normal_boot": {
-      "config_validation": "PASS",
-      "runtime_epoch_armed": true,
-      "run_bot_enter": true,
-      "stopped_at": "ccxt_missing in the local audit container",
-      "ccxt_missing_on_railway_proven": false
+    "pytest_dev_mode": {
+      "status": "TIMED_OUT",
+      "timeout_seconds": 300,
+      "python_version": "3.13.5",
+      "note": "ordinary pytest run completed successfully; target Python 3.12 CI not executed"
     },
+    "pip_check": {
+      "status": "ENVIRONMENT_WARNING",
+      "detail": "unrelated preinstalled moviepy/pillow version conflict; project direct dependencies were not fully installed here"
+    },
+    "ccxt_installed_in_audit_environment": false,
+    "aiosqlite_installed_in_audit_environment": false,
+    "docker_build_tested": false,
+    "target_python_312_linux_amd64_tested": false,
     "live_mexc_network_tested": false,
     "telegram_delivery_tested": false,
-    "docker_build_tested": false,
+    "native_stop_protection_live_verified": false,
     "profitability_verified": false,
     "railway_crash_root_cause_proven": false,
+    "live_secrets_used": false,
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "hard_gate_bypass": false,
-    "live_gates_relaxed": false
+    "live_gates_relaxed": false,
+    "archive_validation": {
+      "filename": "FINAL_PRODUCTION_RELEASE.zip",
+      "entries": 99,
+      "unique_entries": 99,
+      "manifest_inventory_match": true,
+      "crc": "PASS",
+      "extraction": "PASS",
+      "sha256_entries": 98,
+      "sha256_status": "PASS",
+      "runtime_data_or_secrets_included": false
+    },
+    "extracted_archive_pytest": {
+      "status": "TIMED_OUT_INCONCLUSIVE",
+      "timeout_seconds": 180,
+      "progress_at_timeout_approx_percent": 78,
+      "last_visible_test": "test_v702_a56_final_hardening.py::test_a56_validator_contains_all_new_safety_closures",
+      "isolated_test_status": "PASS",
+      "entire_a56_test_file_status": "PASS",
+      "note": "The full regression suite passed in the audit work directory (522 passed, 1 skipped, 0 failed), but did not complete when rerun from the extracted archive. Treat this as unresolved order/context-sensitive test flakiness; complete Python 3.12 CI before deployment promotion."
+    }
   }
 }

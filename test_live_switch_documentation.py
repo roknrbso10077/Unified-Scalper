@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def test_live_pilot_emergency_switch_and_two_key_arm_documentation_match_runtime():
-    example = (ROOT / "LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
     guardrails = (ROOT / "production_guardrails.py").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     source = (ROOT / "main.py").read_text(encoding="utf-8")

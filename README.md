@@ -104,6 +104,8 @@ All values are percentage points (`0.10` means 0.10%). The measured route is `me
 
 Target runtime: Python 3.12, Linux amd64.
 
+Copy `.env.example` to `.env` only on the operator's local machine or persistent deployment volume. Enter exchange credentials through a secret manager where possible; never commit `.env`, fill credentials into `.env.example`, or include them in a release ZIP. The sample keeps both live-authority switches set to `0`.
+
 ```bash
 python main.py --validate-only
 python -u main.py
@@ -145,6 +147,8 @@ For durable state, attach a Railway Volume at `/data` and set `SCALPER_DB=/data/
 Mount persistent storage at `/data` and set the documented `SCALPER_DB` and knowledge export paths. Never store secrets or runtime databases in this ZIP. A Docker image build and native stop functionality have not been verified in this environment.
 
 ## Release integrity
+
+The consolidated Arabic engineering audit and current verification evidence are in `FINAL_AUDIT_REPORT.md`.
 
 From the package root, verify:
 

@@ -114,14 +114,15 @@ def test_release_env_example_is_whitelisted_and_copied_into_docker_runtime():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     # The broad pattern protects operator secrets; the exact exception keeps
-    # only the safe example template in the build context and runtime image.
-    assert "LIVE_RELEASE_ENV.*" in dockerignore
-    assert "!LIVE_RELEASE_ENV.example" in dockerignore
-    assert dockerignore.index("!LIVE_RELEASE_ENV.example") > dockerignore.index("LIVE_RELEASE_ENV.*")
-    assert "LIVE_RELEASE_ENV.*" in gitignore
-    assert "!LIVE_RELEASE_ENV.example" in gitignore
-    assert gitignore.index("!LIVE_RELEASE_ENV.example") > gitignore.index("LIVE_RELEASE_ENV.*")
-    assert "COPY LIVE_RELEASE_ENV.example /app/LIVE_RELEASE_ENV.example" in dockerfile
+    # only the safe .env.example template in the build context and runtime image.
+    assert ".env.*" in dockerignore
+    assert "!.env.example" in dockerignore
+    assert dockerignore.index("!.env.example") > dockerignore.index(".env.*")
+    assert ".env.*" in gitignore
+    assert "!.env.example" in gitignore
+    assert gitignore.index("!.env.example") > gitignore.index(".env.*")
+    assert "COPY .env.example /app/.env.example" in dockerfile
+    assert (ROOT / ".env.example").is_file()
 
 
 def test_missing_release_env_example_fails_closed_without_uncaught_file_error():

@@ -31,7 +31,7 @@ RUN python -m pip install --no-cache-dir "pip==24.3.1" && \
     python -m pip check
 
 COPY main.py production_guardrails.py v702_counterfactual_shadow.py v702_intraday_shadow.py healthcheck.py /app/
-COPY LIVE_RELEASE_ENV.example /app/LIVE_RELEASE_ENV.example
+COPY .env.example /app/.env.example
 COPY v702_core__policy__family_policy.py v702_core__policy__forbidden_assets.py \
      v702_core__storage__sqlite_writer.py v702_core__scoring__floor_policy.py \
      v702_core__pipeline__event_time_buckets.py v702_core__pipeline__rejection.py \

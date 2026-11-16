@@ -100412,8 +100412,8 @@ def _v702_a55_validate_config():
         "full_round_trip_fee_coverage": "gross_tp1_usdt < (min_fee_ratio * fee_cost_usdt)" in _source,
         "actual_exit_split_sums_to_one": abs((_exit_q1+_exit_q2+_exit_q3)-1.0) < 1e-6,
         "pandas_timestamp_unit_safe": 'as_unit("ms")' in _source,
-        "live_disabled_in_release_env": "UNIFIED_LIVE_PILOT_ENABLE=0" in (Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")),
-        "a55_live_arm_disabled_in_release_env": "UNIFIED_A55_LIVE_ARM=0" in (Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")),
+        "live_disabled_in_release_env": "UNIFIED_LIVE_PILOT_ENABLE=0" in (Path(__file__).with_name(".env.example").read_text(encoding="utf-8")),
+        "a55_live_arm_disabled_in_release_env": "UNIFIED_A55_LIVE_ARM=0" in (Path(__file__).with_name(".env.example").read_text(encoding="utf-8")),
         "hard_gate_bypass_false": not bool(CONFIG.get("V702_R38_HARD_GATE_BYPASS", True)) and not bool(CONFIG.get("V702_R36_HARD_GATE_BYPASS", True)),
     }
     _report = {
@@ -100488,7 +100488,7 @@ def _v702_a56_validate_config():
         _guard_source = _guard_path.read_text(encoding="utf-8")
     except Exception:
         _guard_source = ""
-    _env_path = Path(__file__).with_name("LIVE_RELEASE_ENV.example")
+    _env_path = Path(__file__).with_name(".env.example")
     try:
         _env_source = _env_path.read_text(encoding="utf-8")
     except Exception:
@@ -100580,7 +100580,7 @@ def _v702_a57_validate_config():
         "contextless_live_buy_still_fails_closed": "if not isinstance(intent_context, dict) or not intent_context:" in _source,
         "future_orderbook_timestamp_still_rejected": '"orderbook_timestamp_in_future"' in _source,
         "two_key_operator_arm_still_required": 'UNIFIED_A55_LIVE_ARM' in _source and 'UNIFIED_LIVE_PILOT_ENABLE' in _source,
-        "live_defaults_remain_off": "UNIFIED_LIVE_PILOT_ENABLE=0" in (Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")) and "UNIFIED_A55_LIVE_ARM=0" in (Path(__file__).with_name("LIVE_RELEASE_ENV.example").read_text(encoding="utf-8")),
+        "live_defaults_remain_off": "UNIFIED_LIVE_PILOT_ENABLE=0" in (Path(__file__).with_name(".env.example").read_text(encoding="utf-8")) and "UNIFIED_A55_LIVE_ARM=0" in (Path(__file__).with_name(".env.example").read_text(encoding="utf-8")),
         "spot_long_only_preserved": bool(CONFIG.get("LONG_ONLY", False)) and str(CONFIG.get("MARKET_TYPE", "")).upper() == "SPOT" and not bool(CONFIG.get("ALLOW_SHORT", False)) and not bool(CONFIG.get("ENABLE_FUTURES", False)),
         "hard_gate_bypass_false": not bool(CONFIG.get("V702_R38_HARD_GATE_BYPASS", True)) and not bool(CONFIG.get("V702_R36_HARD_GATE_BYPASS", True)),
     }
@@ -100720,7 +100720,7 @@ FINAL_CANONICAL_RUNTIME.update({
 
 def _v702_a58_read_release_env_example(path: Optional[Path] = None) -> str:
     """Read the non-secret release defaults template without masking a missing artifact."""
-    _env_path = Path(path) if path is not None else Path(__file__).with_name("LIVE_RELEASE_ENV.example")
+    _env_path = Path(path) if path is not None else Path(__file__).with_name(".env.example")
     try:
         _value = _env_path.read_text(encoding="utf-8")
         STATS["v702_a58_release_env_example_present"] = True
@@ -100784,7 +100784,7 @@ def _v702_a58_validate_config():
         _health_source = Path(__file__).with_name("healthcheck.py").read_text(encoding="utf-8")
     except Exception:
         _guard_source, _health_source = "", ""
-    _env_path = Path(__file__).with_name("LIVE_RELEASE_ENV.example")
+    _env_path = Path(__file__).with_name(".env.example")
     _env_source = _v702_a58_read_release_env_example(_env_path)
     _env_defaults = _v702_a58_parse_env_defaults(_env_source)
     _checks = {

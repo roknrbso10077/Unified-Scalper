@@ -59,6 +59,24 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("active_release_tag"), "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL")
 
 
+    def test_current_release_manifests_match_source_digest_and_archive_inventory(self):
+        actual_main_sha = hashlib.sha256((ROOT / "main.py").read_bytes()).hexdigest()
+        a66 = json.loads((ROOT / "A66_RELEASE_MANIFEST.json").read_text(encoding="utf-8"))
+        final = json.loads((ROOT / "FINAL_MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual(a66.get("canonical_main_sha256"), actual_main_sha)
+        self.assertEqual(a66.get("canonical_source_sha256"), actual_main_sha)
+        self.assertEqual(final.get("canonical_main_sha256"), actual_main_sha)
+        self.assertEqual(final.get("canonical_source_sha256"), actual_main_sha)
+        self.assertEqual(a66.get("archive_contents"), final.get("archive_contents"))
+        self.assertEqual(a66.get("active_post_audit_patch_revision_current"), a66.get("post_audit_patch_revision"))
+        self.assertEqual(a66.get("active_audit_merge_revision_current"), "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15")
+        self.assertEqual(final.get("active_post_audit_patch_revision_current"), "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15")
+        self.assertEqual(final.get("active_audit_merge_revision_current"), a66.get("active_audit_merge_revision_current"))
+        self.assertEqual(len(final.get("archive_contents", [])), 99)
+        self.assertEqual(final.get("archive_file_count"), 99)
+        self.assertIn(".env.example", final.get("archive_contents", []))
+        self.assertIn("FINAL_AUDIT_REPORT.md", final.get("archive_contents", []))
+
     def test_a59_bearish_policy_reject_observer_is_shadow_only_and_release_current(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertEqual(bot.V702_FINAL_CANONICAL_RELEASE, "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL")
@@ -599,8 +617,8 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn('SELECTED_ROUTE_PAPER', source)
         self.assertIn('paper_edge_eligible', source)
         self.assertIn('"V702_KNOWLEDGE_OUTCOME_MAX_ACTIVE": 20', source)
-        self.assertNotIn("UNIFIED_PAPER_SIM_MAX_ACTIVE=", (ROOT / "LIVE_RELEASE_ENV.example").read_text(encoding="utf-8"))
-        self.assertNotIn("UNIFIED_PAPER_SIM_ROUND_TRIP_COST_PCT=", (ROOT / "LIVE_RELEASE_ENV.example").read_text(encoding="utf-8"))
+        self.assertNotIn("UNIFIED_PAPER_SIM_MAX_ACTIVE=", (ROOT / ".env.example").read_text(encoding="utf-8"))
+        self.assertNotIn("UNIFIED_PAPER_SIM_ROUND_TRIP_COST_PCT=", (ROOT / ".env.example").read_text(encoding="utf-8"))
 
     def test_stateful_runtime_database_is_excluded_from_release(self):
         # Import-time schema validation may create a DB in the working tree;
