@@ -203,7 +203,49 @@
     },
     "a70_entrypoint_identity": "PASS (A70 identity closure and A69 merged identity execute before --validate-only and persistent __main__/main(); regression passed).",
     "py_compile": "PASS (73/73 Python files; final ZIP extraction).",
-    "sha256_verification": "PASS (98/98 non-self package files match A66_SHA256SUMS.txt)."
+    "sha256_verification": "PASS (98/98 non-self package files match A66_SHA256SUMS.txt).",
+    "post_a70_railway_screenshot_reaudit_2026_11_16": {
+      "audit_scope": "Re-audit of supplied FINAL_PRODUCTION_RELEASE.zip and latest Railway screenshot revision 9d951f72; documentation and verification metadata update only.",
+      "original_archive_entries": 99,
+      "final_archive_entries": 99,
+      "python_source_files": 73,
+      "python_source_lines": 119377,
+      "compileall": "PASS",
+      "py_compile": "PASS (73/73)",
+      "full_pytest": "PASS SUMMARY (526 passed, 1 skipped, 0 failed; 527 collected; latest clean extraction 35.39 seconds; outer execution wrapper timed out after summary without capturing process exit. An earlier complete verbose run of the equivalent source release exited 0 in 31.92 seconds).",
+      "focused_pipeline_integration": "PASS (71 passed; 9.49 seconds; mock/paper paths only; final clean ZIP extraction).",
+      "focused_guardrails_telegram_startup": "PASS (110 passed; 17.18 seconds; final clean ZIP extraction; no real Telegram delivery).",
+      "validate_only": "PASS (exit=0; bot_started=false; live_threads=[]; 11.58 seconds; peak RSS 551408 KiB; final clean ZIP extraction; no live network).",
+      "direct_validate_config": "PASS (main.validate_config() returned True after import; no run_bot or live exchange requests).",
+      "missing_audit_environment_dependencies": [
+        "ccxt",
+        "aiosqlite"
+      ],
+      "python_target": "Python 3.12 / Linux amd64; local verification used Python 3.13.5.",
+      "docker_build": "NOT TESTED (Docker unavailable).",
+      "live_mexc": "NOT TESTED (no live API activity or credentials used).",
+      "telegram_delivery": "NOT TESTED (no real Telegram message sent).",
+      "railway_crash_root_cause": "NOT PROVEN; screenshot tail omits terminal traceback/crash marker and deployment revision cannot be mapped to ZIP source.",
+      "new_confirmed_code_defects": 0,
+      "new_code_repairs_this_round": 0,
+      "source_files_modified_this_round": 0,
+      "source_files_deleted_this_round": 0,
+      "documentation_and_release_metadata_updated": [
+        "README.md",
+        "CHANGELOG.md",
+        "FINAL_AUDIT_REPORT.md",
+        "A66_RELEASE_MANIFEST.json",
+        "FINAL_MANIFEST.json",
+        "A66_SHA256SUMS.txt"
+      ],
+      "production_decision": "NO_GO_UNATTENDED_LIVE",
+      "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+      "live_secrets_used": false,
+      "initial_quiet_pytest_attempt": "TIMED_OUT_INCONCLUSIVE at approximately 54% with no summary; not counted as pass/fail.",
+      "zip_artifact": "FINAL_PRODUCTION_RELEASE.zip; 99 unique entries; manifest match; CRC pass; clean extraction; 98/98 checksum entries pass.",
+      "final_exact_archive_release_contract_tests": "PASS (56 passed, 1 skipped; exit=0; final exact archive; release contracts and V705 closure).",
+      "post_manifest_full_pytest_rerun": "Complete pytest summary printed: 526 passed, 1 skipped, 0 failed in 35.39 seconds; execution wrapper timed out after the summary and did not capture process exit. Earlier full verbose run on equivalent application source returned exit 0."
+    }
   },
   "canonical_source_sha256": "caa1c1e0c68131d1b99d3d16ea5bd50ba555a6a25c6e5c48decbc0d1af8d492b",
   "supplemental_post_packaging_closure": "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15",
@@ -235,7 +277,14 @@
     "root_cause_proven_from_screenshots": false,
     "required_missing_evidence": "Full final deploy log/traceback and actual Railway service command/environment settings",
     "local_validate_only_elapsed_seconds": 11.12,
-    "local_validate_only_peak_rss_kib": 549504
+    "local_validate_only_peak_rss_kib": 549504,
+    "latest_screenshot_short_revision": "9d951f72",
+    "latest_screenshot_status": "Crashed",
+    "latest_screenshot_log_window": "2026-11-16 approximately 14:56:17–14:56:30 local platform display",
+    "root_cause_proven_from_latest_screenshot": false,
+    "latest_local_validate_only_elapsed_seconds": 11.41,
+    "latest_local_validate_only_peak_rss_kib": 551512,
+    "latest_missing_evidence": "Complete final deploy log/traceback, exact Railway Start Command and validate-only environment variables, deployed source commit mapping, and Railway memory limit."
   },
   "previous_active_feature_revision": "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
   "opportunity_hunter_states": [

@@ -672,7 +672,15 @@
     "ccxt_installed_in_audit_environment": false,
     "ccxt_pinned_in_requirements_in": "4.5.81",
     "normal_boot_failure_proves_railway_dependency_missing": false,
-    "local_validate_only_source_checks": 23
+    "local_validate_only_source_checks": 23,
+    "latest_observed_screenshot": "2026-11-16 screenshot; Railway service Unified-Scalper, status Crashed; short revision 9d951f72; visible repeated startup/self-test logs around 14:56:17–14:56:30.",
+    "latest_header_short_revision": "9d951f72",
+    "latest_screenshot_selftest_exception_is_expected": "MSE self-test deliberately raises engine=__boom__; safe wrapper isolates it and all 8 self-tests subsequently pass.",
+    "latest_screenshot_secret_presence_flags": "MEXC API secret and Telegram token/chat presence flags are true; values are not shown and no secrets were used in the audit.",
+    "latest_screenshot_root_cause_proven": false,
+    "latest_local_validate_only_elapsed_seconds": 11.41,
+    "latest_local_validate_only_peak_rss_kib": 551512,
+    "latest_missing_evidence": "Complete final Deploy Logs including [V702-CRASH] traceback or termination marker, exact Railway Start Command and validate-only environment variables, deployed revision-to-source mapping, and service memory limit."
   },
   "previous_active_feature_revision": "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
   "opportunity_outcome_tracking": {
@@ -818,7 +826,12 @@
       "extraction": "PASS",
       "sha256_entries": 98,
       "sha256_status": "PASS",
-      "runtime_data_or_secrets_included": false
+      "runtime_data_or_secrets_included": false,
+      "final_extraction_compileall": "PASS (73/73 Python sources)",
+      "final_extraction_pytest": "PASS (526 passed, 1 skipped, 0 failed; pytest -vv -x)",
+      "final_extraction_validate_only": "PASS (exit 0; bot_started=false; live_threads=[]; 11.58 seconds; peak RSS 551408 KiB)",
+      "final_extraction_full_pytest_summary": "526 passed, 1 skipped, 0 failed; 35.39 seconds; wrapper timed out after summary (exit not captured)",
+      "final_exact_archive_release_contract_tests": "56 passed, 1 skipped; exit 0"
     },
     "historical_extracted_archive_pytest_attempt": {
       "status": "TIMED_OUT_INCONCLUSIVE",
@@ -839,6 +852,117 @@
       "runner": "pytest -vv -x",
       "skip_reason": "historical A51 log fixture is not packaged in the clean source release",
       "final_canonical_zip": true
+    },
+    "post_a70_railway_screenshot_reaudit_2026_11_16": {
+      "status": "PASS_OFFLINE_SOURCE_AUDIT_WITH_DEPLOYMENT_LIMITS",
+      "python_version": "3.13.5",
+      "target_python": "3.12",
+      "target_platform": "Linux amd64",
+      "python_source_count": 73,
+      "python_source_lines": 119377,
+      "compileall": {
+        "status": "PASS",
+        "files": 73
+      },
+      "py_compile": {
+        "status": "PASS",
+        "passed": 73,
+        "total": 73
+      },
+      "full_pytest": {
+        "status": "PASS_SUMMARY_WITH_EXECUTION_WRAPPER_CAVEAT",
+        "collected": 527,
+        "passed": 526,
+        "skipped": 1,
+        "failed": 0,
+        "duration_seconds": 35.39,
+        "runner": "pytest -vv -x",
+        "process_exit_code_captured_on_latest_run": false,
+        "note": "The final clean-extraction run printed the complete summary with no test failures, but the outer execution wrapper timed out after that summary. An earlier full verbose run of the equivalent application source completed with exit 0 in 31.92 seconds."
+      },
+      "focused_pipeline_integration": {
+        "status": "PASS",
+        "passed": 71,
+        "duration_seconds": 9.49,
+        "scope": "Pipeline, execution-intent reconciliation, mock-intent isolation, cost model, intraday/counterfactual shadows, production audit closure; dry-run/mock only."
+      },
+      "focused_guardrails_telegram_startup": {
+        "status": "PASS",
+        "passed": 110,
+        "duration_seconds": 17.18,
+        "scope": "Production guardrails, audit fixes, Telegram structured handling (mocked), safety closures, startup validation ordering; no real Telegram delivery."
+      },
+      "validate_only": {
+        "status": "PASS",
+        "exit_code": 0,
+        "bot_started": false,
+        "live_threads": [],
+        "elapsed_seconds": 11.58,
+        "max_rss_kib": 551408,
+        "live_network_used": false
+      },
+      "direct_validate_config": {
+        "status": "PASS",
+        "result": true,
+        "live_network_used": false,
+        "run_bot_started": false
+      },
+      "audit_environment_dependencies_missing": [
+        "ccxt",
+        "aiosqlite"
+      ],
+      "docker_build_tested": false,
+      "target_python_312_linux_amd64_tested": false,
+      "live_mexc_network_tested": false,
+      "telegram_delivery_tested": false,
+      "profitability_verified": false,
+      "railway_crash_root_cause_proven": false,
+      "live_secrets_used": false,
+      "new_confirmed_code_defects": 0,
+      "new_confirmed_code_defects_fixed": 0,
+      "application_source_files_modified_this_round": 0,
+      "application_source_files_deleted_this_round": 0,
+      "documentation_and_release_metadata_updated": [
+        "README.md",
+        "CHANGELOG.md",
+        "FINAL_AUDIT_REPORT.md",
+        "A66_RELEASE_MANIFEST.json",
+        "FINAL_MANIFEST.json",
+        "A66_SHA256SUMS.txt"
+      ],
+      "production_decision": "NO_GO_UNATTENDED_LIVE",
+      "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+      "initial_quiet_pytest_attempt": {
+        "status": "TIMED_OUT_INCONCLUSIVE",
+        "observed_progress_approx_percent": 54,
+        "note": "The first quiet invocation did not emit a summary before the execution timeout; the same full suite was rerun with pytest -vv -x from a clean extraction and passed completely with 526 passed, 1 skipped, 0 failed."
+      },
+      "final_archive_artifact": {
+        "filename": "FINAL_PRODUCTION_RELEASE.zip",
+        "entries": 99,
+        "unique_entries": 99,
+        "manifest_inventory_match": true,
+        "zip_crc": "PASS",
+        "clean_extraction": "PASS",
+        "sha256_manifest_entries": 98,
+        "sha256_manifest_status": "PASS",
+        "compileall": "PASS (73 Python files)",
+        "full_pytest": "PASS (526 passed, 1 skipped, 0 failed)",
+        "validate_only": "PASS (exit 0; bot_started=false; live_threads=[])"
+      },
+      "final_exact_archive_release_contract_tests": {
+        "status": "PASS",
+        "passed": 56,
+        "skipped": 1,
+        "failed": 0,
+        "exit_code": 0,
+        "scope": "test_release_contracts.py and test_v705_production_audit_closure.py"
+      },
+      "post_manifest_full_pytest_rerun": {
+        "status": "SUMMARY_COMPLETE_WRAPPER_TIMEOUT",
+        "summary": "526 passed, 1 skipped, 0 failed in 35.39 seconds",
+        "wrapper_exit_code_captured": false
+      }
     }
   },
   "active_entrypoint_identity_revision_current": "A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",

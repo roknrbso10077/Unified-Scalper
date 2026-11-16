@@ -2454,3 +2454,11 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Refreshed the A66 and canonical source hashes, release verification metadata, and package checksum inventory.
 - Verification: 525 passed, 1 historical A51 fixture skipped; 109 focused integration/mock tests passed; Python compile and offline `--validate-only` passed. Python 3.12/Docker/real MEXC/Telegram remain unverified because the environment lacks the required network/dependencies and live credentials.
 - No market thresholds or execution authority were relaxed; the release remains `NO_GO_UNATTENDED_LIVE`.
+
+
+# 2026-11-16 — A70 post-deployment screenshot re-audit
+
+- Re-opened and re-audited the received 99-file production ZIP; confirmed 99 unique entries, valid CRC, 73 Python sources, and all 98 non-self SHA-256 entries in the A66 checksum list.
+- Re-ran compileall, the full regression suite (526 passed, 1 historical fixture skipped), and two focused mock/integration batches (71 and 110 passed). `--validate-only` exited 0 with `bot_started=false` and `live_threads=[]`; direct `validate_config()` returned true.
+- Reviewed the newer Railway screenshot (`9d951f72`): synthetic self-test diagnostics are not real losses, injected secret-presence flags are true, and the captured tail lacks a traceback / terminal crash marker. The deployment crash cause is therefore still unproven; no speculative trading/runtime logic was changed.
+- No application-source defect was newly reproduced in this round; no source file was changed or removed. Updated README, audit report, manifests, and checksums with this evidence and the Colab runbook. The target Python 3.12/Linux amd64 image, Docker, live MEXC/Telegram, and profitability remain unverified.

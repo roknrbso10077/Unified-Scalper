@@ -119,6 +119,27 @@ python -u main.py
 
 `--validate-only` must exit with code 0, report `bot_started=false`, and leave no background threads. It is a **one-shot diagnostic command**, never a persistent service command. The normal command starts the existing monitor/Paper/Shadow runtime; it does not override live-off defaults.
 
+### Google Colab (validation / supervised Paper only)
+
+Upload `FINAL_PRODUCTION_RELEASE.zip` in a Colab cell, then run:
+
+```python
+from google.colab import files
+files.upload()  # choose FINAL_PRODUCTION_RELEASE.zip
+```
+
+```bash
+!unzip -q FINAL_PRODUCTION_RELEASE.zip -d /content/unified-scalper
+%cd /content/unified-scalper
+!python --version
+!python -m pip install -r requirements.txt
+!python -m compileall -q .
+!python -m pytest -q
+!python -u main.py --validate-only
+```
+
+The declared target is Python 3.12; confirm the Colab runtime version before installing. A normal monitor/Paper session still needs MEXC credentials in the process environment in this release, even though Telegram is optional. Store **read-only** MEXC credentials in Colab Secrets (no trade/withdraw permissions), and keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`. Never paste secret values into notebook cells or output. `python -u main.py` is a foreground process and Colab can disconnect or reset at any time; Colab is not a persistent production host and this release remains `NO_GO_UNATTENDED_LIVE`.
+
 ### Railway persistent-service settings
 
 Set the Railway **Start Command** to exactly:
@@ -141,6 +162,8 @@ Any one of those variables set to `1` deliberately switches the process to the o
 The supplied Railway screenshots show repeated startup/self-test sequences with log timestamps from approximately `2026-11-15 22:28:12` through `22:30:33` UTC (approximately `2026-11-16 00:28`–`00:30` Africa/Cairo) and a `Crashed` service state. The Railway header displays short revision `f00fb90a`; the ZIP contains no `.git` metadata or Railway deployment settings, so this cannot be matched to the archive source. The captured excerpts do not show the terminal `[V702-VALIDATE-EXIT]` marker, the new `[V702-STARTUP-PHASE]` boundary markers, or a complete `[V702-CRASH]` traceback. A one-shot validator command, an import/config failure, a runtime dependency/client failure, or a platform resource limit therefore remain possibilities; none is proven by these screenshots alone.
 
 The screenshot's `ENV-BOOT` telemetry reports `dotenv_loaded=False` while the MEXC key/secret and Telegram token/chat presence flags are `True`. This means the absence of a project-root `.env` file is not, by itself, evidence that Railway secrets are missing. The screenshot's `MSE.selftest`, `stage=selftest`, and synthetic `DailyCB-R5` rows are test-generated diagnostics; they are not proof of a live market loss or an actual candidate failure. The revised service logs now publish the active A66 distribution tag and current A66 operational patch consistently (while retaining the A64 compatibility identity and A51 historical field), expose A69 as a separate merged-audit revision, and mark validation completion, epoch arming, and entry into `run_bot` separately.
+
+A further screenshot supplied on 2026-11-16 shows Railway deployment revision `9d951f72` with status `Crashed` and another repeated startup sequence (visible log times around 14:56:17–14:56:30). It again shows `api_secret_present=True`, `telegram_token_present=True`, and `telegram_chat_present=True`; the `__boom__`, `T17/T18 stage=selftest`, and DailyCB synthetic loss rows remain expected test probes. The visible capture does not include the final `V702-STARTUP-PHASE` / `V702-CRASH` tail or a traceback. This short revision cannot be matched to the ZIP because `.git` metadata and Railway deployment settings are not included. Root cause remains unproven; compare the Railway Start Command with `python -u main.py`, make sure no `--validate-only` argument or `UNIFIED_V699_VALIDATE_ONLY` / `UNIFIED_V702_VALIDATE_ONLY` / `UNIFIED_VALIDATE_ONLY` flag is active, and inspect the final traceback and memory metrics. The local validate-only peak was about 539 MiB RSS in this audit environment; it is a measurement to compare with the service memory limit, not proof of OOM. See section 20 of `FINAL_AUDIT_REPORT.md`.
 
 **Required runtime credentials:** this release creates an authenticated MEXC CCXT client even in `MONITOR_ONLY_NO_NEW_BUYS` mode. Both `MEXC_API_KEY` and `MEXC_API_SECRET` must therefore be present in Railway Variables/Secrets or the project-root `.env`; otherwise startup stops with `[V702-BOOT-STOP]` / `missing_exchange_secrets`. The startup log reports presence booleans only and never prints secret values. Keep withdrawal permission disabled. Telegram credentials are optional; missing Telegram credentials disable alert delivery but do not authorize or block exchange execution.
 
