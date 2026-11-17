@@ -739,8 +739,7 @@ def _make_hunter_frame(interval_sec: int, *, closed_count: int = 80, incomplete_
 
 
 
-def _outcome_test_frame(now, *, bars=None):
-    period = 300
+def _outcome_test_frame(now, *, bars=None, period=300):
     current_open = int(float(now) // period) * period
     # Sixty completed bars plus the currently forming bar, which the canonical
     # closed-frame validator must discard.
@@ -1029,7 +1028,12 @@ def test_opportunity_hunter_upgrades_technical_confirmation_to_canonical_prequal
         updated = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
         assert updated["status"] == "CONFIRMED"
         assert updated["confirmation_type"] == "CANONICAL_PREQUAL"
-        assert ("CONFIRMED", "CANONICAL_PREQUAL") in queued
+        assert queued == []  # Prequal alone is not a finished opportunity.
+        bot.OpportunityHunter.on_pipeline_event("SCORE_PASS", item["candidate_key"], "AAA/USDT", "BREAKOUT")
+        updated = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+        assert updated["status"] == "CONFIRMED"
+        assert updated["confirmation_type"] == "CANONICAL_SCORE_PASS"
+        assert ("CONFIRMED", "CANONICAL_SCORE_PASS") in queued
 
 
 @pytest.mark.asyncio
@@ -1047,16 +1051,17 @@ async def test_opportunity_hunter_does_not_overwrite_synchronous_telegram_ack(tm
         bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
         item = {
             "candidate_key": "hunter-ack|AAA/USDT|BREAKOUT|1", "symbol": "AAA/USDT",
-            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "WATCH",
+            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
+            "confirmation_type": "CLOSED_BAR_BREAKOUT",
             "score": 68.0, "candle_ts": int(time.time()), "entry_ref": 100.0,
             "sl_price": 99.0, "invalidation_price": 99.0, "last_price": 100.0,
-            "reason": "forming setup", "missing_conditions": ["closed bar confirmation"],
+            "reason": "closed candle breakout", "missing_conditions": ["canonical prequal"],
         }
         row, _ = bot.OpportunityHunter._upsert(item, notify=False)
-        await bot.OpportunityHunter._deliver_alert(row, "WATCH", "WATCH")
+        await bot.OpportunityHunter._deliver_alert(row, "CONFIRMED", "CONFIRMED")
         updated = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
         assert updated["last_alert_delivery"] == "DELIVERED"
-        assert "WATCH" in updated["alerted_states"]
+        assert "CONFIRMED" in updated["alerted_states"]
 
 
 def test_opportunity_hunter_telegram_includes_reference_levels_and_no_profit_guarantee():
@@ -1066,13 +1071,52 @@ def test_opportunity_hunter_telegram_includes_reference_levels_and_no_profit_gua
         "entry_ref": 100.0, "invalidation_price": 99.0, "tp1": 101.0, "tp2": 101.5,
         "tp3": 102.0, "reason": "closed-candle resistance compression",
         "confirmation_type": "WATCH_SETUP", "missing_conditions": ["breakout close"],
-        "blockers": [], "evidence": {"relative_volume": 1.2},
+        "blockers": [], "evidence": {"relative_volume": 1.2, "strategy_style": "SWING", "outcome_interval_sec": 3600},
     }
     message = bot.OpportunityHunter._message(row, "WATCH", "WATCH")
     assert "مرجع الدخول التحليلي" in message
     assert "مستويات السيناريو" in message and "TP1" in message and "TP3" in message
     assert "ليست أوامر أو ضمانًا للربح" in message
     assert "MONITOR ONLY" in message
+    assert "TradingView" in message and "https://www.tradingview.com/chart/?symbol=MEXC%3AAAAUSDT" in message
+    assert "SWING" in message and "1h candles" in message
+
+
+def test_opportunity_hunter_suppresses_watch_alerts_by_default(tmp_path):
+    db_path = tmp_path / "hunter_watch_suppression.sqlite3"
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": True,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": True,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        row, _ = bot.OpportunityHunter._upsert({
+            "candidate_key": "watch-only|AAA/USDT|1", "symbol": "AAA/USDT",
+            "family": "PULLBACK", "pattern": "PULLBACK_RECLAIM", "status": "WATCH",
+            "confirmation_type": "WATCH_SETUP", "entry_ref": 100.0, "sl_price": 99.0,
+            "tp1": 101.0, "tp2": 102.0, "tp3": 103.0,
+        }, notify=False)
+        assert bot.OpportunityHunter._queue_alert(row, "WATCH") is False
+        assert bot.OpportunityHunter._alert_allowed(row, "CONFIRMED") is False
+
+
+def test_swing_shadow_outcome_uses_closed_hourly_candles():
+    now = time.time()
+    raw = _outcome_test_frame(now, period=3600, bars={
+        -4: {"high": 101.2, "close": 100.8},
+        -3: {"high": 102.2, "close": 101.8},
+        -2: {"high": 103.2, "close": 102.8},
+    })
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 3600, now=now)
+    assert closed is not None
+    first_target_open = int(pd.Timestamp(closed.index[-3]).timestamp())
+    row = _outcome_test_row(first_target_open - 1, expires_at=now + 7200)
+    row.update({"timeframe": "1D_4H_15M_5M",
+                "evidence": {"strategy_style": "SWING", "outcome_interval_sec": 3600}})
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert [event["kind"] for event in events] == [
+        "SHADOW_TP1_TOUCHED", "SHADOW_TP2_TOUCHED", "SHADOW_TP3_TOUCHED"]
+    assert all(event["candle_close_ts"] - event["candle_open_ts"] == 3600 for event in events)
+    assert "1h" in updates["outcome_reason"]
 
 
 def test_boot_selftest_synthetic_events_do_not_emit_live_error_or_warning_logs(caplog, monkeypatch):
@@ -1295,3 +1339,76 @@ def test_a71_intraday_retention_preserves_pending_rows_over_cap(tmp_path):
     assert statuses == {"intra-0": "PENDING", "intra-1": "PENDING"}
     assert retention["pending"] == 2
     assert retention["deleted_terminal"] == 2
+
+
+def test_swing_strategy_observation_deduplicates_by_closed_daily_anchor_and_tracks_one_hour(tmp_path):
+    now = time.time()
+    db_path = tmp_path / "hunter_swing_dedup.sqlite3"
+    snapshot = {
+        "df_5m": _outcome_test_frame(now, period=300),
+        "df_1h": _outcome_test_frame(now, period=3600),
+        "df_1d": _outcome_test_frame(now, period=86400),
+    }
+    common = {
+        "engine_id": "mtf_pullback", "symbol": "AAA/USDT", "side": "long",
+        "entry_ref": 100.0, "sl_price": 98.0, "tp1_rr": 1.0, "tp2_rr": 1.5,
+        "tp3_rr": 2.0, "engine_score": 0.82, "rr_ratio": 1.0,
+        "liquidity_score": 0.8, "regime_fit": 0.8, "family": "MTF_PULLBACK",
+        "zone_ref": 100.0, "features_snapshot": {}, "strategy_mode": "MTF_PULLBACK",
+        "strategy_style": "SWING", "timeframe_profile": "1D_4H_15M_5M",
+        "quality_grade": "A",
+    }
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": False,
+        "V702_OPPORTUNITY_HUNTER_SWING_TTL_SEC": 604800.0,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        first = bot.OpportunityHunter.observe_strategy_candidate(
+            bot.StrategyCandidate(generated_at_ms=int(now * 1000), **common), snapshot)
+        second = bot.OpportunityHunter.observe_strategy_candidate(
+            bot.StrategyCandidate(generated_at_ms=int((now + 17) * 1000), **common), snapshot)
+        active = [row for row in bot.OpportunityHunter._active_rows(50)
+                  if row.get("symbol") == "AAA/USDT" and row.get("family") == "MTF_PULLBACK"]
+    assert first and second
+    assert first["opportunity_id"] == second["opportunity_id"]
+    assert len(active) == 1
+    assert active[0]["evidence"]["strategy_style"] == "SWING"
+    assert active[0]["evidence"]["outcome_interval_sec"] == 3600
+    assert 604799 <= active[0]["expires_at"] - active[0]["created_at"] <= 604801
+
+
+def test_opportunity_scan_persists_watch_but_only_queues_formed_signal(tmp_path, monkeypatch):
+    db_path = tmp_path / "hunter_scan_alert_policy.sqlite3"
+    queued = []
+    watch = {
+        "candidate_key": "scan-watch|AAA/USDT|1", "symbol": "AAA/USDT",
+        "family": "PULLBACK", "pattern": "PULLBACK_RECLAIM", "status": "WATCH",
+        "confirmation_type": "WATCH_SETUP", "entry_ref": 100.0, "sl_price": 99.0,
+        "tp1": 101.0, "tp2": 102.0, "tp3": 103.0,
+    }
+    formed = {
+        "candidate_key": "scan-formed|AAA/USDT|2", "symbol": "AAA/USDT",
+        "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
+        "confirmation_type": "CLOSED_BAR_BREAKOUT", "entry_ref": 100.0, "sl_price": 99.0,
+        "tp1": 101.0, "tp2": 102.0, "tp3": 103.0,
+    }
+
+    def fake_evaluate(cls, symbol, md, now=None):
+        return [watch, formed]
+
+    def fake_queue(cls, row, state, variant=""):
+        queued.append((row.get("candidate_key"), state))
+        return True
+
+    monkeypatch.setattr(bot.OpportunityHunter, "_evaluate_snapshot", classmethod(fake_evaluate))
+    monkeypatch.setattr(bot.OpportunityHunter, "_queue_alert", classmethod(fake_queue))
+    with patch.dict(bot.CONFIG, {
+        "DB_PATH": str(db_path), "TELEGRAM_ENABLED": True,
+        "V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE": True,
+    }, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db_path))
+        summary = asyncio.run(bot.OpportunityHunter.scan_market_map({"AAA/USDT": {}}))
+        active = bot.OpportunityHunter._active_rows(20)
+    assert summary["created"] == 2
+    assert {row["status"] for row in active} == {"WATCH", "CONFIRMED"}
+    assert queued == [("scan-formed|AAA/USDT|2", "CONFIRMED")]

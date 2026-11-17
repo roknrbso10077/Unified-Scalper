@@ -102236,8 +102236,11 @@ FINAL_CANONICAL_RUNTIME["live_gates_relaxed"] = False
 # =============================================================================
 V702_A67_HUNTER_REVISION = "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15"
 V702_A68_OUTCOME_REVISION = "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15"
+V702_A73_CONFIRMED_ALERTS_REVISION = "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16"
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_ENABLE", True)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)
+# WATCH records remain persisted for diagnostics and are never sent to Telegram.
+CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_SWING_TTL_SEC", 604800.0)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_SYMBOLS_PER_CYCLE", 240)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE", 3)
 CONFIG.setdefault("V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_SCAN", 6)
@@ -102642,23 +102645,41 @@ class OpportunityHunter:
             rr3 = cls._safe_float(getattr(candidate, "tp3_rr", max(2.0, rr2)), max(2.0, rr2)) or max(2.0, rr2)
             fs = dict(getattr(candidate, "features_snapshot", {}) or {})
             snap = snapshot if isinstance(snapshot, dict) else {}
+            style = str(getattr(candidate, "strategy_style", "SCALP") or "SCALP").upper()
+            timeframe_profile = str(getattr(candidate, "timeframe_profile", "5m+15m") or "5m+15m")
+            outcome_interval_sec = 3600 if style == "SWING" or "1D" in timeframe_profile.upper() or "4H" in timeframe_profile.upper() else 300
             close_frame, candle_ts = cls._closed_frame(snap.get("df_5m"), 300)
             last_price = float(close_frame["close"].iloc[-1]) if close_frame is not None and len(close_frame) else entry
-            candidate_ms = int(getattr(candidate, "generated_at_ms", 0) or 0)
-            candidate_ts = candidate_ms // 1000 if candidate_ms > 0 else int(candle_ts or WALL_NOW())
-            key = _v702_candidate_wrap(candidate, snap, symbol)
+            if outcome_interval_sec == 3600 and "1D" in timeframe_profile.upper():
+                anchor_frame, anchor_ts = cls._closed_frame(snap.get("df_1d"), 86400)
+                if anchor_frame is None:
+                    anchor_frame, anchor_ts = cls._closed_frame(snap.get("df_1h"), 3600)
+            elif outcome_interval_sec == 3600:
+                anchor_frame, anchor_ts = cls._closed_frame(snap.get("df_1h"), 3600)
+            else:
+                anchor_frame, anchor_ts = close_frame, candle_ts
+            candidate_ts = int(anchor_ts or candle_ts or getattr(candidate, "generated_at_ms", 0) // 1000 or WALL_NOW())
+            # One idea per strategy family/timeframe/closed anchor candle. This
+            # avoids creating a fresh DB row every scan due only to generated_at_ms.
+            key = f"STRATEGY|{symbol}|{family_raw}|{pattern}|{timeframe_profile}|{candidate_ts}"
+            pipeline_candidate_key = _v702_candidate_wrap(candidate, snap, symbol)
             score = cls._safe_float(getattr(candidate, "engine_score", 0.0), 0.0) or 0.0
             item = {
                 "candidate_key": key, "symbol": symbol, "family": family_raw, "pattern": pattern,
                 "engine_id": engine, "source": "STRATEGY_ENGINE", "status": "WATCH",
-                "score": max(0.0, min(100.0, score * 100.0)), "timeframe": str(getattr(candidate, "timeframe_profile", "5m+15m") or "5m+15m"),
+                "score": max(0.0, min(100.0, score * 100.0)), "timeframe": timeframe_profile,
                 "candle_ts": int(candidate_ts), "entry_ref": entry, "sl_price": stop,
                 "tp1": entry + risk * rr1, "tp2": entry + risk * rr2, "tp3": entry + risk * rr3,
                 "last_price": last_price, "invalidation_price": stop,
                 "reason": f"استراتيجية {family_raw} أنشأت مرشحًا طويلًا؛ ما زال اجتياز البوابات اللاحقة مطلوبًا.",
                 "missing_conditions": ["CANONICAL_PREQUAL", "FINAL_SCORE_AND_PRESEND_COST_GATES"],
+                "expires_at": float(WALL_NOW()) + float(CONFIG.get(
+                    "V702_OPPORTUNITY_HUNTER_SWING_TTL_SEC" if outcome_interval_sec == 3600
+                    else "V702_OPPORTUNITY_HUNTER_TTL_SEC", 604800.0 if outcome_interval_sec == 3600 else 3600.0)),
                 "evidence": {
                     "engine_id": engine, "engine_score_raw_0_1": score,
+                    "strategy_style": style, "outcome_interval_sec": outcome_interval_sec,
+                    "pipeline_candidate_key": str(pipeline_candidate_key)[:240],
                     "rr_ratio_raw": cls._safe_float(getattr(candidate, "rr_ratio", None)),
                     "liquidity_score": cls._safe_float(getattr(candidate, "liquidity_score", None)),
                     "regime_fit": cls._safe_float(getattr(candidate, "regime_fit", None)),
@@ -102682,7 +102703,7 @@ class OpportunityHunter:
         try:
             stage = str(stage or "").upper()
             row = cls._get_by_candidate_key(candidate_key, symbol, family)
-            if not row or row.get("status") in ("INVALIDATED", "EXPIRED"):
+            if not row or row.get("status") in ("INVALIDATED", "EXPIRED", "COMPLETED"):
                 return
             evidence = dict(row.get("evidence") or {})
             evidence["last_pipeline_stage"] = stage
@@ -102699,12 +102720,13 @@ class OpportunityHunter:
                 confirmation_type = "CANONICAL_PREQUAL"
                 reason = "اجتاز المرشح بوابة Prequal الأساسية؛ ما زالت بوابات التقييم والتكلفة وما قبل الإرسال مطلوبة."
                 updates["missing_json"] = json.dumps(["FINAL_SCORE_AND_PRESEND_COST_GATES"], ensure_ascii=False)
-            elif stage == "SCORE_PASS":
-                if cls._RANK.get(new_status, 0) < cls._RANK["CONFIRMED"]:
-                    new_status = "CONFIRMED"
-                    confirmation_type = "CANONICAL_SCORE_PASS"
-                    reason = "اجتاز المرشح التقييم النهائي؛ ما زالت فحوص ما قبل الإرسال مطلوبة."
-                    updates["missing_json"] = json.dumps(["PRESEND_SPREAD_DEPTH_FEE_AND_RISK_GATES"], ensure_ascii=False)
+            elif stage == "SCORE_PASS" and row.get("status") != "TRADEABLE":
+                # Score pass is a stronger confirmation than Prequal and must
+                # notify even when Prequal already advanced the row to CONFIRMED.
+                new_status = "CONFIRMED"
+                confirmation_type = "CANONICAL_SCORE_PASS"
+                reason = "اجتاز المرشح التقييم النهائي؛ ما زالت فحوص ما قبل الإرسال مطلوبة."
+                updates["missing_json"] = json.dumps(["PRESEND_SPREAD_DEPTH_FEE_AND_RISK_GATES"], ensure_ascii=False)
             elif stage == "PRESEND_PASS":
                 new_status = "TRADEABLE"
                 confirmation_type = "CANONICAL_PRESEND_PASS"
@@ -102718,19 +102740,21 @@ class OpportunityHunter:
                 updates["blockers_json"] = json.dumps(blockers, ensure_ascii=False)
             status_advanced = cls._RANK.get(new_status, 0) > cls._RANK.get(row.get("status"), 0)
             _old_confirmation = str(row.get("confirmation_type") or "")
-            confirmation_upgraded = (stage == "PREQUAL_PASS" and (
-                _old_confirmation == "TECHNICAL_TRIGGER_ONLY" or _old_confirmation.startswith("CLOSED_BAR_")
-            ))
+            confirmation_upgraded = (
+                (stage == "PREQUAL_PASS" and (_old_confirmation == "TECHNICAL_TRIGGER_ONLY"
+                                               or _old_confirmation.startswith("CLOSED_BAR_")))
+                or (stage == "SCORE_PASS" and _old_confirmation != "CANONICAL_SCORE_PASS")
+            )
             if status_advanced:
                 updates["status"] = new_status
             if status_advanced or confirmation_upgraded:
                 updates["confirmation_type"] = confirmation_type
                 updates["reason"] = reason
             updated = cls._update_row(row["opportunity_id"], updates)
-            if updated and updated.get("status") != row.get("status"):
-                cls._queue_alert(updated, updated.get("status"))
-            elif updated and confirmation_upgraded:
-                cls._queue_alert(updated, "CONFIRMED", "CANONICAL_PREQUAL")
+            if updated and stage == "SCORE_PASS" and row.get("status") != "TRADEABLE":
+                cls._queue_alert(updated, "CONFIRMED", "CANONICAL_SCORE_PASS")
+            elif updated and updated.get("status") == "TRADEABLE" and updated.get("status") != row.get("status"):
+                cls._queue_alert(updated, "TRADEABLE")
             elif updated and stage in ("PREQUAL_REJECT", "PREEXEC_BLOCK", "SCORE_BLOCK", "BUILDER_RETURNED_NONE", "BUILDER_EXCEPTION", "ROUTE_DEFERRED"):
                 STATS["v702_opportunity_hunter_blocked_candidates"] = int(STATS.get("v702_opportunity_hunter_blocked_candidates", 0) or 0) + 1
         except Exception as exc:
@@ -102924,7 +102948,8 @@ class OpportunityHunter:
             "sl_price": safe_invalidation, "tp1": float(price) + risk,
             "tp2": float(price) + 1.5 * risk, "tp3": float(price) + 2.0 * risk,
             "last_price": float(price), "invalidation_price": safe_invalidation,
-            "reason": str(reason), "missing_conditions": list(missing), "evidence": dict(evidence),
+            "reason": str(reason), "missing_conditions": list(missing),
+            "evidence": {**dict(evidence), "strategy_style": "INTRADAY", "outcome_interval_sec": 300},
             "confirmation_type": str(confirmation_type), "expires_at": float(WALL_NOW()) + float(ttl),
         }
 
@@ -102943,11 +102968,26 @@ class OpportunityHunter:
                 conn.close()
 
     @classmethod
+    def _outcome_interval_sec(cls, row):
+        """Resolve the closed-candle horizon used by this setup's shadow outcome."""
+        evidence = row.get("evidence") if isinstance(row, dict) else {}
+        evidence = evidence if isinstance(evidence, dict) else {}
+        style = str(evidence.get("strategy_style") or "").upper()
+        timeframe = str((row or {}).get("timeframe") or "").upper()
+        raw = cls._safe_float(evidence.get("outcome_interval_sec"))
+        if raw in (300.0, 3600.0):
+            return int(raw)
+        if style == "SWING" or "1D" in timeframe or "4H" in timeframe:
+            return 3600
+        return 300
+
+    @classmethod
     def _advance_shadow_outcome(cls, row, frame, *, now=None):
-        """Advance hypothetical TP/SL using closed 5m OHLC; never asserts fills.
+        """Advance hypothetical TP/SL on the row's closed 5m/1h OHLC horizon.
 
         If one candle touches both a stop and a target, the stop wins because
         OHLC cannot prove the intrabar ordering (conservative ambiguity rule).
+        This is reference-price tracking, never a claim of execution or fill.
         """
         if not isinstance(row, dict) or not isinstance(frame, pd.DataFrame) or frame.empty:
             return {}, []
@@ -102967,7 +103007,8 @@ class OpportunityHunter:
             created_at = float(row.get("created_at") or row.get("candle_ts") or now_s)
             # Skip the signal candle and any candle already in progress when
             # the setup was observed, avoiding retroactive outcome claims.
-            first_open = int(math.ceil(created_at / 300.0) * 300)
+            interval_sec = cls._outcome_interval_sec(row)
+            first_open = int(math.ceil(created_at / float(interval_sec)) * interval_sec)
             last_open = int(row.get("outcome_last_candle_ts") or 0)
         except Exception:
             return {}, []
@@ -103007,25 +103048,27 @@ class OpportunityHunter:
                         final_status = "SHADOW_STOP_HIT"
                     kind = "SHADOW_STOP_AMBIGUOUS_STOP_FIRST" if ambiguous else final_status
                     event = {"kind": kind, "candle_open_ts": open_ts,
-                             "candle_close_ts": open_ts + 300, "reference_price": float(stop),
+                             "candle_close_ts": open_ts + interval_sec, "reference_price": float(stop),
                              "ambiguous_same_candle_target": bool(ambiguous),
                              "targets_also_touched": next_targets}
                     events.append(event); new_events.append(event)
                     outcome_status = final_status
-                    outcome_reason = ("شمعة 5m لمست الوقف والهدف معًا؛ تم اعتماد الوقف أولًا تحفظيًا." if ambiguous
-                                      else "شمعة 5m مغلقة لمست مستوى وقف السيناريو المرجعي.")
+                    _tf_label = "1h" if interval_sec >= 3600 else "5m"
+                    outcome_reason = (f"شمعة {_tf_label} لمست الوقف والهدف معًا؛ تم اعتماد الوقف أولًا تحفظيًا." if ambiguous
+                                      else f"شمعة {_tf_label} مغلقة لمست مستوى وقف السيناريو المرجعي.")
                     break
                 for n in next_targets:
                     kind = f"SHADOW_TP{n}_TOUCHED"
                     event = {"kind": kind, "candle_open_ts": open_ts,
-                             "candle_close_ts": open_ts + 300,
+                             "candle_close_ts": open_ts + interval_sec,
                              "reference_price": float(targets[n - 1]),
                              "ambiguous_same_candle_target": False}
                     if kind not in already_hit:
                         events.append(event); new_events.append(event); already_hit.add(kind)
                     prior_target = max(prior_target, n)
                     outcome_status = kind
-                    outcome_reason = f"شمعة 5m مغلقة لمست الهدف المرجعي TP{n}؛ لا يعني ذلك تعبئة فعلية أو صافي ربح."
+                    _tf_label = "1h" if interval_sec >= 3600 else "5m"
+                    outcome_reason = f"شمعة {_tf_label} مغلقة لمست الهدف المرجعي TP{n}؛ لا يعني ذلك تعبئة فعلية أو صافي ربح."
                     if n == 3:
                         break
                 if prior_target >= 3:
@@ -103043,7 +103086,8 @@ class OpportunityHunter:
             outcome_status = "SHADOW_EXPIRED" + suffix
             outcome_reason = "انتهت مدة متابعة الفرضية دون هدف نهائي؛ النتائج السابقة محفوظة كما هي."
             final = True
-            event = {"kind": outcome_status, "candle_open_ts": int(now_s // 300) * 300,
+            interval_sec = cls._outcome_interval_sec(row)
+            event = {"kind": outcome_status, "candle_open_ts": int(now_s // interval_sec) * interval_sec,
                      "candle_close_ts": int(now_s), "reference_price": None,
                      "ambiguous_same_candle_target": False}
             events.append(event); new_events.append(event)
@@ -103080,9 +103124,31 @@ class OpportunityHunter:
             return {}
 
     @classmethod
+    def _alert_allowed(cls, row, state):
+        """Only send formed opportunities; WATCH remains a persisted internal state."""
+        state = str(state or "").upper()
+        if not isinstance(row, dict):
+            return False
+        ctype = str(row.get("confirmation_type") or "").upper()
+        alerted = [str(x).upper() for x in (row.get("alerted_states") or [])]
+        has_prior_formed_alert = any(x.startswith(("CONFIRMED", "TRADEABLE")) for x in alerted)
+        if state == "CONFIRMED":
+            return (ctype == "CANONICAL_SCORE_PASS" or ctype == "CANONICAL_PRESEND_PASS"
+                    or ctype == "TECHNICAL_TRIGGER_ONLY" or ctype.startswith("CLOSED_BAR_"))
+        if state == "TRADEABLE":
+            return ctype == "CANONICAL_PRESEND_PASS"
+        if state in ("INVALIDATED", "EXPIRED", "OUTCOME"):
+            return has_prior_formed_alert
+        return False
+
+    @classmethod
     def _queue_alert(cls, row, state, variant=""):
         state = str(state or "").upper()
         if state not in ("WATCH", "CONFIRMED", "TRADEABLE", "INVALIDATED", "EXPIRED", "OUTCOME"):
+            return False
+        if not cls._alert_allowed(row, state):
+            STATS["v702_opportunity_hunter_unformed_alert_suppressed"] = int(
+                STATS.get("v702_opportunity_hunter_unformed_alert_suppressed", 0) or 0) + 1
             return False
         if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_TELEGRAM_ENABLE", True)) or not bool(CONFIG.get("TELEGRAM_ENABLED", True)):
             return False
@@ -103141,6 +103207,11 @@ class OpportunityHunter:
         tp2 = OpportunityTelegramNotifier._fmt_px(row.get("tp2"))
         tp3 = OpportunityTelegramNotifier._fmt_px(row.get("tp3"))
         timeframe = esc(row.get("timeframe") or "—")
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        strategy_style = str(evidence.get("strategy_style") or ("SWING" if "1D" in timeframe.upper() or "4H" in timeframe.upper() else "INTRADAY")).upper()
+        outcome_interval = cls._outcome_interval_sec(row)
+        tracking_tf = "1h candles" if outcome_interval >= 3600 else "5m candles"
+        tv_url = OpportunityTelegramNotifier._tradingview_link(str(row.get("symbol") or ""))
         status_title = {
             "WATCH": "🟡 <b>WATCH — فرصة تحت التكوين</b>",
             "CONFIRMED": "🟢 <b>CONFIRMED — شرط فني تحقق</b>",
@@ -103149,6 +103220,7 @@ class OpportunityHunter:
             "EXPIRED": "⌛ <b>EXPIRED — انتهت صلاحية الفرصة</b>",
         }.get(state, "<b>OPPORTUNITY UPDATE</b>")
         lines = [status_title, f"<b>{symbol}</b> · {family}", f"الإطار: <code>{timeframe}</code>",
+                 f"تصنيف الاستراتيجية: <code>{esc(strategy_style)}</code> · متابعة السيناريو على شموع <code>{tracking_tf}</code>",
                  f"Hunter score: <b>{score:.1f}/100</b> (ترتيب داخلي وليس احتمال ربح)",
                  f"مرجع آخر سعر مغلق: <code>{esc(price)}</code>",
                  f"مرجع الدخول التحليلي: <code>{esc(entry_ref)}</code>",
@@ -103156,10 +103228,13 @@ class OpportunityHunter:
                  f"مستويات السيناريو: TP1 <code>{esc(tp1)}</code> · TP2 <code>{esc(tp2)}</code> · TP3 <code>{esc(tp3)}</code>",
                  "المستويات مرجعية مشتقة من مسافة الإبطال وليست أوامر أو ضمانًا للربح؛ صافي التكلفة لا يعتمد إلا عبر بوابات PreSend.",
                  f"السبب: {esc(row.get('reason') or '—')}"]
-        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        if tv_url:
+            lines.append(f'<a href="{esc(tv_url)}">فتح شارت العملة على TradingView</a>')
         if evidence:
             items = []
-            for key, val in list(evidence.items())[:6]:
+            for key, val in list(evidence.items())[:10]:
+                if key in {"pipeline_candidate_key", "outcome_interval_sec"}:
+                    continue
                 if isinstance(val, (str, int, float, bool)) and val is not None:
                     items.append(f"• {esc(key)}: <code>{esc(val)}</code>")
             if items:
@@ -103169,8 +103244,8 @@ class OpportunityHunter:
         if state == "WATCH" and missing:
             lines += ["<b>الشروط التالية المطلوبة</b>"] + [f"• {esc(x)}" for x in missing[:5]]
         if state == "CONFIRMED":
-            if str(alert_token).endswith(":CANONICAL_PREQUAL"):
-                lines.append("تحديث مهم: الفرصة كانت مؤكدة فنيًا ثم اجتازت الآن بوابة Prequal الأساسية.")
+            if str(alert_token).endswith(":CANONICAL_SCORE_PASS"):
+                lines.append("تأكيد نهائي: اجتازت الفرصة بوابة التقييم والدرجة؛ ما زالت فحوص PreSend مطلوبة.")
             ctype = str(row.get("confirmation_type") or "")
             if ctype == "TECHNICAL_TRIGGER_ONLY" or ctype.startswith("CLOSED_BAR_"):
                 lines.append("التأكيد فني من شمعة مغلقة فقط؛ لا يعني اجتياز Prequal أو فحوص التكلفة والتنفيذ.")
@@ -103200,6 +103275,9 @@ class OpportunityHunter:
 
     @classmethod
     async def _deliver_alert(cls, row, state, alert_token=""):
+        state = str(state or "").upper()
+        if not cls._alert_allowed(row, state):
+            return
         opp_id = str(row.get("opportunity_id") or "")
         alert_token = str(alert_token or state)
         key = (opp_id, alert_token)
@@ -103266,7 +103344,7 @@ class OpportunityHunter:
                         # _upsert(..., notify=False) avoids duplicate notification
                         # storms; queue only a state not previously alerted.
                         if (queued_this_scan < max_alerts
-                                and row.get("status") in ("WATCH", "CONFIRMED", "TRADEABLE")):
+                                and row.get("status") in ("CONFIRMED", "TRADEABLE")):
                             if cls._queue_alert(row, row.get("status")):
                                 queued_this_scan += 1
                 scanned += 1
@@ -103282,22 +103360,34 @@ class OpportunityHunter:
         _monitor_symbols = {str(r.get("symbol") or "").upper() for r in _monitor_rows}
         latest_prices = {}
         closed_frames = {}
+        _needed_intervals = {(_sym, cls._outcome_interval_sec(_row)) for _row in _monitor_rows
+                             for _sym in [str(_row.get("symbol") or "").upper()]}
+        _interval_frames = {300: "df_5m", 3600: "df_1h"}
         for _idx, (symbol, md) in enumerate(market_data_map.items()):
             _sym = str(symbol).upper()
             if _idx >= max_symbols and _sym not in _monitor_symbols:
                 continue
-            f5, _ts = cls._closed_frame((md or {}).get("df_5m") if isinstance(md, dict) else None, 300, now=now)
-            if f5 is not None and len(f5):
-                closed_frames[_sym] = f5
-                latest_prices[_sym] = float(f5["close"].iloc[-1])
+            if not isinstance(md, dict):
+                continue
+            for _interval in {interval for sym, interval in _needed_intervals if sym == _sym}:
+                _frame_key = _interval_frames.get(_interval)
+                if not _frame_key:
+                    continue
+                _frame, _ts = cls._closed_frame(md.get(_frame_key), _interval, now=now)
+                if _frame is not None and len(_frame):
+                    _key = (_sym, _interval)
+                    closed_frames[_key] = _frame
+                    latest_prices[_key] = float(_frame["close"].iloc[-1])
         outcome_events_count = 0
         outcome_updated_count = 0
         for row in _monitor_rows:
             try:
                 symbol = str(row.get("symbol") or "").upper()
-                price = latest_prices.get(symbol)
+                interval_sec = cls._outcome_interval_sec(row)
+                frame_key = (symbol, interval_sec)
+                price = latest_prices.get(frame_key)
                 updates = {"last_price": price} if price is not None else {}
-                frame = closed_frames.get(symbol)
+                frame = closed_frames.get(frame_key)
                 _outcome_updates, _new_outcome_events = cls._advance_shadow_outcome(row, frame, now=now) if frame is not None else ({}, [])
                 if _outcome_updates:
                     updates.update(_outcome_updates)
@@ -103306,12 +103396,14 @@ class OpportunityHunter:
                     _new_kinds = {str(e.get("kind") or "") for e in _new_outcome_events}
                     if any(kind.startswith("SHADOW_STOP") for kind in _new_kinds):
                         updates["status"] = "INVALIDATED"
-                        updates["reason"] = "لامست شمعة 5m مغلقة وقف السيناريو المرجعي؛ لا يعني ذلك تنفيذ أمر وقف فعلي."
+                        _tf_label = "1h" if interval_sec >= 3600 else "5m"
+                        updates["reason"] = f"لامست شمعة {_tf_label} مغلقة وقف السيناريو المرجعي؛ لا يعني ذلك تنفيذ أمر وقف فعلي."
                     elif "SHADOW_TP3_TOUCHED" in _new_kinds:
                         # TP3 completes a shadow scenario; remove it from the
                         # active monitoring queue while retaining its outcome.
                         updates["status"] = "COMPLETED"
-                        updates["reason"] = "اكتملت متابعة السيناريو المرجعي بوصول شمعة 5m مغلقة إلى TP3؛ ليست تعبئة أو ربحًا فعليًا."
+                        _tf_label = "1h" if interval_sec >= 3600 else "5m"
+                        updates["reason"] = f"اكتملت متابعة السيناريو المرجعي بوصول شمعة {_tf_label} مغلقة إلى TP3؛ ليست تعبئة أو ربحًا فعليًا."
                 if now >= float(row.get("expires_at") or 0):
                     if not bool(updates.get("outcome_final", row.get("outcome_final", 0))):
                         _events = list(row.get("outcome_events") or [])[-49:]
@@ -103319,7 +103411,7 @@ class OpportunityHunter:
                             isinstance(e, dict) and e.get("kind") == f"SHADOW_TP{n}_TOUCHED" for e in _events)), default=0)
                         _suffix = f"_AFTER_TP{_prior}" if _prior else "_WITHOUT_TARGET"
                         _expiry_kind = "SHADOW_EXPIRED" + _suffix
-                        _events.append({"kind": _expiry_kind, "candle_open_ts": int(now // 300) * 300,
+                        _events.append({"kind": _expiry_kind, "candle_open_ts": int(now // interval_sec) * interval_sec,
                                         "candle_close_ts": int(now), "reference_price": None,
                                         "ambiguous_same_candle_target": False})
                         updates.update({"outcome_status": _expiry_kind,
@@ -103421,9 +103513,13 @@ def _v702_hunter_pipeline_record(cls, stage, candidate_key, symbol="", family=""
 V702PipelineMetrics.record = classmethod(_v702_hunter_pipeline_record)
 
 FINAL_CANONICAL_RUNTIME.update({
+    "opportunity_confirmed_alerts_revision": V702_A73_CONFIRMED_ALERTS_REVISION,
+    "opportunity_confirmed_only_telegram_alerts": True,
+    "opportunity_tradingview_links": True,
+    "opportunity_swing_outcome_tracking": True,
     "opportunity_outcome_tracking_revision": V702_A68_OUTCOME_REVISION,
     "opportunity_outcome_tracking_enabled": True,
-    "opportunity_outcome_mode": "SHADOW_REFERENCE_CLOSED_5M_OHLC",
+    "opportunity_outcome_mode": "SHADOW_REFERENCE_CLOSED_5M_INTRADAY_1H_SWING_OHLC",
     "opportunity_outcome_same_candle_policy": "STOP_FIRST_CONSERVATIVE",
     "opportunity_hunter_enabled": True,
     "opportunity_hunter_revision": V702_A67_HUNTER_REVISION,
@@ -103433,7 +103529,7 @@ FINAL_CANONICAL_RUNTIME.update({
     "opportunity_hunter_uses_existing_market_snapshots_only": True,
     "opportunity_hunter_tradeable_semantics": "PRESEND_PASS_ONLY_NOT_ORDER_OR_FILL",
 })
-V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A67_HUNTER_REVISION + "-" + V702_A68_OUTCOME_REVISION
+V702_PACKAGE_AUDIT_REVISION = str(V702_PACKAGE_AUDIT_REVISION) + "-" + V702_A67_HUNTER_REVISION + "-" + V702_A68_OUTCOME_REVISION + "-" + V702_A73_CONFIRMED_ALERTS_REVISION
 FINAL_CANONICAL_RUNTIME["package_audit_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["package_revision"] = V702_PACKAGE_AUDIT_REVISION
 FINAL_CANONICAL_RUNTIME["active_package_revision"] = V702_PACKAGE_AUDIT_REVISION

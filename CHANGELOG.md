@@ -2485,3 +2485,13 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Re-ran compileall, the full regression suite (526 passed, 1 historical fixture skipped), and two focused mock/integration batches (71 and 110 passed). `--validate-only` exited 0 with `bot_started=false` and `live_threads=[]`; direct `validate_config()` returned true.
 - Reviewed the newer Railway screenshot (`9d951f72`): synthetic self-test diagnostics are not real losses, injected secret-presence flags are true, and the captured tail lacks a traceback / terminal crash marker. The deployment crash cause is therefore still unproven; no speculative trading/runtime logic was changed.
 - No application-source defect was newly reproduced in this round; no source file was changed or removed. Updated README, audit report, manifests, and checksums with this evidence and the Colab runbook. The target Python 3.12/Linux amd64 image, Docker, live MEXC/Telegram, and profitability remain unverified.
+
+# A73 — confirmed-only opportunity alerts, TradingView and multi-timeframe outcomes (2026-11-16)
+
+- Suppress Telegram delivery for every `WATCH` / forming setup while preserving its internal SQLite record and evidence. A `PREQUAL_PASS` now updates internal pipeline state only; it does not emit an alert before canonical score confirmation.
+- Emit `CONFIRMED` alerts only for named closed-candle technical triggers or canonical `SCORE_PASS`; emit `TRADEABLE` only after canonical `PRESEND_PASS`. Preserve explicit wording that technical confirmation is not Prequal, and PreSend passage is not an order/fill.
+- Add the MEXC Spot TradingView chart URL to opportunity messages, along with strategy style and outcome-monitoring timeframe.
+- Preserve existing strategy candidate `SWING` metadata, derive stable per-closed-bar candidate keys so repeated scan cycles do not create duplicate ideas, and default Swing observation lifetime to seven days.
+- Monitor intraday ideas with closed 5m candles and Swing ideas with closed 1h candles, using the same conservative stop-first rule when one OHLC candle touches both target and stop. Label outcome messages with the actual interval.
+- Add tests for alert-state gating, Prequal-vs-Score progression, TradingView link generation, closed-hourly Swing outcome sequencing, stable Swing de-duplication/TTL, and scan-level WATCH suppression.
+- No strategy engine, score floor, cost/risk/PreSend gate, API polling load, or execution authority was expanded. Live order submission was not used; effective policy remains `MONITOR_ONLY_NO_NEW_BUYS` and the package remains `NO_GO_UNATTENDED_LIVE`.

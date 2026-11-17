@@ -112,9 +112,9 @@
   "archive_file_limit": 99,
   "base_runtime_release": "UNIFIED-SCALPER-V702-A64-CANONICAL-FINAL",
   "canonical_executable": "main.py",
-  "canonical_main_sha256": "d569179f59cdd2018df15280b1e58fa28b2a6ee9f56bb04e56d7a72d14a9c1b8",
+  "canonical_main_sha256": "1da2dc79031bbc8edacd44dcf5606a36ac7f17f339628c4de9b74d0c88478093",
   "canonical_package_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
-  "canonical_source_sha256": "d569179f59cdd2018df15280b1e58fa28b2a6ee9f56bb04e56d7a72d14a9c1b8",
+  "canonical_source_sha256": "1da2dc79031bbc8edacd44dcf5606a36ac7f17f339628c4de9b74d0c88478093",
   "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
   "economic_model_version": "A66_PARTIAL_EXIT_COST_AND_FDR_V1",
   "edge_schema_version": "V702-KNOWLEDGE-EDGE-SHADOW-8-A66-AUDIT-CLOSURE",
@@ -135,14 +135,15 @@
   "macro_direction_gates_discovery": false,
   "opportunity_hunter": {
     "also_observes": "The existing 18 strategy engines' actual long Spot USDT candidates and canonical pipeline events.",
-    "candle_contract": "Closed 5m and 15m candles only; OHLC consistency, duplicate timestamp, minimum history and freshness checks.",
+    "candle_contract": "Pattern discovery uses fully closed 5m/15m candles. Intraday outcomes use closed 5m candles; existing SWING strategy-engine observations use closed 1h candles.",
     "default_limits": {
       "max_active_opportunities": 1200,
       "max_alerts_per_minute": 3,
       "max_alerts_per_scan": 6,
       "max_symbols_per_cycle": 240,
       "opportunity_ttl_seconds": 3600,
-      "ranking_score_floor": 55
+      "ranking_score_floor": 55,
+      "swing_ttl_seconds": 604800
     },
     "effective_symbol_coverage": "min(configured max_symbols_per_cycle=240, len(market_data_map)); market_data_map is populated only from the existing bounded deep-scan selection (V699 normal=130/elevated=150/starving=170 when enabled); actual coverage can be lower when market snapshots fail validation.",
     "enabled_by_default": true,
@@ -154,7 +155,7 @@
     "outcome_revision": "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15",
     "outcome_tracking": {
       "actual_fill_or_pnl_claim": false,
-      "eligible_bars": "Fully closed 5m bars opened after opportunity creation; signal/in-progress candle skipped",
+      "eligible_bars": "Fully closed 5m bars for intraday ideas and fully closed 1h bars for SWING ideas; signal/in-progress candle skipped.",
       "enabled": true,
       "events": [
         "SHADOW_TP1_TOUCHED",
@@ -170,14 +171,15 @@
       ],
       "execution_authority": false,
       "geometry": "Immutable per candidate_key; later scans cannot rewrite historical Entry/SL/TP",
-      "mode": "SHADOW_REFERENCE_CLOSED_5M_OHLC",
+      "mode": "SHADOW_REFERENCE_CLOSED_5M_INTRADAY_1H_SWING_OHLC",
       "monitoring_bound": "Persisted active candidate symbols are monitored even outside the discovery slice when their current snapshot is present",
       "persistence": "Additive SQLite migration; outcome status, bounded event history, last candle cursor, final flag, updated timestamp and reason",
       "price_data_source": "Existing market_data_map only; no additional exchange calls",
-      "revision": "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15",
-      "same_candle_policy": "STOP_FIRST_CONSERVATIVE; a candle touching stop and target is marked ambiguous and stop is counted first",
+      "revision": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
+      "same_candle_policy": "STOP_FIRST_CONSERVATIVE; when one closed OHLC candle touches both stop and target, stop is counted first because intrabar order is unknowable.",
       "telegram": "Outcome event included in alert with explicit shadow-only disclaimer; no execution authority",
-      "tp3_lifecycle_state": "COMPLETED"
+      "tp3_lifecycle_state": "COMPLETED",
+      "swing_tracking_ttl_seconds": 604800
     },
     "pattern_lanes": [
       "BREAKOUT_CONTINUATION",
@@ -190,11 +192,11 @@
     "revision": "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
     "state_semantics": {
       "COMPLETED": "The shadow-reference scenario touched TP3 and was removed from active monitoring; not an executed fill or realized profit.",
-      "CONFIRMED": "Either a named closed-candle technical trigger, explicitly technical-only, or a canonical PREQUAL_PASS/SCORE_PASS.",
+      "CONFIRMED": "A named fully closed-candle technical trigger (technical-only) or canonical SCORE_PASS. PREQUAL_PASS is internal and does not trigger Telegram.",
       "EXPIRED": "The bounded opportunity lifetime elapsed before a terminal target/stop outcome.",
-      "INVALIDATED": "A closed 5m reference candle touched the fixed stop/invalidation level.",
+      "INVALIDATED": "A closed reference candle on the idea-specific outcome horizon touched the fixed stop/invalidation level.",
       "TRADEABLE": "Canonical PRESEND_PASS only; not an order submission or fill.",
-      "WATCH": "A measured setup is forming and one or more explicit conditions remain."
+      "WATCH": "A measured but unformed setup; stored internally and not delivered as a Telegram opportunity alert."
     },
     "states": [
       "WATCH",
@@ -204,7 +206,10 @@
       "EXPIRED",
       "COMPLETED"
     ],
-    "telegram": "Rate-limited state alerts with delivery callbacks; local hard cap 3/minute because callback-bearing messages retain direct-queue ACK/failure semantics; no execution authority."
+    "telegram": "Confirmed-only rate-limited state alerts with delivery callbacks and a MEXC Spot TradingView link; no execution authority.",
+    "a73_alert_revision": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
+    "telegram_alert_policy": "WATCH is stored but not delivered; PREQUAL_PASS alone is internal; CONFIRMED requires a closed-bar technical trigger or canonical SCORE_PASS; TRADEABLE requires canonical PRESEND_PASS.",
+    "tradingview_link": "MEXC Spot TradingView chart URL included in every Hunter opportunity alert."
   },
   "opportunity_hunter_enabled": true,
   "opportunity_hunter_execution_authority": false,
@@ -218,7 +223,7 @@
   ],
   "opportunity_outcome_tracking": {
     "actual_fill_or_pnl_claim": false,
-    "eligible_bars": "Fully closed 5m bars opened after opportunity creation; signal/in-progress candle skipped",
+    "eligible_bars": "Fully closed 5m bars for intraday ideas and fully closed 1h bars for SWING ideas; signal/in-progress candle skipped.",
     "enabled": true,
     "events": [
       "SHADOW_TP1_TOUCHED",
@@ -234,14 +239,15 @@
     ],
     "execution_authority": false,
     "geometry": "Immutable per candidate_key; later scans cannot rewrite historical Entry/SL/TP",
-    "mode": "SHADOW_REFERENCE_CLOSED_5M_OHLC",
+    "mode": "SHADOW_REFERENCE_CLOSED_5M_INTRADAY_1H_SWING_OHLC",
     "monitoring_bound": "Persisted active candidate symbols are monitored even outside the discovery slice when their current snapshot is present",
     "persistence": "Additive SQLite migration; outcome status, bounded event history, last candle cursor, final flag, updated timestamp and reason",
     "price_data_source": "Existing market_data_map only; no additional exchange calls",
-    "revision": "A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15",
-    "same_candle_policy": "STOP_FIRST_CONSERVATIVE; a candle touching stop and target is marked ambiguous and stop is counted first",
+    "revision": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
+    "same_candle_policy": "STOP_FIRST_CONSERVATIVE; when one closed OHLC candle touches both stop and target, stop is counted first because intrabar order is unknowable.",
     "telegram": "Outcome event included in alert with explicit shadow-only disclaimer; no execution authority",
-    "tp3_lifecycle_state": "COMPLETED"
+    "tp3_lifecycle_state": "COMPLETED",
+    "swing_tracking_ttl_seconds": 604800
   },
   "post_audit_patch_revision": "A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15",
   "previous_active_feature_revision": "A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15",
@@ -271,7 +277,7 @@
   },
   "read_only_discovery_requires_wallet_balance": false,
   "release": "UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL",
-  "release_notes": " A67 read-only Opportunity Hunter is layered over A66: existing market_data_map only, four closed-candle pattern lanes, actual strategy-candidate observation, canonical pipeline promotion, SQLite lifecycle persistence and Telegram state alerts. TRADEABLE means PRESEND_PASS only, never an order/fill. No BUY gate was relaxed; profitability and live integrations remain unverified. Post-A69 audit: SizingEngine now rejects non-finite price geometry before balance access; no entry authority or hard thresholds were relaxed. A70 closes startup entrypoint identity ordering; canonical A66 tag and A69 merge identity are retained. No execution-gate relaxation. A72 separates unauthenticated public MEXC Spot discovery from optional private account reconciliation, skips private balance preflight in monitor-only mode, and reports descriptive BTC macro before empty-Universe defer; no live authority or strategy gates were relaxed.",
+  "release_notes": "A67 read-only Opportunity Hunter is layered over A66: existing market_data_map only, four closed-candle pattern lanes, actual strategy-candidate observation, canonical pipeline promotion, SQLite lifecycle persistence and Telegram state alerts. TRADEABLE means PRESEND_PASS only, never an order/fill. No BUY gate was relaxed; profitability and live integrations remain unverified. Post-A69 audit: SizingEngine now rejects non-finite price geometry before balance access; no entry authority or hard thresholds were relaxed. A70 closes startup entrypoint identity ordering; canonical A66 tag and A69 merge identity are retained. No execution-gate relaxation. A72 separates unauthenticated public MEXC Spot discovery from optional private account reconciliation, skips private balance preflight in monitor-only mode, and reports descriptive BTC macro before empty-Universe defer; no live authority or strategy gates were relaxed.\n\nA73 confirmed-only opportunity alerts: WATCH remains internal; PREQUAL_PASS is not enough to notify; CONFIRMED requires closed-bar technical confirmation or canonical SCORE_PASS; TRADEABLE requires PRESEND_PASS. Hunter messages include MEXC Spot TradingView links. Existing Swing candidates deduplicate on a closed-bar anchor, use a 7-day default lifetime and are tracked on closed 1h bars; intraday ideas remain on closed 5m bars. All TP/SL outcomes remain shadow reference touches, never fills or realized PnL.\n\nA73: 7 confirmed issues corrected: 6 runtime/logic defects plus 1 stale .env.example credentials statement; 10 existing files modified; none added/deleted. WATCH is internal only; confirmed alerts require closed-bar technical confirmation or canonical SCORE_PASS; TradingView link added; SWING observation uses 1h closes and a seven-day default TTL; outcomes remain reference-only.\n\nA73 confirmed-only opportunity alerts: WATCH remains internal; PREQUAL_PASS is not enough to notify; CONFIRMED requires closed-bar technical confirmation or canonical SCORE_PASS; TRADEABLE requires PRESEND_PASS. Hunter messages include MEXC Spot TradingView links. Existing Swing candidates deduplicate on a closed-bar anchor, use a 7-day default lifetime and are tracked on closed 1h bars; intraday ideas remain on closed 5m bars. TP/SL outcomes remain reference-only, never fills or realized PnL.",
   "release_revision": "A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
   "supplemental_audit_merge_revision": "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15",
   "supplemental_config_closure": "A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15",
@@ -346,8 +352,8 @@
     "a69_merged_audit_regressions": "PASS (6/6 new merged ExpansionShadow/Hunter regression tests; included in the full 520-pass suite).",
     "a69_regression_tests": "PASS (2 post-dotenv config/boot tests from the A69 base closure; included in the full 522-pass suite).",
     "a70_entrypoint_identity": "PASS (A70 identity closure and A69 merged identity execute before --validate-only and persistent __main__/main(); regression passed).",
-    "archive_crc": "PASS (99/99 ZIP entries; CRC verified).",
-    "archive_inventory": "PASS (99/99 files exactly match FINAL_MANIFEST.archive_contents; no duplicates).",
+    "archive_crc": "PASS: ZipFile.testzip() returned None on the last FINAL_PRODUCTION_RELEASE.zip; clean extraction passed.",
+    "archive_inventory": "PASS: 99 unique ZIP entries; exact match to FINAL_MANIFEST.json.",
     "audit_refresh_2026_11_16": {
       "a70_entrypoint_identity": "PASS; A70 closure is before --validate-only and __main__, A69 merged identity is set before both; stable A66 distribution tag preserved.",
       "compileall": "PASS",
@@ -389,12 +395,12 @@
     },
     "boot_missing_credentials_diagnostic": "PASS ([V702-BOOT-STOP] emitted without secret values; mandatory authenticated MEXC requirement retained).",
     "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
-    "compileall": "PASS (73/73 Python files; final ZIP extraction).",
+    "compileall": "PASS: compileall and explicit py_compile for 73/73 Python files from final ZIP extraction.",
     "docker_linux_amd64_python312": "NOT TESTED",
     "dotenv_config_load_order": "PASS (SCALPER_DB and Telegram display/link aliases applied after load_dotenv; injected environment precedence retained).",
     "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "execution_authority": false,
-    "full_pytest": "PASS (526 passed, 1 skipped, 0 failed; 527 collected; Python 3.13.5; 30.24 seconds; `pytest -vv -x`; final canonical ZIP extraction).",
+    "full_pytest": "PASS (544 passed, 1 skipped, 0 failed; 545 collected; 58 modules; 32.53s; single process; Python 3.13.5).",
     "integration_subset": "PASS (76 targeted tests; subset overlaps full suite).",
     "live_mexc": "NOT TESTED",
     "module_imports": "PASS (14/14 production/helper modules; 0 missing internal imports; no live network).",
@@ -443,19 +449,219 @@
     },
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "profitability": "NOT VERIFIED",
-    "py_compile": "PASS (73/73 Python files; final ZIP extraction).",
+    "py_compile": "PASS (73/73 Python files; explicit per-file compile).",
     "pytest": "PASS (526 passed, 1 skipped, 0 failed; 527 collected; Python 3.13.5; 30.24 seconds; `pytest -vv -x`; final canonical ZIP extraction).",
     "pytest_collection": "527 collected; 526 passed; 1 historical A51 fixture skipped; 0 failed; final canonical ZIP extraction.",
     "pytest_single_process": "PASS (526 passed, 1 skipped, 0 failed; 527 collected; Python 3.13.5; 30.24 seconds; `pytest -vv -x`; final canonical ZIP extraction).",
     "python_compile": "PASS (73/73 Python source files).",
     "railway_startup_diagnosis": "Root cause NOT PROVEN from screenshots; repeated MSE/T17/T18/timeout rows reproduced as synthetic self-tests. Compare actual service Start Command and memory limit with local validation peak RSS.",
     "selftest_log_context_isolation": "PASS (synthetic events remain below WARNING only inside self-test ContextVar; live worker thread remains outside scope)",
-    "sha256": "PASS (98/98 non-self entries verified against A66_SHA256SUMS.txt).",
-    "sha256_checksums": "PASS (98/98 non-self package files match A66_SHA256SUMS.txt).",
-    "sha256_verification": "PASS (98/98 non-self package files match A66_SHA256SUMS.txt).",
+    "sha256": "PASS: 98/98 non-self package files verified against A66_SHA256SUMS.txt after final ZIP extraction.",
+    "sha256_checksums": "PASS: 98/98 non-self package files verified against A66_SHA256SUMS.txt after final ZIP extraction.",
+    "sha256_verification": "PASS: 98/98 non-self package files verified against A66_SHA256SUMS.txt after final ZIP extraction.",
     "telegram_real_delivery": "NOT TESTED",
-    "validate_only": "PASS (exit=0; bot_started=false; live_threads=[]; 11.37 seconds; peak RSS 551204 KiB; final canonical ZIP extraction).",
-    "zip_inventory": "PASS (99 unique entries; exact match with FINAL_MANIFEST.archive_contents)."
+    "validate_only": "PASS (exit 0; bot_started=false; live_threads=[]; no MEXC/Telegram secrets present; 11.13s; peak RSS 554056 KiB).",
+    "zip_inventory": "PASS: 99 unique files; final ZIP extraction matches manifest inventory exactly.",
+    "a73_scope": "7 confirmed issues corrected: 6 runtime/logic defects plus 1 stale .env.example credentials statement; 10 existing files modified; none added/deleted.",
+    "a73_targeted_regressions": "PASS: 17 passed, 0 failed.",
+    "a73_full_pytest": {
+      "status": "PASS_GROUPED_BATCHES",
+      "collected": 545,
+      "passed": 544,
+      "skipped": 1,
+      "failed": 0,
+      "test_modules": 58,
+      "batches": [
+        {
+          "modules": 15,
+          "passed": 89,
+          "skipped": 0,
+          "failed": 0,
+          "pytest_seconds": 15.28
+        },
+        {
+          "modules": 15,
+          "passed": 111,
+          "skipped": 0,
+          "failed": 0,
+          "pytest_seconds": 10.74
+        },
+        {
+          "modules": 15,
+          "passed": 171,
+          "skipped": 1,
+          "failed": 0,
+          "pytest_seconds": 15.72
+        },
+        {
+          "modules": 13,
+          "passed": 173,
+          "skipped": 0,
+          "failed": 0,
+          "pytest_seconds": 12.66
+        }
+      ],
+      "summed_pytest_seconds": 54.4,
+      "process_exit_code": 0,
+      "python": "3.13.5",
+      "command": "python -m pytest -q <four non-overlapping test-module batches>",
+      "skip_reason": "test_release_contracts.py:375 requires a historical A51 log not packaged in the clean source release.",
+      "method": "The exact final ZIP was clean-extracted. All 58 test modules were run in four non-overlapping batches; every batch exited 0. Totals: 544 passed, 1 skipped, 0 failed."
+    },
+    "a73_compile": "PASS: compileall and explicit py_compile for 73/73 Python files.",
+    "a73_validate_only": {
+      "status": "PASS",
+      "exit_code": 0,
+      "bot_started": false,
+      "live_threads": [],
+      "wall_seconds": 11.09,
+      "peak_rss_kib": 553964,
+      "secrets_present": false,
+      "log_marker": "[V702-VALIDATE-EXIT] one_shot=true bot_started=false exit_code=0"
+    },
+    "a73_runtime_env": "Python 3.13.5; target Python 3.12/Linux amd64 and Docker image were not exercised.",
+    "a73_external_integrations": "NOT TESTED LIVE: MEXC authenticated API, actual orders, native stops, Telegram network delivery, Docker/Railway and profitability.",
+    "a73_final_verification_2026_11_16": {
+      "inventory": "99/99 files; final ZIP extracted successfully; exact manifest inventory; no duplicate, added or missing paths.",
+      "source_changes": "7/7 A73 confirmed issues corrected; 10 files modified including checksum ledger; 0 added; 0 removed.",
+      "archive_crc": "PASS: ZipFile.testzip() returned None on the last ZIP and clean extraction completed.",
+      "sha256": "PASS: 98/98 non-self package files match A66_SHA256SUMS.txt.",
+      "compile": "PASS: compileall and explicit py_compile for 73/73 Python files.",
+      "pytest": {
+        "status": "PASS_GROUPED_BATCHES",
+        "collected": 545,
+        "passed": 544,
+        "skipped": 1,
+        "failed": 0,
+        "test_modules": 58,
+        "batches": [
+          {
+            "modules": 15,
+            "passed": 89,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 15.28
+          },
+          {
+            "modules": 15,
+            "passed": 111,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 10.74
+          },
+          {
+            "modules": 15,
+            "passed": 171,
+            "skipped": 1,
+            "failed": 0,
+            "pytest_seconds": 15.72
+          },
+          {
+            "modules": 13,
+            "passed": 173,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 12.66
+          }
+        ],
+        "summed_pytest_seconds": 54.4,
+        "process_exit_code": 0,
+        "python": "3.13.5",
+        "command": "python -m pytest -q <four non-overlapping test-module batches>",
+        "skip_reason": "test_release_contracts.py:375 requires a historical A51 log not packaged in the clean source release.",
+        "method": "The exact final ZIP was clean-extracted. All 58 test modules were run in four non-overlapping batches; every batch exited 0. Totals: 544 passed, 1 skipped, 0 failed."
+      },
+      "validate_only": {
+        "status": "PASS",
+        "exit_code": 0,
+        "bot_started": false,
+        "live_threads": [],
+        "wall_seconds": 11.09,
+        "peak_rss_kib": 553964,
+        "secrets_present": false,
+        "log_marker": "[V702-VALIDATE-EXIT] one_shot=true bot_started=false exit_code=0"
+      },
+      "selftest": "PASS: final extracted validate-only structured payload reported pass=true; internal execution tests use mocks/dry-run adapter, not live exchange.",
+      "external_integrations": "NOT TESTED LIVE: MEXC authenticated API, actual orders, native stops, Telegram network delivery, Docker/Railway target deployment and profitability.",
+      "structural_refactor": "NOT COMPLETED; main.py remains 104647 lines, 1480 top-level definitions, 11 duplicate names / 12 extra redefinitions. Broad extraction deferred to avoid changing order-dependent runtime wrappers without parity tests.",
+      "production_disposition": "MONITOR_ONLY_NO_NEW_BUYS / NO_GO_UNATTENDED_LIVE"
+    },
+    "a73_final_zip_verification": {
+      "archive_name": "FINAL_PRODUCTION_RELEASE.zip",
+      "archive_entries": 99,
+      "crc_test": "PASS (ZipFile.testzip() returned None)",
+      "clean_extraction": "PASS",
+      "manifest_inventory_match": "PASS (99/99; no duplicates)",
+      "sha256_ledger": "PASS (98/98 files)",
+      "python_compile": "PASS (73/73)",
+      "pytest": {
+        "status": "PASS_GROUPED_BATCHES",
+        "collected": 545,
+        "passed": 544,
+        "skipped": 1,
+        "failed": 0,
+        "test_modules": 58,
+        "batches": [
+          {
+            "modules": 15,
+            "passed": 89,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 15.28
+          },
+          {
+            "modules": 15,
+            "passed": 111,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 10.74
+          },
+          {
+            "modules": 15,
+            "passed": 171,
+            "skipped": 1,
+            "failed": 0,
+            "pytest_seconds": 15.72
+          },
+          {
+            "modules": 13,
+            "passed": 173,
+            "skipped": 0,
+            "failed": 0,
+            "pytest_seconds": 12.66
+          }
+        ],
+        "summed_pytest_seconds": 54.4,
+        "process_exit_code": 0,
+        "python": "3.13.5",
+        "command": "python -m pytest -q <four non-overlapping test-module batches>",
+        "skip_reason": "test_release_contracts.py:375 requires a historical A51 log not packaged in the clean source release.",
+        "method": "The exact final ZIP was clean-extracted. All 58 test modules were run in four non-overlapping batches; every batch exited 0. Totals: 544 passed, 1 skipped, 0 failed."
+      },
+      "validate_only": {
+        "status": "PASS",
+        "exit_code": 0,
+        "bot_started": false,
+        "live_threads": [],
+        "wall_seconds": 11.09,
+        "peak_rss_kib": 553964,
+        "secrets_present": false,
+        "log_marker": "[V702-VALIDATE-EXIT] one_shot=true bot_started=false exit_code=0"
+      },
+      "live_network_or_orders": false
+    }
   },
-  "verification_note": "A72 public-only discovery and independent BTC macro are included. Offline pytest: 540 passed, 1 historical skip, 0 failed (541 collected; 58 modules in four batches); compileall/py_compile 73 of 73 and no-secret validate-only passed. Final ZIP CRC, inventory and checksums are reverified during packaging. MEXC/Telegram live integrations and profitability remain unverified."
+  "verification_note": "A72 public-only discovery and independent BTC macro are included. Offline pytest: 540 passed, 1 historical skip, 0 failed (541 collected; 58 modules in four batches); compileall/py_compile 73 of 73 and no-secret validate-only passed. Final ZIP CRC, inventory and checksums are reverified during packaging. MEXC/Telegram live integrations and profitability remain unverified.",
+  "a73_scope": "7 confirmed issues corrected: 6 runtime/logic defects plus 1 stale .env.example credentials statement; 10 existing files modified including checksum ledger; none added/deleted.",
+  "a73_confirmed_only_telegram_alerts": true,
+  "a73_tradingview_links": true,
+  "a73_swing_outcome_tracking": "Closed 1h OHLC, seven-day default TTL; intraday uses closed 5m OHLC.",
+  "a73_defects_found": 7,
+  "a73_defects_fixed": 7,
+  "a73_modified_files": 10,
+  "a73_files_added": 0,
+  "a73_files_removed": 0,
+  "active_confirmed_alert_revision_current": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
+  "supplemental_confirmed_alert_revision": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
+  "a73_alert_revision": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16"
 }

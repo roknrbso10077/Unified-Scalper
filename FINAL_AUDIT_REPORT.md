@@ -797,3 +797,120 @@ The final artifact `/mnt/data/FINAL_PRODUCTION_RELEASE.zip` was extracted into a
 - No database, `.env`, credentials, caches or bytecode were packed.
 
 The complete one-process pytest invocation exceeded the execution tool timeout; the test suite was therefore run by all 58 test modules in four separate batches, all of which completed successfully. No single-process full-suite pass is claimed.
+
+---
+
+# A73 — Final confirmed-opportunity delivery and multi-timeframe follow-up audit (2026-11-16)
+
+**Audited source:** the user-uploaded `FINAL_PRODUCTION_RELEASE(3).zip`, extracted as the source baseline.  
+**Canonical distribution identity:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (kept for compatibility).  
+**Supplemental corrective revision:** `A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16`.  
+**Final operating authority:** `MONITOR_ONLY_NO_NEW_BUYS`; distribution decision remains `NO_GO_UNATTENDED_LIVE`.
+
+## A73.1 User-facing behavioral requirements
+
+The Opportunity Hunter now distinguishes a stored/forming candidate from an alert-worthy opportunity:
+
+- `WATCH` is retained in SQLite for internal observation and diagnostics, but is not delivered to Telegram.
+- `PREQUAL_PASS` is an internal pipeline milestone only. It cannot, by itself, trigger a Telegram `CONFIRMED` alert because final score and cost/execution gates may still reject it.
+- A `CONFIRMED` alert is permitted for a named closed-candle technical trigger (explicitly labelled technical-only), or after the canonical `SCORE_PASS`. `TRADEABLE` still requires canonical `PRESEND_PASS`; it is not a submitted order or a fill.
+- Every Hunter alert includes a MEXC Spot TradingView chart URL, analytical entry, invalidation, reference targets, and its follow-up candle interval.
+- Existing strategy-engine candidates marked `SWING` retain their style/timeframe metadata. Repeated discovery cycles anchor identity to the relevant closed candle rather than a changing per-cycle generation timestamp, preventing duplicate rows for the same family/setup/timeframe/candle.
+- Intraday outcome tracking uses closed 5m OHLC candles; Swing outcome tracking uses closed 1h OHLC candles and defaults to a seven-day tracking lifetime. Existing discovery pattern logic remains 5m/15m; Swing coverage comes from existing strategy engines rather than a newly invented Swing signal engine.
+- Outcome updates are shadow/reference observations only. If one OHLC candle touches a stop and target, the stop is counted first conservatively because bar data cannot prove intrabar ordering. A TP/SL touch does not prove entry, order submission, fill, fees, or realized PnL.
+
+## A73.2 Confirmed defects and actual corrections
+
+| # | Location in `main.py` | Confirmed defect | Effect | Applied correction |
+|---:|---|---|---|---|
+| 1 | `OpportunityHunter._queue_alert` / `scan_market_map` (around lines 103127–103380) | `WATCH` rows could reach the Telegram queue through the Hunter's generic state path. | Telegram could present a still-forming setup as an opportunity worth following. | Added one shared alert-eligibility policy and applied it both before queueing and again before delivery. `WATCH` is persisted but suppressed. |
+| 2 | `OpportunityHunter.on_pipeline_event` (around line 102700) | `PREQUAL_PASS` was treated as an externally confirmed milestone even though Score and PreSend gates were still pending. | Premature notification of candidates that could later fail downstream gates. | `PREQUAL_PASS` only updates internal evidence/state. `SCORE_PASS` produces the canonical scored confirmation; `PRESEND_PASS` alone produces `TRADEABLE`. |
+| 3 | `OpportunityHunter.observe_strategy_candidate` (around line 102622) | Strategy observation identity depended on the pipeline-generated key, which changes with generated time/cycle. | The same market setup could create repeated Hunter rows/alerts across scan cycles. | Added a stable key from symbol, family, pattern, timeframe profile and last closed anchor candle; preserved the original pipeline key only as provenance evidence. |
+| 4 | `OpportunityTelegramNotifier._tradingview_link` and `OpportunityHunter._message` (around lines 13460 and 103197) | Hunter alert messages lacked an actionable chart link. | The user could not jump directly from a signal to the relevant TradingView market chart. | Added a URL-encoded MEXC Spot TradingView chart link and included strategy style and the outcome-monitoring interval in the message. |
+| 5 | `observe_strategy_candidate` / `_outcome_interval_sec` (around lines 102622–102678 and 102971) | Strategy style/timeframe and observation horizon were not preserved consistently for the Hunter's non-5m candidates. | A non-scalping/Swing strategy could be treated as an intraday candidate or deduplicated/expired too quickly. | Preserve `strategy_style` and `timeframe_profile`; add a 604,800-second default Swing TTL, and bind Swing tracking to 1h closed bars. |
+| 6 | `_advance_shadow_outcome` / `scan_market_map` (around lines 102985–103400) | Outcome advancement and labels were fixed to a 5m horizon. | Swing TP/SL progress could be evaluated on the wrong cadence or reported with the wrong interval. | Resolve the interval per idea, cache the corresponding already-provided 5m/1h frame, advance only closed candles, and label stop/target/expiry events with the actual horizon. |
+| 7 | `.env.example` | A stale comment incorrectly stated that MEXC private credentials are required even for monitor-only scanning. | Operators could unnecessarily expose private keys or think public discovery would stop without them. | Corrected the example: public market scanning needs no keys; private read-only credentials are only relevant when recovered positions or unresolved intents require reconciliation/protection. |
+
+**Confirmed defects in this A73 scope: 7 (6 runtime/logic + 1 configuration-documentation inconsistency). Fixes applied: 7.** This count refers only to the independently confirmed A73 issues above, not to every historical issue documented in earlier release sections. No core strategy engine was deleted; no score floor, entry gate, cost gate, risk cap, or order-execution authority was relaxed.
+
+## A73.3 Changed files and archive accounting
+
+| File | Change |
+|---|---|
+| `main.py` | Confirmed-only notification policy; Prequal/Score/PreSend state separation; stable strategy-candidate identity; TradingView message link; style-aware TTL and 5m/1h shadow outcome tracking; runtime revision metadata. |
+| `test_v702_production_audit_fixes.py` | Updated confirmation-state/ACK/message tests; added WATCH suppression, 1h Swing outcome, stable Swing deduplication/TTL and scan-level alert-policy tests. |
+| `test_production_guardrails.py` | Updated the rate-limit contract test to use a valid formed/confirmed alert instead of the now-suppressed WATCH state. |
+| `README.md` | Corrected the confirmation contract, documented confirmed-only alerts, TradingView, Swing tracking and Colab steps. |
+| `CHANGELOG.md` | Added the A73 corrective release notes. |
+| `FINAL_AUDIT_REPORT.md` | Added this final A73 defect/fix/verification record. |
+| `.env.example` | Corrected stale MEXC private-credential guidance for monitor-only public scanning. |
+| `FINAL_MANIFEST.json` | Refreshed canonical source digest and A73 verification metadata; retained compatibility identity fields. |
+| `A66_RELEASE_MANIFEST.json` | Synchronized A73 source digest and release-evidence metadata while preserving A66 lineage. |
+| `A66_SHA256SUMS.txt` | Regenerated the current package checksum ledger. |
+
+- Original ZIP inventory: **99 entries**.
+- Final ZIP inventory: **99 entries** (within the 99-file ceiling).
+- Python source files in the package: **73**.
+- Files modified: **10**. Files added: **0**. Files removed: **0**. No required component was deleted to satisfy the file ceiling.
+- The generated SQLite runtime database, `.env`, bytecode, caches, and virtual environments are excluded from the release archive. `.env.example` remains included with placeholders only.
+
+## A73.4 Verification boundary
+
+The final report records exact results after the release archive has been built and extracted for a clean-room verification. The following distinctions are mandatory:
+
+- Offline unit/integration tests use synthetic candles, temporary SQLite databases, mocks and dry-run/validate-only controls. They do not represent live market observations.
+- `--validate-only` must exit with `bot_started=false` and no live worker startup. No account keys or Telegram token are required for that validation path.
+- No live exchange order, actual account execution, Telegram network delivery, or live profitability test is part of this audit.
+- Public market discovery and TradingView link format can be tested locally, but current symbol availability, a user's TradingView access, MEXC data stability, network behavior and real Telegram delivery require a separate supervised environment check.
+- Colab is suitable for validation or supervised monitoring, not durable unattended monitoring: its runtime may disconnect and lose local database state unless external persistent storage is explicitly configured.
+
+## A73.5 Google Colab runbook
+
+1. Upload `FINAL_PRODUCTION_RELEASE.zip` and extract it into `/content/unified-scalper`.
+2. Install `requirements.txt`, then run `python -m compileall -q .`, `python -m pytest -q`, and `python -u main.py --validate-only` before starting the monitor.
+3. To receive Telegram messages, supply `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` using Colab Secrets or `getpass`; never write credentials into a notebook cell, source file, or ZIP.
+4. Keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`. Start `python -u main.py` only for supervised monitor-only operation. Public MEXC market discovery does not require private exchange keys; Telegram delivery requires a valid token and chat ID.
+5. The first signal message is sent only when the technical trigger or canonical score milestone is reached. Its TradingView link opens the MEXC Spot chart. Follow-up messages report closed-bar TP1/TP2/TP3/SL reference touches at 5m for intraday ideas and 1h for Swing ideas. These are not live trade fills.
+6. Colab is not an always-on host. Use durable external storage and a continuously supervised host for persistent monitoring; do not interpret this package as approval for unattended live trading.
+
+
+## A73.6 Final verification from clean extracted release (2026-11-16)
+
+The checks below were executed against the exact extracted copy that is being packaged, not against a separate working tree:
+
+| Check | Observed result |
+|---|---|
+| Original archive inventory | 99 entries; CRC test returned `None`. |
+| Final release inventory | 99 unique files; exact match to `FINAL_MANIFEST.json`; no added or removed paths. |
+| A73 change accounting | 7 confirmed issues corrected (6 runtime/logic and 1 stale `.env.example` instruction); 10 modified files including the regenerated checksum ledger; 0 files added; 0 files removed. |
+| Compile | `python -m compileall -q .` passed; explicit `py_compile` passed for 73/73 Python files. |
+| Full unit/regression suite | `python -m pytest -q`: **544 passed, 1 skipped, 0 failed; 545 collected; 58 test modules; pytest time 32.53s; process exit 0**. |
+| Skipped test | `test_release_contracts.py:375` requires a historical A51 log that is not part of the clean source release. No substitute log or synthetic pass was created. |
+| Runtime validation | `python -u main.py --validate-only`: **PASS, exit 0**, `bot_started=false`, `live_threads=[]`; no MEXC or Telegram credentials were present. Wall time 11.13s; peak RSS 554,056 KiB. |
+| Real exchange / messaging | No authenticated MEXC request, order, native stop, or real Telegram delivery was performed. |
+| Target deployment | Python 3.12/Linux amd64, Docker, Railway, full dependency installation and profitability remain unverified. The audit runtime was Python 3.13.5. |
+
+The single-process full pytest run above supersedes the earlier historical note that the one-process run exceeded the tool timeout. The historical A51 fixture remains the only skip.
+
+### A73.7 Refactoring boundary and unresolved engineering work
+
+The confirmed A73 fixes were applied in the existing source modules without replacing the original system. A broad decomposition of `main.py` was **not** represented as completed: it remains 104,647 lines with 1,480 top-level definitions and 11 multiply-defined names (12 extra redefinitions). These order-sensitive wrappers and shared runtime globals are part of the current compatibility chain; moving them without staged parity tests would risk changing execution/protection authority. The release therefore includes targeted corrective refactoring and regression coverage, not a full modular rewrite.
+
+No profitability edge is certified. The system remains Spot / LONG_ONLY and `MONITOR_ONLY_NO_NEW_BUYS`; the package decision remains `NO_GO_UNATTENDED_LIVE`.
+
+### A73.8 Final ZIP re-extraction and release verification (2026-11-16)
+
+The following checks were executed against the last release source tree and ZIP contents after clean extraction into `/mnt/data/final_delivery_extract`. The only packaging edits after these code checks were this report/manifest evidence and the regenerated checksum ledger; no Python source or test module changed.
+
+| Check | Final release result |
+|---|---|
+| ZIP extraction / CRC | PASS; `ZipFile.testzip()` returned `None` and the final archive extracted successfully. |
+| Inventory | PASS; 99 unique entries, exactly matching `FINAL_MANIFEST.json`; no duplicate paths, added files or missing files. |
+| SHA-256 ledger | PASS; all 98 non-self package entries match `A66_SHA256SUMS.txt`. |
+| Python compile | PASS; `compileall` and explicit `py_compile` completed for 73/73 Python files. |
+| Unit / integration regression suite | PASS across four non-overlapping batches covering all 58 test modules: 89 + 111 + 171 + 173 = **544 passed, 1 skipped, 0 failed** (545 total). Every batch exited 0; combined pytest-reported time was 54.40 seconds on Python 3.13.5. |
+| Skipped test | `test_release_contracts.py:375` requires a historical A51 log not packaged in the clean source release. No substitute log or synthetic pass was created. |
+| Validate-only / internal self-test | PASS; `python -u main.py --validate-only` exited 0 (11.09 seconds in the recorded run; peak RSS 553,964 KiB), returned `pass=true`, `bot_started=false`, `live_threads=[]`, and no MEXC / Telegram secrets were present. |
+| Live exchange / messaging | NOT TESTED live: no authenticated MEXC session, real orders, native stops, actual Telegram delivery, target-platform Docker/Railway validation or profitability claim. |
+
+A monolithic pytest invocation in the final packaging pass was interrupted by the execution timeout before emitting a summary; to avoid counting an incomplete run, the entire suite was rerun as four non-overlapping batches. The grouped results above cover every packaged test module. An earlier one-process suite also completed 544 passed / 1 skipped / 0 failed against the same Python source. This report does not claim that a full modular decomposition of `main.py` was completed.

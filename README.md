@@ -1,10 +1,19 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT + A71 CORRECTIVE INTEGRATION
+# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT + A71 CORRECTIVE INTEGRATION + A73 CONFIRMED ALERTS
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures + A70 entrypoint identity closure)  
-**Release date:** 2026-11-16 (A71 corrective integration; canonical A70 lineage retained)  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures + A70 entrypoint identity closure; A73 confirmed-alert follow-up closure)  
+**Release date:** 2026-11-16 (A73 confirmed-opportunity alert and multi-timeframe follow-up closure; canonical A70 lineage retained)  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
+
+## A73 — confirmed opportunities, TradingView and swing follow-up (2026-11-16)
+
+- Telegram no longer sends `WATCH` / forming setups. They remain persisted internally for diagnostics and can advance later.
+- `PREQUAL_PASS` alone is not a Telegram confirmation. A canonical `SCORE_PASS`, the existing named closed-candle technical trigger, or canonical `PRESEND_PASS` is required for the corresponding alert state. Technical-only confirmation is labelled clearly and is not represented as execution-ready.
+- Opportunity messages include a MEXC Spot TradingView chart link, strategy style, analytical entry, invalidation, TP1/TP2/TP3 and the closed-candle monitoring horizon.
+- Existing `SWING` strategy candidates retain their timeframe/style metadata, deduplicate by the relevant closed-bar anchor instead of per-scan generated time, and are followed on closed 1h candles with a default 7-day observation lifetime. Intraday opportunities continue to be followed on closed 5m candles.
+- TP/SL outcome notifications are based on closed OHLC reference touches only. If one candle touches stop and target, stop is conservatively counted first. This does not prove order execution, fill, fees, realized PnL, or profitability.
+- No strategy engine was added, no entry/risk/cost gate was relaxed, and no new exchange polling was added for the Hunter follow-up. The release remains `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`.
 
 ## A71 — integrated corrective production audit (2026-11-16)
 
@@ -42,7 +51,7 @@ A67 adds an independent opportunity-discovery and follow-up layer without changi
 ### Opportunity states
 
 - **WATCH:** a measured setup is forming. The Telegram message names the measured evidence and the conditions still required.
-- **CONFIRMED:** either a named technical trigger from closed candles (explicitly labelled *technical-only*, not Prequal) or a canonical `PREQUAL_PASS` / `SCORE_PASS` event.
+- **CONFIRMED:** a named trigger from a fully closed candle (explicitly labelled *technical-only*) or a canonical `SCORE_PASS`. `PREQUAL_PASS` is recorded internally but does not by itself trigger a Telegram alert.
 - **TRADEABLE:** emitted only after canonical `PRESEND_PASS`. This means the candidate passed the existing pre-send checks; it does **not** mean an order was sent, accepted, or filled.
 - **INVALIDATED / EXPIRED:** the stored thesis is closed when a closed price crosses its invalidation level or its bounded lifetime expires.
 - **COMPLETED:** A68 has recorded a final TP3 touch in the shadow-reference ledger; this is not an executed trade or realized profit.
@@ -53,9 +62,9 @@ States move forward only. Terminal rows are not resurrected by stale candidate e
 
 The bounded closed-candle scanner evaluates **BREAKOUT_CONTINUATION**, **PULLBACK_RECLAIM**, **MEAN_REVERSION**, and **RELATIVE_STRENGTH_LEADER**. It uses closed 5m/15m bars, validates OHLC relationships, rejects duplicate timestamps and stale/short history, and compares relative strength with BTC when the BTC 15m snapshot is present. The layer also observes genuine long Spot USDT candidates emitted by the existing strategy engines; it does not fabricate engine invocations or change their scoring.
 
-Default resource limits: a configured ceiling of 240 symbols per cycle, 6 new pattern alerts per scan, and a hard maximum of 3 alerts per minute; the internal ranking floor remains 55/100, opportunity TTL 3,600 seconds, and active-record cap 1,200. **240 is not the actual scan count:** the Hunter reads only keys already present in `market_data_map`. That map is bounded upstream by the existing deep-scan selection (V699 targets normal=130, elevated=150, starving=170 when that arbiter is active; actual coverage can be lower when snapshots fail validation). No additional exchange request is made for Hunter discovery. Delivery callbacks are preserved on the direct dispatcher path, so the 3/minute hard cap is enforced locally rather than sacrificing ACK/failure handling. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
+Default resource limits: a configured ceiling of 240 symbols per cycle, 6 new pattern alerts per scan, and a hard maximum of 3 alerts per minute; the internal ranking floor remains 55/100, the intraday opportunity TTL is 3,600 seconds, the Swing candidate observation TTL defaults to 604,800 seconds (7 days), and the active-record cap is 1,200. **240 is not the actual scan count:** the Hunter reads only keys already present in `market_data_map`. That map is bounded upstream by the existing deep-scan selection (V699 targets normal=130, elevated=150, starving=170 when that arbiter is active; actual coverage can be lower when snapshots fail validation). No additional exchange request is made for Hunter discovery. Delivery callbacks are preserved on the direct dispatcher path, so the 3/minute hard cap is enforced locally rather than sacrificing ACK/failure handling. The Hunter score is a ranking heuristic, **not** a probability of profit or a validated edge. Candidate and technical confirmations remain distinct from the canonical execution pipeline.
 
-The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
+The feature remains active in monitor-only mode: `MONITOR_ONLY_NO_NEW_BUYS`. `WATCH` rows are stored but not delivered to Telegram; a message is sent only after a closed-bar trigger, canonical `SCORE_PASS`, or canonical `PRESEND_PASS`. Every opportunity alert carries a TradingView MEXC Spot chart link. Intraday follow-up uses closed 5m candles; candidates explicitly marked `SWING` use closed 1h candles and a 7-day default lifetime. TP/SL results are shadow reference touches, not order fills or realized profits. No live BUY, exchange execution, risk/score/liquidity gate relaxation, or profitability claim is added. Live MEXC and Telegram delivery still require target-environment verification.
 
 ### A72 — independent public discovery and descriptive BTC macro
 
