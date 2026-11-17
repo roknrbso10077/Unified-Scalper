@@ -290,3 +290,8 @@ A74 does not create orders, enable futures, relax Prequal/Score/PreSend/risk gat
 - Initial setup alerts are subject to the Technical / Execution / Regime gates, cost-adjusted Net R:R and the per-symbol persistent delivery-ACK cooldown. Outcome updates remain deliverable even during that cooldown.
 - The independent Swing detector requires closed 1H setup candles and closed 4H direction confirmation. It uses the bounded existing market snapshot universe, not every possible exchange listing. The strategy remains Spot-long; no Futures short-side scanner was added.
 - Net outcome fields are modeled Shadow estimates using configured fee, spread, slippage and existing exit-weight assumptions. They are not actual account PnL or evidence of profitability. Missing price history at expiry is `UNKNOWN`.
+
+
+## A75 — نتيجة آخر تدقيق للحزمة المستلمة (2026-11-17)
+
+آخر إعادة تحقق على الحزمة المرفوعة أثبتت 73/73 Python compile، و557 اختبارًا ناجحًا مع اختبار تاريخي واحد متخطى، ونجاح `--validate-only` مع `bot_started=false` و`live_threads=[]`. يشرح `FINAL_AUDIT_REPORT.md` سبب رفض PULLBACK في BTC bearish ورفض السبريد المرتفع، ويفصل حالة ASTER الظلية عن الصفقة المنفذة. لم تُخفف بوابات المخاطر ولم يُضف مسار Shorts/Futures. لا يثبت هذا التدقيق الربحية أو سلامة التداول الحي؛ Python 3.12/Docker وتكامل MEXC/Telegram الحقيقي ما زالت غير مختبرة في هذه البيئة. راجع القسم 22 للتفاصيل وحدود إعادة الهيكلة.

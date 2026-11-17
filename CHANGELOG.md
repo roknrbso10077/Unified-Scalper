@@ -2513,3 +2513,12 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Corrected the Swing Relative Strength branch so an unqualified relative-strength condition cannot append a stale preceding Swing candidate; added a regression for the exact non-qualification case.
 - Extended the hard stablecoin denylist for additional common USD/EUR stable assets and bridged variants.
 - Unknown strategy-engine families now require measured volume evidence; missing volume cannot qualify an otherwise high raw score as a strong alert.
+
+
+## 2026-11-17 — A75 received-package production audit
+
+- Re-opened the user-supplied 99-file ZIP and matched its operational logs to the canonical family-regime and liquidity gates. `PULLBACK@BEARISH` is an intentional policy rejection; high spread values are correctly blocked before selection.
+- Reclassified the ASTER/USDT event accurately: read-only technical alert, followed by `SHADOW_STOP_HIT` and estimated negative Shadow result; no executed BUY or realized account loss is evidenced.
+- Re-ran Python compilation (73/73), the grouped full regression suite (557 passed, 1 historical skip, 0 failures), a 141-test focused integration/guardrail set, and `--validate-only` (exit 0, no bot or live worker started).
+- Refreshed the audit report, README, release manifests and SHA-256 ledger. No runtime source, strategy threshold, execution gate, or risk parameter was changed because no new source defect was reproduced; no files were added or deleted.
+- Recorded unresolved target-environment gaps: Python 3.12/Docker not available, `ccxt`/`aiosqlite` missing from the audit runtime, direct dependency version drift, no full transitive hash lock in the archive, and no live MEXC/Telegram or profitability evidence.

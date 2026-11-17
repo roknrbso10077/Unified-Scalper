@@ -852,5 +852,68 @@
       "production_decision": "NO_GO_UNATTENDED_LIVE"
     }
   },
-  "verification_note": "A72 public-only discovery and independent BTC macro are included. Offline pytest: 540 passed, 1 historical skip, 0 failed (541 collected; 58 modules in four batches); compileall/py_compile 73 of 73 and no-secret validate-only passed. Final ZIP CRC, inventory and checksums are reverified during packaging. MEXC/Telegram live integrations and profitability remain unverified."
+  "verification_note": "A72 public-only discovery and independent BTC macro are included. Offline pytest: 540 passed, 1 historical skip, 0 failed (541 collected; 58 modules in four batches); compileall/py_compile 73 of 73 and no-secret validate-only passed. Final ZIP CRC, inventory and checksums are reverified during packaging. MEXC/Telegram live integrations and profitability remain unverified. A75 received-package audit: 557 passed, 1 historical skip, 0 failed; compile 73/73; validate-only PASS; no source changes; no live MEXC/Telegram or profitability proof.",
+  "a75_received_package_audit": {
+    "revision": "A75-RECEIVED-PRODUCTION-AUDIT-2026-11-17",
+    "input_archive": "FINAL_PRODUCTION_RELEASE(6).zip",
+    "input_archive_sha256": "6f5a911762e68ea5c4379f4a3fce2522858ad870b049e3755015fd3c76d386ec",
+    "original_file_count": 99,
+    "final_file_count": 99,
+    "python_source_count": 73,
+    "test_module_count": 58,
+    "pytest": {
+      "collected": 558,
+      "passed": 557,
+      "skipped": 1,
+      "failed": 0,
+      "grouped_batch_passes": [
+        89,
+        111,
+        171,
+        186
+      ],
+      "skip": "test_release_contracts.py:375 requires historical A51 log not packaged"
+    },
+    "compile_check": "PASS 73/73",
+    "validate_only": "PASS exit=0 bot_started=false live_threads=[] active_env_aliases=[]",
+    "local_imports": "PASS; no missing local module references detected",
+    "static_secret_scan": "0 candidate secrets; .env absent; .env.example placeholders only",
+    "incoming_sha256_ledger": "PASS 98/98 non-self entries",
+    "confirmed_new_source_defects": 0,
+    "new_runtime_source_fixes": 0,
+    "source_code_changed": false,
+    "files_added": 0,
+    "files_removed": 0,
+    "documentation_manifest_checksum_files_to_update": 6,
+    "runtime_policy_findings": [
+      "PULLBACK is intentionally allowed only in BULLISH/NEUTRAL; BEARISH macro rejection is not an execution/Telegram failure.",
+      "Observed spread values above 0.30% correctly fail the configured liquidity policy.",
+      "ASTER/USDT was monitor-only; the bot reported SHADOW_STOP_HIT and estimated -0.666% Shadow return, not a live order or realized loss."
+    ],
+    "structural_findings": {
+      "main_py_lines": 105327,
+      "main_py_bytes": 5920383,
+      "top_level_class_function_definitions": 1493,
+      "unique_top_level_names": 1481,
+      "redefined_top_level_names": 11,
+      "missing_local_imports": 0,
+      "eval_exec_calls_found": 0,
+      "note": "Layered duplicate definitions appear to be compatibility overrides; no wholesale refactor was attempted."
+    },
+    "environment_limitations": [
+      "Audit interpreter Python 3.13.5; target is Python 3.12 and was not available.",
+      "Docker binary unavailable; target image was not built.",
+      "ccxt and aiosqlite distributions absent; python-dotenv and aiohttp differ from requirements.in pins.",
+      "Global pip check reports unrelated moviepy 2.2.1 vs pillow 12.3.0 incompatibility.",
+      "ruff, bandit, pyflakes, pip-audit unavailable.",
+      "No live MEXC/Telegram requests, real account execution, or profitability verification."
+    ],
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "profitability_verified": false
+  },
+  "a75_audit_revision": "A75-RECEIVED-PRODUCTION-AUDIT-2026-11-17",
+  "a75_source_code_changed": false,
+  "a75_test_summary": "557 passed, 1 skipped, 0 failed; 73/73 compile; validate-only PASS",
+  "file_count": 99
 }
