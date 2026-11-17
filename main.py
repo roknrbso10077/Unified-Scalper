@@ -1282,9 +1282,16 @@ def _apply_loaded_environment_config() -> None:
     _shadow_alerts = _env_first("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE")
     if _shadow_alerts is not None:
         CONFIG["V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE"] = _shadow_alerts.strip().lower() in {"1", "true", "yes", "on"}
+    for _flag_key in ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", "V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE"):
+        _raw_flag = _env_first(_flag_key)
+        if _raw_flag is not None:
+            CONFIG[_flag_key] = _raw_flag.strip().lower() in {"1", "true", "yes", "on"}
     for _env_key, _cfg_key in (("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", "V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH"),
                                ("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", "V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC"),
-                               ("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", "V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC")):
+                               ("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", "V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC"),
+                               ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH", "V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH"),
+                               ("V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR", "V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR"),
+                               ("V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE", "V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE")):
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
@@ -1292,6 +1299,9 @@ def _apply_loaded_environment_config() -> None:
             except (TypeError, ValueError):
                 # Invalid optional tuning never changes any live safety gate.
                 pass
+    _daily_tz = _env_first("V702_INTRADAY_SHADOW_DAILY_TIMEZONE")
+    if _daily_tz:
+        CONFIG["V702_INTRADAY_SHADOW_DAILY_TIMEZONE"] = _daily_tz.strip()
 
 
 # Apply settings after load_dotenv and before the runtime snapshots any config
@@ -27506,7 +27516,9 @@ async def run_bot(universe: List[str]):
                                     f"Modeled net at target: {float(_payload.get('target_net_pct_after_costs', 0.0) or 0.0):.3f}% / {float(_payload.get('target_net_r_after_costs', 0.0) or 0.0):.3f}R\n"
                                     f"Economic assessment: {_economic_label}\n"
                                     f"{_lsa_line}\n"
-                                    "Closed-candle research alert only. No BUY order, no selector handoff, and no live execution authority."
+                                    f"Signal ID: <code>{_safe_tg_text(str(_alert.get('sample_id') or '')[:12])}</code>\n"
+                                    + str(OpportunityTelegramNotifier._links_html(str(_alert.get("symbol") or ""), int(_alert.get("signal_ts_ms") or 0), str(_alert.get("strategy_mode") or "MICRO"))) + "\n"
+                                    + "Closed-candle research alert only. No BUY order, no selector handoff, and no live execution authority."
                                 )
                                 try:
                                     _accepted = await TelegramDispatcher.enqueue(_msg)
@@ -27523,6 +27535,110 @@ async def run_bot(universe: List[str]):
                         STATS["v702_intraday_micro_shadow_tg_blocked"] = int(STATS.get("v702_intraday_micro_shadow_tg_blocked", 0) or 0) + _micro_tg_blocked
                         if _micro_tg_queued or _micro_tg_blocked:
                             logger.info("[V702-A9-MICRO-SHADOW-TG] queued=%d blocked=%d lane=SHADOW_ONLY_NO_ORDERS", _micro_tg_queued, _micro_tg_blocked)
+
+                        # A77: durable, de-duplicated result notifications for each previously alerted micro sample.
+                        _outcome_tg_queued = _outcome_tg_blocked = 0
+                        if bool(CONFIG.get("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)):
+                            _pending_outcomes = await asyncio.to_thread(
+                                _service.pending_micro_outcomes,
+                                max(1, min(20, int(CONFIG.get("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH", 5)))),
+                            )
+                            for _outcome_item in _pending_outcomes:
+                                _op = _outcome_item.get("payload", {}) if isinstance(_outcome_item.get("payload"), dict) else {}
+                                _osym = str(_outcome_item.get("symbol") or _op.get("symbol") or "")
+                                _omode = str(_outcome_item.get("strategy_mode") or _op.get("strategy_mode") or "MICRO")
+                                _ostate = str(_outcome_item.get("outcome") or _op.get("outcome") or "UNKNOWN")
+                                _titles = {
+                                    "TP1": ("🟢", "TP1 HIT — TARGET REACHED"),
+                                    "SL": ("🔴", "STOP LOSS HIT"),
+                                    "TIMEOUT": ("⏱", "TIMEOUT — NO TARGET/STOP WITHIN WINDOW"),
+                                    "TRAILING_EXIT": ("🟡", "TRAILING EXIT"),
+                                    "AMBIGUOUS_DATA_GAP": ("⚠️", "OUTCOME UNKNOWN — DATA GAP"),
+                                }
+                                _emo, _title = _titles.get(_ostate, ("ℹ️", _ostate))
+                                def _fmt_optional_price(_v):
+                                    try:
+                                        _n = float(_v)
+                                        return (f"{_n:.8f}".rstrip("0").rstrip(".")) if _n < 1 else (f"{_n:.6f}".rstrip("0").rstrip("."))
+                                    except Exception:
+                                        return "n/a"
+                                def _fmt_optional_num(_v, suffix=""):
+                                    try:
+                                        return f"{float(_v):+.3f}{suffix}"
+                                    except Exception:
+                                        return "n/a"
+                                _ambiguous = bool(_op.get("ambiguous")) or _ostate == "AMBIGUOUS_DATA_GAP"
+                                _net_r_text = "NOT SCORED — missing candle data" if _ambiguous else _fmt_optional_num(_op.get("net_r"), "R")
+                                _net_pct_text = "NOT SCORED" if _ambiguous else _fmt_optional_num(_op.get("net_pct"), "%")
+                                _links = OpportunityTelegramNotifier._links_html(_osym, int(_op.get("signal_ts_ms") or 0), _omode)
+                                _outcome_msg = (
+                                    f"{_emo} <b>MICRO SHADOW RESULT — MONITOR ONLY</b>\n"
+                                    f"<b>{OpportunityTelegramNotifier._escape(_osym)}</b> | {OpportunityTelegramNotifier._escape(_omode)}\n"
+                                    f"<b>{OpportunityTelegramNotifier._escape(_title)}</b>\n"
+                                    f"Signal ID: <code>{OpportunityTelegramNotifier._escape(str(_outcome_item.get('sample_id') or '')[:12])}</code>\n"
+                                    f"Entry: <code>{_fmt_optional_price(_op.get('entry'))}</code> · Stop: <code>{_fmt_optional_price(_op.get('stop'))}</code>\n"
+                                    f"Target: <code>{_fmt_optional_price(_op.get('target'))}</code> · Exit reference: <code>{_fmt_optional_price(_op.get('exit_price'))}</code>\n"
+                                    f"Outcome: <code>{OpportunityTelegramNotifier._escape(_ostate)}</code> · Bars: <code>{int(_op.get('bars_seen') or 0)}</code>\n"
+                                    f"Gross result: <code>{_fmt_optional_num(_op.get('gross_r'), 'R')}</code>\n"
+                                    f"Net after modeled costs: <code>{_net_r_text}</code> / <code>{_net_pct_text}</code>\n"
+                                    f"Round-trip modeled cost: <code>{float(_op.get('cost_pct') or 0.0):.3f}%</code>\n"
+                                    f"{_links}\n"
+                                    "Virtual outcome from closed candles only. Not an exchange fill, not realized P&amp;L, and no live order was placed."
+                                )
+                                try:
+                                    _accepted_outcome = await TelegramDispatcher.enqueue(_outcome_msg)
+                                except Exception as _outcome_tg_exc:
+                                    _accepted_outcome = False
+                                    logger.warning("[V702-A9-MICRO-OUTCOME-TG] enqueue exception: %s", type(_outcome_tg_exc).__name__)
+                                if _accepted_outcome:
+                                    if await asyncio.to_thread(_service.mark_micro_outcome_queued, _outcome_item.get("sample_id"), "telegram_durable_outbox_accepted"):
+                                        _outcome_tg_queued += 1
+                                else:
+                                    _outcome_tg_blocked += 1
+                        STATS["v702_intraday_micro_outcome_tg_queued"] = int(STATS.get("v702_intraday_micro_outcome_tg_queued", 0) or 0) + _outcome_tg_queued
+                        STATS["v702_intraday_micro_outcome_tg_blocked"] = int(STATS.get("v702_intraday_micro_outcome_tg_blocked", 0) or 0) + _outcome_tg_blocked
+                        if _outcome_tg_queued or _outcome_tg_blocked:
+                            logger.info("[V702-A9-MICRO-OUTCOME-TG] queued=%d blocked=%d lane=SHADOW_ONLY_NO_ORDERS", _outcome_tg_queued, _outcome_tg_blocked)
+
+                        # A77: previous-Cairo-day per-strategy summary, persisted until Telegram accepts it.
+                        _daily_tg_queued = _daily_tg_blocked = 0
+                        if bool(CONFIG.get("V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE", True)):
+                            _daily_item = await asyncio.to_thread(_service.ensure_daily_telegram_report)
+                            if _daily_item:
+                                _dp = _daily_item.get("payload", {}) if isinstance(_daily_item.get("payload"), dict) else {}
+                                _dlines = [f"📊 <b>MICRO / INTRADAY SHADOW DAILY REPORT</b>",
+                                           f"Date: <code>{OpportunityTelegramNotifier._escape(str(_daily_item.get('report_date') or ''))}</code> · TZ: <code>{OpportunityTelegramNotifier._escape(str(_dp.get('timezone') or 'Africa/Cairo'))}</code>",
+                                           "Mode: <b>SHADOW ONLY — no live orders</b>"]
+                                for _dmode in ("MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M", "VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"):
+                                    _dr = (_dp.get("strategies", {}) or {}).get(_dmode, {})
+                                    _do = _dr.get("outcomes", {}) or {}
+                                    _avg_r = _dr.get("avg_net_r")
+                                    _avg_pct = _dr.get("avg_net_pct")
+                                    _avg_text = "n/a" if _avg_r is None else f"{float(_avg_r):+.2f}R / {float(_avg_pct or 0.0):+.3f}%"
+                                    _dlines.append(
+                                        f"\n<b>{OpportunityTelegramNotifier._escape(_dmode)}</b>"
+                                        f" · Signals {_dr.get('signals_created', 0)} · Resolved {_dr.get('resolved', 0)}"
+                                        f" · TP {int(_do.get('TP1', 0))} / SL {int(_do.get('SL', 0))}"
+                                        f" · Timeout {int(_do.get('TIMEOUT', 0))} / Ambiguous {int(_do.get('AMBIGUOUS_DATA_GAP', 0))}"
+                                        f" · Avg net {_avg_text}"
+                                    )
+                                _dtot = _dp.get("totals", {}) or {}
+                                _dlines.append(f"\nTotals: signals={int(_dtot.get('signals_created', 0))} resolved={int(_dtot.get('resolved', 0))} TP={int(_dtot.get('tp1', 0))} SL={int(_dtot.get('sl', 0))} timeout={int(_dtot.get('timeouts', 0))} ambiguous={int(_dtot.get('ambiguous', 0))}")
+                                try:
+                                    _accepted_daily = await TelegramDispatcher.enqueue("\n".join(_dlines))
+                                except Exception as _daily_tg_exc:
+                                    _accepted_daily = False
+                                    logger.warning("[V702-A9-DAILY-TG] enqueue exception: %s", type(_daily_tg_exc).__name__)
+                                if _accepted_daily:
+                                    if await asyncio.to_thread(_service.mark_daily_telegram_report_queued, _daily_item.get("report_date"), "telegram_durable_outbox_accepted"):
+                                        _daily_tg_queued += 1
+                                else:
+                                    _daily_tg_blocked += 1
+                        STATS["v702_intraday_daily_report_tg_queued"] = int(STATS.get("v702_intraday_daily_report_tg_queued", 0) or 0) + _daily_tg_queued
+                        STATS["v702_intraday_daily_report_tg_blocked"] = int(STATS.get("v702_intraday_daily_report_tg_blocked", 0) or 0) + _daily_tg_blocked
+                        if _daily_tg_queued or _daily_tg_blocked:
+                            logger.info("[V702-A9-DAILY-TG] queued=%d blocked=%d timezone=%s", _daily_tg_queued, _daily_tg_blocked, CONFIG.get("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo"))
+
                         _report = await asyncio.to_thread(_service.periodic_report_if_due)
                         return {
                             "v702_intraday_shadow_fetch_ok": _ok_count,
@@ -27532,6 +27648,10 @@ async def run_bot(universe: List[str]):
                             "v702_intraday_shadow_batch_selected_completed": len(_selected),
                             "v702_intraday_micro_shadow_tg_queued": _micro_tg_queued,
                             "v702_intraday_micro_shadow_tg_blocked": _micro_tg_blocked,
+                            "v702_intraday_micro_outcome_tg_queued": _outcome_tg_queued,
+                            "v702_intraday_micro_outcome_tg_blocked": _outcome_tg_blocked,
+                            "v702_intraday_daily_report_tg_queued": _daily_tg_queued,
+                            "v702_intraday_daily_report_tg_blocked": _daily_tg_blocked,
                             "selected_count": len(_selected),
                             "engine_cycle": _engine_cycle_aggregate,
                             "report": _report,
@@ -27545,7 +27665,7 @@ async def run_bot(universe: List[str]):
                             STATS["v702_intraday_shadow_lane_errors"] = int(STATS.get("v702_intraday_shadow_lane_errors", 0) or 0) + 1
                             logger.warning(f"[V702-A9-INTRADAY-SHADOW] detached research batch failed safely: {_batch_exc}")
                             return
-                        for _key in ("v702_intraday_shadow_fetch_ok", "v702_intraday_shadow_fetch_fail", "v702_intraday_shadow_signals_cycle", "v702_intraday_shadow_resolved_cycle", "v702_intraday_shadow_batch_selected_completed", "v702_intraday_micro_shadow_tg_queued", "v702_intraday_micro_shadow_tg_blocked"):
+                        for _key in ("v702_intraday_shadow_fetch_ok", "v702_intraday_shadow_fetch_fail", "v702_intraday_shadow_signals_cycle", "v702_intraday_shadow_resolved_cycle", "v702_intraday_shadow_batch_selected_completed", "v702_intraday_micro_shadow_tg_queued", "v702_intraday_micro_shadow_tg_blocked", "v702_intraday_micro_outcome_tg_queued", "v702_intraday_micro_outcome_tg_blocked", "v702_intraday_daily_report_tg_queued", "v702_intraday_daily_report_tg_blocked"):
                             STATS[_key] = int(_result.get(_key, 0) or 0)
                         _cycle_engines = _result.get("engine_cycle", {}) or {}
                         if isinstance(_cycle_engines, dict):
@@ -27592,6 +27712,9 @@ async def run_bot(universe: List[str]):
                                     "resolved": int(_m.get("resolved", 0) or 0),
                                     "pending": int(_m.get("pending", 0) or 0),
                                     "avg_net_r": _m.get("avg_net_r"),
+                                    "avg_net_pct": _m.get("avg_net_pct"),
+                                    "scored_outcomes": int(_m.get("scored_outcomes", 0) or 0),
+                                    "outcomes": dict(_m.get("outcomes", {}) or {}),
                                     "sample_quality": str(_m.get("sample_quality", "TOO_SMALL")),
                                     "mode": "SHADOW_ONLY_NO_ORDERS",
                                 }
@@ -27609,12 +27732,17 @@ async def run_bot(universe: List[str]):
                                 )
                             _rfiles = _report.get("report_files", {}) or {}
                             logger.info(
-                                "[V702-A9-INTRADAY-SHADOW] mode=NO_ORDERS selected=%d core_selected=%d micro_selected=%d rs_leaders=%d fetch_ok=%d fetch_fail=%d signals=%d micro_tg_queued=%d micro_tg_blocked=%d resolved=%d evals=%d rejects=%d total_samples=%d pending=%d db_path=%s report_json=%s report_md=%s",
+                                "[V702-A9-INTRADAY-SHADOW] mode=NO_ORDERS selected=%d core_selected=%d micro_selected=%d rs_leaders=%d fetch_ok=%d fetch_fail=%d signals=%d micro_tg_queued=%d micro_tg_blocked=%d outcome_tg_queued=%d outcome_tg_blocked=%d daily_tg_queued=%d daily_tg_blocked=%d resolved=%d evals=%d rejects=%d total_samples=%d pending=%d db_path=%s report_json=%s report_md=%s",
                                 int(_result.get("selected_count", 0) or 0), int(STATS.get("v702_intraday_shadow_core_selected", 0) or 0),
                                 int(STATS.get("v702_intraday_shadow_micro_selected", 0) or 0), int(STATS.get("v702_intraday_shadow_rs_leaders_selected", 0) or 0),
                                 STATS.get("v702_intraday_shadow_fetch_ok", 0), STATS.get("v702_intraday_shadow_fetch_fail", 0),
                                 STATS.get("v702_intraday_shadow_signals_cycle", 0), int(_result.get("v702_intraday_micro_shadow_tg_queued", 0) or 0),
-                                int(_result.get("v702_intraday_micro_shadow_tg_blocked", 0) or 0), STATS.get("v702_intraday_shadow_resolved_cycle", 0),
+                                int(_result.get("v702_intraday_micro_shadow_tg_blocked", 0) or 0),
+                                int(_result.get("v702_intraday_micro_outcome_tg_queued", 0) or 0),
+                                int(_result.get("v702_intraday_micro_outcome_tg_blocked", 0) or 0),
+                                int(_result.get("v702_intraday_daily_report_tg_queued", 0) or 0),
+                                int(_result.get("v702_intraday_daily_report_tg_blocked", 0) or 0),
+                                STATS.get("v702_intraday_shadow_resolved_cycle", 0),
                                 int(_totals.get("evaluations", 0) or 0), int(_totals.get("rejections", 0) or 0),
                                 int(_totals.get("samples", 0) or 0), int(_totals.get("pending", 0) or 0),
                                 _report.get("db_path", "UNKNOWN"), _rfiles.get("json", "UNKNOWN"), _rfiles.get("markdown", "UNKNOWN")
@@ -90420,6 +90548,12 @@ CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", 3)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", 180.0)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", 180.0)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_MAX_ROWS", 10000)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH", 5)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE", True)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo")
+CONFIG.setdefault("V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR", 0)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE", 5)
 CONFIG.setdefault("V702_INTRADAY_LSA_MAX_AGE_SEC", 120.0)
 CONFIG.setdefault("V702_INTRADAY_LSA_MIN_LIQUIDATION_BURST_RATIO", 2.5)
 CONFIG.setdefault("V702_INTRADAY_LSA_MAX_OI_CHANGE_PCT", -2.0)
@@ -104364,6 +104498,23 @@ FINAL_CANONICAL_RUNTIME.update({
 })
 STATS["v702_a75_revision"] = V702_A75_CANONICAL_REVISION
 
+# A77: terminal follow-up notifications for the independent 1m Micro Shadow lane.
+# This is observability only; it never changes strategy admission or order authority.
+V702_A77_MICRO_OUTCOME_TELEGRAM_REVISION = "A77-MICRO-OUTCOME-TELEGRAM-DAILY-REPORT-2026-11-17"
+STATS["v702_a77_micro_outcome_telegram_revision"] = V702_A77_MICRO_OUTCOME_TELEGRAM_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "active_micro_outcome_revision_current": V702_A77_MICRO_OUTCOME_TELEGRAM_REVISION,
+    "micro_shadow_outcome_notification_contract": "PERSISTED_UNIQUE_OUTCOME_OUTBOX_TP1_SL_TIMEOUT_AMBIGUOUS",
+    "micro_shadow_daily_report_timezone": str(CONFIG.get("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo")),
+    "micro_shadow_result_is_virtual_only": True,
+    "telegram_delivery_ack_proven": False,
+    "production_decision": "NO_GO_UNATTENDED_LIVE",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "operator_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
 # Resolve BTC policy regime exclusively from the latest closed 4H candle. A
 # repeated call on the same candle cannot advance confirmation/hysteresis.
 def _v702_a75_market_regime_classify(cls, df_btc_4h) -> str:
@@ -104811,6 +104962,14 @@ def _v702_a75_digest_postprocess(cls, base):
         elif "STARVATION" in up: score = 3
         elif "REJECTION" in up or "TOP_REASON" in up: score = 4
         elif "PIPELINE" in up or "SUMMARY=" in up or "EDGE=" in up: score = 5
+        # Preserve stage-specific rejection headings and their immediately
+        # following evidence rows under tight Telegram digest budgets. Without
+        # this, builder blockers could disappear while their aggregate count
+        # remained visible, making the funnel look internally inconsistent.
+        elif any(f"SELECTED → {stage} BLOCK" in up for stage in ("SCORER", "ROUTE", "BUILDER")): score = 6
+        elif i > 0 and any(f"SELECTED → {stage} BLOCK" in lines[i - 1].upper() for stage in ("SCORER", "ROUTE", "BUILDER")): score = 6
+        elif "KNOWLEDGE SHADOW" in up: score = 7
+        elif i > 0 and "KNOWLEDGE SHADOW" in lines[i - 1].upper(): score = 7
         elif "DISCOVERY" in up: score = 50
         priorities.append((score, i, line))
     chosen = {}

@@ -22,6 +22,8 @@ import math
 import sqlite3
 import statistics
 import time
+from datetime import datetime, time as datetime_time, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -34,7 +36,7 @@ try:
 except Exception:  # pragma: no cover - guarded by runtime install/validator
     pd = None
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 STRATEGIES = (
     "MICRO_MOMENTUM_1M",
     "MICRO_SWEEP_RECLAIM_1M",
@@ -414,6 +416,21 @@ class V702IntradayShadow:
             )""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_alert_state ON v702_intraday_shadow_alerts(state,created_ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_alert_symbol ON v702_intraday_shadow_alerts(symbol,created_ts)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS v702_intraday_shadow_outcomes (
+                outcome_id TEXT PRIMARY KEY, sample_id TEXT NOT NULL UNIQUE, symbol TEXT NOT NULL,
+                strategy_mode TEXT NOT NULL, timeframe TEXT NOT NULL, signal_ts_ms INTEGER NOT NULL,
+                resolved_ts REAL NOT NULL, outcome TEXT NOT NULL, exit_price REAL, gross_r REAL,
+                net_r REAL, net_pct REAL, cost_pct REAL NOT NULL DEFAULT 0.0, bars_seen INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'PENDING', payload_json TEXT NOT NULL DEFAULT '{}',
+                updated_ts REAL NOT NULL, note TEXT NOT NULL DEFAULT ''
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_outcome_state ON v702_intraday_shadow_outcomes(state,resolved_ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_outcome_strategy ON v702_intraday_shadow_outcomes(strategy_mode,outcome,resolved_ts)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS v702_intraday_shadow_daily_outbox (
+                report_date TEXT PRIMARY KEY, created_ts REAL NOT NULL, state TEXT NOT NULL DEFAULT 'PENDING',
+                payload_json TEXT NOT NULL DEFAULT '{}', updated_ts REAL NOT NULL, note TEXT NOT NULL DEFAULT ''
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_daily_state ON v702_intraday_shadow_daily_outbox(state,created_ts)")
 
     @staticmethod
     def _symbol_allowed(symbol: str) -> bool:
@@ -1024,6 +1041,7 @@ class V702IntradayShadow:
                     recent = conn.execute("SELECT 1 FROM v702_intraday_shadow_alerts WHERE symbol=? AND created_ts>=? AND state IN ('PENDING','QUEUED') LIMIT 1", (symbol, now_alert-cooldown)).fetchone()
                     if not recent:
                         alert_payload = {
+                            "sample_id": sample_id,
                             "entry": entry, "stop": stop, "target": target, "risk_pct": risk_pct,
                             "cost_pct": cost_pct, "target_net_pct_after_costs": target_net_pct,
                             "target_net_r_after_costs": target_net_r, "post_cost_target_viable": post_cost_viable,
@@ -1057,11 +1075,11 @@ class V702IntradayShadow:
         updated = 0
         try:
             with self._db() as conn:
-                pending = conn.execute("""SELECT sample_id,strategy_mode,entry,stop,target,risk_unit,risk_pct,
+                pending = conn.execute("""SELECT sample_id,strategy_mode,timeframe,entry,stop,target,risk_unit,risk_pct,
                     last_candle_ts_ms,bars_seen,cost_pct,signal_ts_ms,tp1_hit,partial_realized_r,trailing_stop
                     FROM v702_intraday_shadow_samples WHERE symbol=? AND status='PENDING' ORDER BY signal_ts_ms ASC""", (symbol,)).fetchall()
                 for rec in pending:
-                    (sid, strategy_mode, entry, stop, target, risk, risk_pct, last_ts, bars_seen,
+                    (sid, strategy_mode, timeframe, entry, stop, target, risk, risk_pct, last_ts, bars_seen,
                      cost_pct, signal_ts, tp1_hit, partial_realized_r, trailing_stop) = rec
                     adaptive = str(strategy_mode) == "ADAPTIVE_RS_PULLBACK_15M"
                     state = None
@@ -1138,14 +1156,45 @@ class V702IntradayShadow:
                             cost_r = float(cost_pct) / max(float(risk_pct), 1e-12)
                             net_r = float(gross_r) - cost_r
                             net_pct = net_r * float(risk_pct)
+                        resolved_epoch = time.time()
+                        outcome_note = ("DATA_GAP_OUTCOME_UNRESOLVED_NO_EDGE_CREDIT" if str(state).startswith("AMBIGUOUS") else
+                                        "SL_FIRST_IF_AMBIGUOUS;UNIFIED_ROUNDTRIP_COST_DEDUCTED" + (";50PCT_TP1_1_5R_TRAIL_15M" if adaptive and has_partial else ""))
                         conn.execute("""UPDATE v702_intraday_shadow_samples
                             SET last_candle_ts_ms=?,bars_seen=?,status=?,exit_price=?,gross_r=?,net_r=?,net_pct=?,
                                 resolved_ts=?,note=?,tp1_hit=?,partial_realized_r=?,trailing_stop=?
                             WHERE sample_id=? AND status='PENDING'""",
-                            (last_seen,count,state,exit_price,gross_r,net_r,net_pct,time.time(),
-                             ("DATA_GAP_OUTCOME_UNRESOLVED_NO_EDGE_CREDIT" if str(state).startswith("AMBIGUOUS") else
-                              "SL_FIRST_IF_AMBIGUOUS;UNIFIED_ROUNDTRIP_COST_DEDUCTED" + (";50PCT_TP1_1_5R_TRAIL_15M" if adaptive and has_partial else "")),
-                             1 if has_partial else 0,partial_r,current_trail,sid))
+                            (last_seen,count,state,exit_price,gross_r,net_r,net_pct,resolved_epoch,
+                             outcome_note,1 if has_partial else 0,partial_r,current_trail,sid))
+                        # Persist a result notification in the same transaction as the sample resolution.
+                        # Only 1m micro samples with an initial alert record receive this follow-up.
+                        if str(strategy_mode) in {"MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M"}:
+                            initial_alert = conn.execute("SELECT state FROM v702_intraday_shadow_alerts WHERE sample_id=?", (sid,)).fetchone()
+                            if initial_alert and str(initial_alert[0]) in {"PENDING", "QUEUED"} and bool(cfg.get("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)):
+                                outcome_id = hashlib.sha256(("MICRO_SHADOW_OUTCOME|" + str(sid)).encode("utf-8")).hexdigest()[:32]
+                                outcome_payload = {
+                                    "sample_id": str(sid), "symbol": str(symbol), "strategy_mode": str(strategy_mode),
+                                    "timeframe": str(timeframe or "1m"), "signal_ts_ms": int(signal_ts),
+                                    "resolved_ts": resolved_epoch, "outcome": str(state),
+                                    "entry": float(entry), "stop": float(stop), "target": float(target),
+                                    "exit_price": None if exit_price is None else float(exit_price),
+                                    "gross_r": None if gross_r is None else float(gross_r),
+                                    "net_r": None if net_r is None else float(net_r),
+                                    "net_pct": None if net_pct is None else float(net_pct),
+                                    "cost_pct": float(cost_pct), "bars_seen": int(count),
+                                    "ambiguous": bool(str(state).startswith("AMBIGUOUS")),
+                                    "mode": "MONITOR_ONLY_NO_ORDERS",
+                                }
+                                conn.execute("""INSERT OR IGNORE INTO v702_intraday_shadow_outcomes
+                                    (outcome_id,sample_id,symbol,strategy_mode,timeframe,signal_ts_ms,resolved_ts,outcome,
+                                     exit_price,gross_r,net_r,net_pct,cost_pct,bars_seen,state,payload_json,updated_ts,note)
+                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)""",
+                                    (outcome_id,str(sid),str(symbol),str(strategy_mode),str(timeframe or "1m"),int(signal_ts),
+                                     resolved_epoch,str(state),exit_price,gross_r,net_r,net_pct,float(cost_pct),int(count),
+                                     _json(outcome_payload),resolved_epoch,outcome_note[:180]))
+                                # Bounded cleanup only removes already queued terminal notifications.
+                                outbox_total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_outcomes").fetchone()[0])
+                                if outbox_total > 20000:
+                                    conn.execute("DELETE FROM v702_intraday_shadow_outcomes WHERE sample_id IN (SELECT sample_id FROM v702_intraday_shadow_outcomes WHERE state='QUEUED' ORDER BY resolved_ts ASC LIMIT ?)", (outbox_total-18000,))
                         updated += 1
                     else:
                         conn.execute("""UPDATE v702_intraday_shadow_samples
@@ -1331,12 +1380,16 @@ class V702IntradayShadow:
                 total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
                 alert_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_alerts GROUP BY state").fetchall()
                 alert_states = {str(k): int(v) for k, v in alert_state_rows}
+                outcome_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_outcomes GROUP BY state").fetchall()
+                outcome_states = {str(k): int(v) for k, v in outcome_state_rows}
+                daily_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_daily_outbox GROUP BY state").fetchall()
+                daily_states = {str(k): int(v) for k, v in daily_state_rows}
             all_eval_signals = all_eval_rejects = all_eval_skips = all_eval_count = 0
             for mode in STRATEGIES:
                 subset = [r for r in sample_rows if r[0] == mode]
                 evaluations = [r for r in eval_rows if r[0] == mode]
-                resolved = [r for r in subset if r[1] in {"TP1","SL","TIMEOUT","TRAILING_EXIT"} and r[2] is not None]
-                nets = [float(r[2]) for r in resolved]
+                resolved = [r for r in subset if r[1] in {"TP1","SL","TIMEOUT","TRAILING_EXIT","AMBIGUOUS_DATA_GAP"}]
+                nets = [float(r[2]) for r in resolved if r[2] is not None]
                 pos = sum(v for v in nets if v > 0)
                 neg = -sum(v for v in nets if v < 0)
                 curve, peak, max_dd = 0.0, 0.0, 0.0
@@ -1369,8 +1422,9 @@ class V702IntradayShadow:
                     "avg_net_pct":statistics.fmean(float(r[3]) for r in resolved if r[3] is not None) if any(r[3] is not None for r in resolved) else None,
                     "profit_factor_net_r":(pos/neg) if neg>0 else (None if pos==0 else "INF_NO_LOSSES"),
                     "max_drawdown_r":max_dd,
-                    "outcomes":{"TP1":sum(r[1]=="TP1" for r in subset),"SL":sum(r[1]=="SL" for r in subset),"TIMEOUT":sum(r[1]=="TIMEOUT" for r in subset),"TRAILING_EXIT":sum(r[1]=="TRAILING_EXIT" for r in subset),"partial_tp1_hits":sum(1 for r in subset if bool(r[10]))},
-                    "sample_quality":"TOO_SMALL" if len(resolved)<30 else ("PRELIMINARY" if len(resolved)<100 else "NEEDS_OUT_OF_SAMPLE_VALIDATION"),
+                    "outcomes":{"TP1":sum(r[1]=="TP1" for r in subset),"SL":sum(r[1]=="SL" for r in subset),"TIMEOUT":sum(r[1]=="TIMEOUT" for r in subset),"TRAILING_EXIT":sum(r[1]=="TRAILING_EXIT" for r in subset),"AMBIGUOUS_DATA_GAP":sum(r[1]=="AMBIGUOUS_DATA_GAP" for r in subset),"partial_tp1_hits":sum(1 for r in subset if bool(r[10]))},
+                    "sample_quality":"TOO_SMALL" if len(nets)<30 else ("PRELIMINARY" if len(nets)<100 else "NEEDS_OUT_OF_SAMPLE_VALIDATION"),
+                    "scored_outcomes":len(nets),
                 }
             report["totals"]={"samples":total,"pending":pending,"resolved":sum(v["resolved"] for v in report["strategies"].values()),
                               "evaluations":all_eval_count,"signals":all_eval_signals,"rejections":all_eval_rejects,"skipped_evaluations":all_eval_skips}
@@ -1380,6 +1434,17 @@ class V702IntradayShadow:
                 "queued": int(alert_states.get("QUEUED", 0)), "expired": int(alert_states.get("EXPIRED", 0)),
                 "max_per_batch": int(max(1, min(10, _num(self._cfg().get("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH"), 3) or 3))),
             }
+            report["micro_outcome_notifications"] = {
+                "enabled": bool(self._cfg().get("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)),
+                "states": outcome_states, "pending": int(outcome_states.get("PENDING", 0)),
+                "queued": int(outcome_states.get("QUEUED", 0)),
+            }
+            report["daily_telegram_reports"] = {
+                "enabled": bool(self._cfg().get("V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE", True)),
+                "states": daily_states, "pending": int(daily_states.get("PENDING", 0)),
+                "queued": int(daily_states.get("QUEUED", 0)),
+                "timezone": str(self._cfg().get("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo")),
+            }
             report["liquidation_spot_absorption"] = {
                 "provider_status": "UNCONFIGURED",
                 "data_contract": "LSA_V1",
@@ -1388,6 +1453,96 @@ class V702IntradayShadow:
         except Exception as exc:
             report["error"]=f"{type(exc).__name__}:{str(exc)[:180]}"
         return report
+
+    def pending_micro_outcomes(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Return persistent, retryable micro outcome notifications."""
+        limit = max(1, min(20, int(limit or 5)))
+        try:
+            with self._db() as conn:
+                rows = conn.execute("""SELECT sample_id,symbol,strategy_mode,timeframe,resolved_ts,outcome,payload_json
+                    FROM v702_intraday_shadow_outcomes WHERE state='PENDING' ORDER BY resolved_ts ASC LIMIT ?""", (limit,)).fetchall()
+            out = []
+            for sid, symbol, mode, tf, resolved_ts, outcome, payload in rows:
+                try: body = json.loads(payload or "{}")
+                except Exception: body = {}
+                out.append({"sample_id":str(sid),"symbol":str(symbol),"strategy_mode":str(mode),
+                            "timeframe":str(tf),"resolved_ts":float(resolved_ts),"outcome":str(outcome),"payload":body})
+            return out
+        except Exception:
+            return []
+
+    def mark_micro_outcome_queued(self, sample_id: str, note: str = "telegram_durable_outbox_accepted") -> bool:
+        try:
+            with self._db() as conn:
+                cur = conn.execute("UPDATE v702_intraday_shadow_outcomes SET state='QUEUED',updated_ts=?,note=? WHERE sample_id=? AND state='PENDING'",
+                                   (time.time(), str(note or "")[:160], str(sample_id or "")))
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def ensure_daily_telegram_report(self, now_ts: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Create one previous-local-day per-strategy report after the configured Cairo-local time."""
+        cfg = self._cfg()
+        if not bool(cfg.get("V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE", True)):
+            return None
+        try:
+            tz_name = str(cfg.get("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo") or "Africa/Cairo")
+            tz = ZoneInfo(tz_name)
+            now_dt = datetime.fromtimestamp(float(now_ts if now_ts is not None else time.time()), tz=tz)
+            ready_hour = max(0, min(23, int(_num(cfg.get("V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR"), 0) or 0)))
+            ready_minute = max(0, min(59, int(_num(cfg.get("V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE"), 5) or 5)))
+            if (now_dt.hour, now_dt.minute) < (ready_hour, ready_minute):
+                return None
+            report_day = now_dt.date() - timedelta(days=1)
+            day_start = datetime.combine(report_day, datetime_time.min, tzinfo=tz).timestamp()
+            day_end = datetime.combine(report_day + timedelta(days=1), datetime_time.min, tzinfo=tz).timestamp()
+            strategy_rows = {}
+            with self._db() as conn:
+                for mode in STRATEGIES:
+                    created = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples WHERE strategy_mode=? AND created_ts>=? AND created_ts<?",
+                                               (mode, day_start, day_end)).fetchone()[0])
+                    outcome_rows = conn.execute("""SELECT status,net_r,net_pct FROM v702_intraday_shadow_samples
+                        WHERE strategy_mode=? AND resolved_ts>=? AND resolved_ts<? AND status!='PENDING'""",
+                        (mode, day_start, day_end)).fetchall()
+                    outcomes = {key: sum(1 for row in outcome_rows if row[0] == key)
+                                for key in ("TP1", "SL", "TIMEOUT", "TRAILING_EXIT", "AMBIGUOUS_DATA_GAP")}
+                    valid_net = [float(row[1]) for row in outcome_rows if row[1] is not None]
+                    valid_pct = [float(row[2]) for row in outcome_rows if row[2] is not None]
+                    strategy_rows[mode] = {
+                        "signals_created": created, "resolved": len(outcome_rows), "outcomes": outcomes,
+                        "net_positive": sum(1 for value in valid_net if value > 0),
+                        "net_negative": sum(1 for value in valid_net if value < 0),
+                        "avg_net_r": statistics.fmean(valid_net) if valid_net else None,
+                        "avg_net_pct": statistics.fmean(valid_pct) if valid_pct else None,
+                        "ambiguous_excluded_from_net": outcomes["AMBIGUOUS_DATA_GAP"],
+                    }
+                payload = {"report_date": report_day.isoformat(), "timezone": tz_name,
+                           "mode": "SHADOW_ONLY_NO_ORDERS", "strategies": strategy_rows,
+                           "totals": {"signals_created": sum(x["signals_created"] for x in strategy_rows.values()),
+                                      "resolved": sum(x["resolved"] for x in strategy_rows.values()),
+                                      "tp1": sum(x["outcomes"]["TP1"] for x in strategy_rows.values()),
+                                      "sl": sum(x["outcomes"]["SL"] for x in strategy_rows.values()),
+                                      "timeouts": sum(x["outcomes"]["TIMEOUT"] for x in strategy_rows.values()),
+                                      "ambiguous": sum(x["outcomes"]["AMBIGUOUS_DATA_GAP"] for x in strategy_rows.values())}}
+                conn.execute("INSERT OR IGNORE INTO v702_intraday_shadow_daily_outbox(report_date,created_ts,state,payload_json,updated_ts,note) VALUES(?,?,'PENDING',?,?,?)",
+                             (report_day.isoformat(), time.time(), _json(payload), time.time(), "daily_strategy_outcome_digest"))
+                row = conn.execute("SELECT report_date,payload_json FROM v702_intraday_shadow_daily_outbox WHERE state='PENDING' ORDER BY report_date ASC LIMIT 1").fetchone()
+            if not row:
+                return None
+            try: body = json.loads(row[1] or "{}")
+            except Exception: body = {}
+            return {"report_date":str(row[0]),"payload":body}
+        except Exception:
+            return None
+
+    def mark_daily_telegram_report_queued(self, report_date: str, note: str = "telegram_durable_outbox_accepted") -> bool:
+        try:
+            with self._db() as conn:
+                cur = conn.execute("UPDATE v702_intraday_shadow_daily_outbox SET state='QUEUED',updated_ts=?,note=? WHERE report_date=? AND state='PENDING'",
+                                   (time.time(), str(note or "")[:160], str(report_date or "")))
+                return bool(cur.rowcount)
+        except Exception:
+            return False
 
     def write_report(self, report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         report = report or self.report()
@@ -1416,7 +1571,11 @@ class V702IntradayShadow:
                 lines.append("  - Reject reasons: " + (", ".join(f"{k}={v}" for k,v in list(reasons.items())[:5]) if reasons else "none recorded"))
                 lines.append("  - Post-cost targets: viable={} capped={} avg_cost_pct={}".format(
                     r.get("post_cost_target_viable_signals",0),r.get("post_cost_target_capped_signals",0),f(r.get("avg_signal_cost_pct"))))
-            lines += ["", "## Decision criteria", "", "- Fewer than 30 resolved outcomes: too early to judge.", "- 30–99: preliminary only.", "- 100 or more: more informative but still requires holdout/out-of-sample and paper-trading confirmation.", "- A strategy is not accepted solely on win rate; inspect mean net R, profit factor, drawdown, costs, regimes, and sample independence.", "- This report does not establish live fill quality or real-world profitability.", ""]
+            lines += ["", "## Telegram outcome delivery", "",
+                      "- Micro 1m TP1 / SL / TIMEOUT / AMBIGUOUS_DATA_GAP outcomes are persisted in a separate retryable SQLite outbox when the originating Micro alert exists.",
+                      "- Telegram queue acceptance is not delivery ACK. Messages explicitly identify virtual closed-candle outcomes, not exchange fills or realized PnL.",
+                      "- Daily per-strategy Telegram reports summarize the previous Africa/Cairo calendar day; ambiguous data-gap outcomes are excluded from net performance calculations.",
+                      "", "## Decision criteria", "", "- Fewer than 30 scored net outcomes: too early to judge.", "- 30–99: preliminary only.", "- 100 or more: more informative but still requires holdout/out-of-sample and paper-trading confirmation.", "- A strategy is not accepted solely on win rate; inspect mean net R, profit factor, drawdown, costs, regimes, and sample independence.", "- This report does not establish live fill quality or real-world profitability.", ""]
             mp.write_text("\n".join(lines), encoding="utf-8")
         except Exception as exc:
             report["report_write_error"]=f"{type(exc).__name__}:{str(exc)[:180]}"
@@ -1453,8 +1612,10 @@ class V702IntradayShadow:
                     and node.func.attr in {"create_order", "create_market_buy", "submit_entry", "submit_order"}
                     for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
                 ),
-                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta","v702_intraday_shadow_alerts"}.issubset(tables),
+                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta","v702_intraday_shadow_alerts","v702_intraday_shadow_outcomes","v702_intraday_shadow_daily_outbox"}.issubset(tables),
                 "shadow_alert_outbox_present": "v702_intraday_shadow_alerts" in tables,
+                "shadow_outcome_outbox_present": "v702_intraday_shadow_outcomes" in tables,
+                "daily_report_outbox_present": "v702_intraday_shadow_daily_outbox" in tables,
                 "balanced_core_micro_selector_available": callable(select_balanced_shadow_symbols),
                 "lsa_missing_data_fails_unavailable": self._assess_liquidation_spot_absorption({}).get("status") == "UNAVAILABLE",
             }

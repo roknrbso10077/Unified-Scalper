@@ -75,6 +75,12 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertTrue(result["pass"], result)
         self.assertFalse(self.cfg["V702_INTRADAY_SHADOW_LIVE_ENABLE"])
 
+    def test_micro_telegram_alert_and_result_use_shared_opportunity_links(self):
+        source = Path(__file__).with_name("main.py").read_text(encoding="utf-8")
+        self.assertIn("OpportunityTelegramNotifier._links_html(str(_alert.get(\"symbol\") or \"\"), int(_alert.get(\"signal_ts_ms\") or 0), str(_alert.get(\"strategy_mode\") or \"MICRO\"))", source)
+        self.assertIn("OpportunityTelegramNotifier._links_html(_osym, int(_op.get(\"signal_ts_ms\") or 0), _omode)", source)
+        self.assertIn("V702-A9-MICRO-OUTCOME-TG", source)
+
     def test_micro_momentum_is_recorded_without_higher_timeframe_bull_gate(self):
         result = self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         self.assertGreaterEqual(result["signals"], 1)
@@ -191,6 +197,81 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertEqual(status, "TP1")
         self.assertIsNotNone(net_r)
         self.assertGreater(net_r, -5.0)
+        outcomes = self.study.pending_micro_outcomes(limit=5)
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["outcome"], "TP1")
+        self.assertEqual(outcomes[0]["payload"]["mode"], "MONITOR_ONLY_NO_ORDERS")
+        self.assertIsNotNone(outcomes[0]["payload"]["net_r"])
+        self.assertTrue(self.study.mark_micro_outcome_queued(outcomes[0]["sample_id"]))
+        self.assertEqual(self.study.pending_micro_outcomes(limit=5), [])
+
+    def test_micro_sl_outcome_creates_single_retryable_telegram_event(self):
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        with self.connect() as conn:
+            sample = conn.execute("SELECT sample_id,entry,stop,target,signal_ts_ms FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'").fetchone()
+        self.assertIsNotNone(sample)
+        sid, entry, stop, target, signal_ts = sample
+        frame = self.make_1m(True)
+        frame.iloc[-1, frame.columns.get_loc("open")] = entry
+        frame.iloc[-1, frame.columns.get_loc("high")] = min(target - 0.01, entry + 0.02)
+        frame.iloc[-1, frame.columns.get_loc("low")] = stop - 0.02
+        frame.iloc[-1, frame.columns.get_loc("close")] = stop
+        next_row = frame.iloc[-1].copy()
+        next_ts = frame.index[-1] + pd.Timedelta(minutes=1)
+        frame = pd.concat([frame, pd.DataFrame([next_row], index=[next_ts])])
+        frame.attrs["as_of_ms"] = int(next_ts.timestamp() * 1000) + 60_000 - 1
+        self.study.process_symbol("DOT/USDT", frame, self.snapshot())
+        with self.connect() as conn:
+            status, net_r = conn.execute("SELECT status,net_r FROM v702_intraday_shadow_samples WHERE sample_id=?", (sid,)).fetchone()
+            event_count = conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_outcomes WHERE sample_id=?", (sid,)).fetchone()[0]
+        self.assertEqual(status, "SL")
+        self.assertIsNotNone(net_r)
+        self.assertEqual(event_count, 1)
+        outcome = self.study.pending_micro_outcomes(limit=5)[0]
+        self.assertEqual(outcome["outcome"], "SL")
+        self.assertEqual(outcome["payload"]["gross_r"], -1.0)
+        self.assertTrue(self.study.mark_micro_outcome_queued(sid))
+        self.assertFalse(self.study.mark_micro_outcome_queued(sid))
+
+    def test_ambiguous_data_gap_is_not_scored_as_win_or_loss_and_is_notified(self):
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        with self.connect() as conn:
+            sid = conn.execute("SELECT sample_id FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'").fetchone()[0]
+        signal_ts = int(pd.Timestamp("2026-10-11T10:51:00Z").timestamp() * 1000)
+        self.study._update_pending("DOT/USDT", [{"ts":float(signal_ts+120_000),"open":100.0,"high":101.0,"low":99.0,"close":100.0,"volume":100.0,"gap_before":True}])
+        with self.connect() as conn:
+            status, net_r = conn.execute("SELECT status,net_r FROM v702_intraday_shadow_samples WHERE sample_id=?", (sid,)).fetchone()
+        self.assertEqual(status, "AMBIGUOUS_DATA_GAP")
+        self.assertIsNone(net_r)
+        outcome = self.study.pending_micro_outcomes(limit=5)[0]
+        self.assertEqual(outcome["outcome"], "AMBIGUOUS_DATA_GAP")
+        self.assertTrue(outcome["payload"]["ambiguous"])
+        self.assertIsNone(outcome["payload"]["net_r"])
+
+    def test_daily_report_is_previous_cairo_day_per_strategy_and_deduplicated(self):
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        cairo = ZoneInfo("Africa/Cairo")
+        sample_time = datetime(2026, 11, 17, 12, 0, tzinfo=cairo).timestamp()
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO v702_intraday_shadow_samples
+                (sample_id,symbol,strategy_mode,timeframe,signal_ts_ms,created_ts,entry,stop,target,risk_unit,risk_pct,
+                 last_candle_ts_ms,bars_seen,status,exit_price,gross_r,net_r,net_pct,cost_pct,resolved_ts,features_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("daily-test-sample","DOT/USDT","MICRO_MOMENTUM_1M","1m",int(sample_time*1000),sample_time,
+                 100.0,99.0,102.0,1.0,1.0,int(sample_time*1000),3,"TP1",102.0,2.0,1.5,1.5,0.5,sample_time+60,"{}"))
+        too_early = datetime(2026, 11, 18, 0, 3, tzinfo=cairo).timestamp()
+        self.assertIsNone(self.study.ensure_daily_telegram_report(now_ts=too_early))
+        due = datetime(2026, 11, 18, 0, 10, tzinfo=cairo).timestamp()
+        report = self.study.ensure_daily_telegram_report(now_ts=due)
+        self.assertIsNotNone(report)
+        self.assertEqual(report["report_date"], "2026-11-17")
+        self.assertEqual(len(report["payload"]["strategies"]), 5)
+        micro = report["payload"]["strategies"]["MICRO_MOMENTUM_1M"]
+        self.assertEqual(micro["signals_created"], 1)
+        self.assertEqual(micro["outcomes"]["TP1"], 1)
+        self.assertTrue(self.study.mark_daily_telegram_report_queued("2026-11-17"))
+        self.assertIsNone(self.study.ensure_daily_telegram_report(now_ts=due))
 
     def test_same_bar_sl_tp_resolves_sl_first(self):
         signal_ts = 1_800_000_000_000

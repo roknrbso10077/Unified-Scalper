@@ -1,3 +1,22 @@
+# UNIFIED SCALPER V702 — A77 MICRO SHADOW OUTCOME TELEGRAM CLOSURE
+
+**Current feature revision:** `A77-MICRO-OUTCOME-TELEGRAM-DAILY-REPORT-2026-11-17` (historical A66 canonical distribution identity retained).
+**Canonical executable:** `main.py` · **Archive limit:** 99 files · **Mode:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`.
+
+## A77 — Micro Telegram follow-up
+
+- Each initial 1m Micro Shadow opportunity uses the existing opportunity-link formatter: MEXC Spot TradingView chart plus a Telegram channel/bot link only when a public username/URL is configured. No private message permalink is invented.
+- An alerted Micro sample that later resolves creates one durable outcome notification: `TP1`, `SL`, `TIMEOUT`, or `AMBIGUOUS_DATA_GAP`. Outcome data is persisted atomically with the sample update and has a unique sample key, so retrying a failed Telegram enqueue does not duplicate the result.
+- Result messages show signal ID, Entry, Stop, Target, reference Exit, bars, gross R, modeled costs and net R/net percent. An ambiguous candle-data gap is explicitly not scored. Same-candle stop/target is still Stop-first.
+- A previous-day daily report is queued once after 00:05 Africa/Cairo time. It shows each of the five intraday Shadow strategies separately: sample count, resolved count, TP1, SL, timeout, ambiguous and average modeled net R/percent. It is a study summary, not a performance guarantee.
+- New controls are in `.env.example`: `V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE`, `V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH`, `V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE`, `V702_INTRADAY_SHADOW_DAILY_TIMEZONE`, `V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR`, and `V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE`.
+
+**Telegram link configuration:** each Micro alert/result reuses the shared link formatter. TradingView/MEXC links are generated from the symbol; a clickable Telegram channel/bot URL is included only when a public Telegram URL or username is configured (`TELEGRAM_OPPORTUNITY_PUBLIC_URL`, `TELEGRAM_PUBLIC_URL`/`TELEGRAM_CHANNEL_URL`, `TELEGRAM_PUBLIC_CHAT_USERNAME`, or public username aliases). A private numeric chat ID cannot be converted into a public message permalink.
+
+**Verification:** 58 test modules from the exact clean-extracted ZIP passed in twelve non-overlapping groups: 574 passed, 1 historical fixture skipped, 0 failed. Focused Micro/digest regressions: 25 passed. Compilation: 73/73 Python files. Clean-extract `--validate-only`: exit 0, `bot_started=false`, `live_threads=[]`. No real Telegram network delivery/ACK, live exchange order/fill, or profitability was tested. `TelegramDispatcher.enqueue` success means accepted into the application outbox, not confirmed delivered to the Telegram client. Micro TP/SL messages are virtual closed-candle outcomes, not exchange orders/fills or realized PnL. No live authority or strategy gate is relaxed.
+
+---
+
 # UNIFIED SCALPER V702 — A75 FINAL PRODUCTION AUDIT INTEGRATION
 
 **Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL+A75-AUDIT-INTEGRATION` (historical A66 distribution identity retained; A75 is the active audit closure)  

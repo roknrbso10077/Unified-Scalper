@@ -1,3 +1,15 @@
+# A77 — Micro Shadow outcome Telegram follow-up and daily strategy reporting (2026-11-17)
+
+- Added a durable SQLite outcome outbox written atomically with the Micro sample transition. Once a 1m Micro sample that had an initial Telegram alert resolves, a unique follow-up event is persisted for `TP1`, `SL`, `TIMEOUT`, or `AMBIGUOUS_DATA_GAP`; a unique `sample_id` prevents duplicate result notifications and failed enqueue attempts remain retryable.
+- Added Telegram result messages with the original entry/stop/target, reference exit, bars observed, modeled round-trip cost, gross R and net-after-modeled-cost R/percent. Data gaps remain explicitly unscored and cannot be counted as wins or losses. Same-candle stop/target handling remains conservative SL-first.
+- Reused the existing opportunity link formatter so each Micro opportunity and its outcome can include the MEXC Spot TradingView chart link and, when a public Telegram username/URL is configured, the corresponding Telegram link. No private chat/message permalink is fabricated.
+- Added a once-per-day previous-calendar-day digest in the configured timezone (default `Africa/Cairo`, 00:05). It summarizes signals, TP1, SL, timeouts, ambiguous data gaps, and average modeled net R/percent for each of the five intraday Shadow strategies. The persistent report outbox retries until Telegram accepts the message.
+- Extended reports and self-tests for outcome-notification and daily-report outboxes; bumped the intraday research schema to v4 with backward-compatible `CREATE TABLE IF NOT EXISTS` migrations. No package file was added or deleted; runtime file count remains capped at 99.
+- Fixed operator-digest compaction priority so SCORER, ROUTE and BUILDER block headings retain their adjacent evidence rows under a tight Telegram character budget; prevents builder rejection counts from appearing without their detailed section.
+- Preserved `MONITOR_ONLY_NO_NEW_BUYS`, `NO_GO_UNATTENDED_LIVE`, `V702_INTRADAY_SHADOW_LIVE_ENABLE=False`, all entry/regime/spread/cost/risk/PreSend gates, and the no-order-authority invariant. Telegram queue acceptance is not Telegram delivery ACK; virtual outcomes are not real fills, realized PnL, or proof of profitability.
+
+---
+
 # A76 — Micro Shadow alert delivery, fair scan rotation and LSA evidence contract (2026-11-17)
 
 - Fixed the A9 1m research selection starvation: relative-strength leaders are now confined to core-liquidity slots, while a balanced rotating selector preserves a dedicated micro-liquidity allocation whenever eligible micro symbols exist. Pool shortages are reallocated only after reserved quotas are honored; allocation counts are exposed in runtime stats and logs.
