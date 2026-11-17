@@ -248,3 +248,45 @@ The package remains `NO_GO_UNATTENDED_LIVE` and `MONITOR_ONLY_NO_NEW_BUYS`. A re
 ## 2026-11-16 — Numeric risk-input closure
 
 `SizingEngine.decide` now rejects non-finite Entry/SL/TP inputs and invalid spread/price geometry before reading the balance or calculating a quantity. Rejections are tagged `invalid_price_geometry`. The release also lists the optional Telegram environment-variable names in `.env.example`; every value remains blank/commented. See `FINAL_AUDIT_REPORT.md` section 18 for the rerun results and the remaining Python 3.12, dependency, Docker, Railway, and live-integration limits. This change does **not** lift `NO_GO_UNATTENDED_LIVE` or enable live entries.
+
+## A74 — quality-first opportunities, stablecoin hard exclusion and independent Swing discovery (2026-11-17)
+
+A74 adds a stricter **read-only opportunity research layer** to the existing A66/A67/A68/A73 package. The canonical executable remains `main.py`; the established A70 package identity is preserved and A74 is recorded as a separate Hunter feature revision.
+
+### Alert admission (strong opportunities only)
+
+`WATCH` rows remain available in the SQLite research ledger, but they are not sent as opportunity alerts. A `CONFIRMED` Hunter alert must pass all independent gates: technical score at least 82/100, execution score at least 65/100, higher-timeframe regime score at least 50/100, observed spread no greater than 0.15 percentage points, 24-hour quote volume at least 2,000,000 USDT, and estimated net TP1 reward/risk at least 0.80 after the round-trip cost estimate. A recognized signal-family condition must also pass (volume, breakout chase, positive absolute momentum for relative strength, and the corresponding 1H/4H context). The score is a ranking measure, not a probability of profit.
+
+The bot now reports Technical Quality, Execution Quality and Regime Fit separately. An excellent chart pattern with poor spread/depth/cost is not promoted to a strong opportunity. Missing spread/volume/liquidity evidence fails closed rather than being treated as zero-cost execution.
+
+### Hard stablecoin exclusion
+
+The canonical stablecoin-base denylist now applies unconditionally at the shared stablecoin predicate used by MSE discovery, candidate handoff/preflight and the execution builder. The optional legacy filter toggle cannot re-allow a stablecoin. The Hunter also applies an explicit fail-closed guard. Examples blocked include USDC, USDT, DAI, FDUSD, TUSD, USDD, USDP, PYUSD, EURC, RLUSD and the other configured stable bases. Gold-backed XAUT/PAXG are not classified as stablecoins by this list.
+
+### Intraday and Swing discovery
+
+Intraday continues to use closed 5m/15m market data. A74 adds an independent 1H discovery lane with closed 4H directional confirmation for Swing Breakout, Swing Pullback Reclaim and Swing Relative Strength. Existing MSE strategy candidates marked `SWING` are also retained. Swing outcomes are evaluated on closed 1H candles with a default seven-day observation lifetime; intraday outcomes use closed 5m candles. No additional exchange polling was added: the Hunter uses the existing `market_data_map` only.
+
+Breakout Chase Filter prevents a new strong alert when the closed price is more than 0.65 ATR beyond the measured resistance; far-extended setups are retained as non-alert research candidates where the existing scan produces them. Pullback and mean-reversion confirmation require supportive relative volume. Relative-strength setups require positive absolute momentum as well as BTC-relative outperformance.
+
+### Confluence and deduplication
+
+Different strategy detections on the same symbol/cycle are displayed as confluence on one idea, not independent risk allocations. Initial alerts for the same symbol are rate-limited for 15 minutes. The cooldown timestamp is stored in SQLite after Telegram delivery ACK, so it survives process restarts. Follow-up outcome events are not suppressed by this initial-alert cooldown.
+
+### Shadow outcome and net result tracking
+
+Each persisted idea follows its immutable reference Entry/SL/TP geometry until TP3, SL, expiry, or a data-gap expiry. TP1/TP2/TP3 are modeled using the configured exit weights (default 50% / 30% / 20% when Runner Mode is enabled). The modeled round-trip cost uses observed spread plus two taker fees and two per-side slippage estimates (defaults sourced from the existing project TAKER_FEE_PCT and small-net slippage settings). The ledger records estimated net return, net R, estimated cost and evaluated exit fraction. When data is missing at expiry, the whole-scenario result is **UNKNOWN**, not a fabricated win/loss. If one closed candle touches both SL and a target, SL is counted first conservatively.
+
+These figures are Paper/Shadow reference estimates only; they do not prove an exchange fill, actual fees, realized PnL, or profitability. A partial target touch is never reported as a completed net result for the remaining position.
+
+### Safety and operating mode
+
+A74 does not create orders, enable futures, relax Prequal/Score/PreSend/risk gates, or change the live entry policy. The distribution remains `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`. Keep `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0` during monitoring and validation.
+
+### A74 strong-only policy notes
+
+- The shared stablecoin base-asset denylist is mandatory; `V531_STABLECOIN_FILTER_ENABLE=0` cannot re-enable stablecoin base assets. This is an asset filter, not a guarantee that every supported quote currency is tradable.
+- The Hunter uses measured volume evidence for recognized and unknown strategy families. Unknown patterns cannot pass the strong alert gate without measured volume >= 1.0x.
+- Initial setup alerts are subject to the Technical / Execution / Regime gates, cost-adjusted Net R:R and the per-symbol persistent delivery-ACK cooldown. Outcome updates remain deliverable even during that cooldown.
+- The independent Swing detector requires closed 1H setup candles and closed 4H direction confirmation. It uses the bounded existing market snapshot universe, not every possible exchange listing. The strategy remains Spot-long; no Futures short-side scanner was added.
+- Net outcome fields are modeled Shadow estimates using configured fee, spread, slippage and existing exit-weight assumptions. They are not actual account PnL or evidence of profitability. Missing price history at expiry is `UNKNOWN`.

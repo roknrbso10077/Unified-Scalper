@@ -1053,9 +1053,11 @@ async def test_opportunity_hunter_does_not_overwrite_synchronous_telegram_ack(tm
             "candidate_key": "hunter-ack|AAA/USDT|BREAKOUT|1", "symbol": "AAA/USDT",
             "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
             "confirmation_type": "CLOSED_BAR_BREAKOUT",
-            "score": 68.0, "candle_ts": int(time.time()), "entry_ref": 100.0,
+            "score": 90.0, "candle_ts": int(time.time()), "entry_ref": 100.0,
             "sl_price": 99.0, "invalidation_price": 99.0, "last_price": 100.0,
             "reason": "closed candle breakout", "missing_conditions": ["canonical prequal"],
+            "evidence": {"strong_alert_eligible": True, "technical_score": 90.0,
+                         "execution_score": 85.0, "regime_fit_score": 80.0, "net_rr_tp1_estimate": 1.1},
         }
         row, _ = bot.OpportunityHunter._upsert(item, notify=False)
         await bot.OpportunityHunter._deliver_alert(row, "CONFIRMED", "CONFIRMED")
@@ -1412,3 +1414,255 @@ def test_opportunity_scan_persists_watch_but_only_queues_formed_signal(tmp_path,
     assert summary["created"] == 2
     assert {row["status"] for row in active} == {"WATCH", "CONFIRMED"}
     assert queued == [("scan-formed|AAA/USDT|2", "CONFIRMED")]
+
+
+
+def _a74_trending_frame(now, period, *, count=130, breakout=True, volume_last=250.0):
+    current_open = int(float(now) // period) * period
+    stamps = [current_open - (count - i) * period for i in range(count)] + [current_open]
+    values = []
+    for i, _stamp in enumerate(stamps):
+        close = 100.0 + i * 0.20
+        values.append({"open": close - 0.04, "high": close + 0.03,
+                       "low": close - 0.60, "close": close, "volume": 100.0})
+    # The last closed bar has a real breakout and confirming relative volume.
+    if breakout:
+        # Cross the prior 20-bar resistance with enough ATR headroom to avoid
+        # testing the setup after an already-extended impulse.
+        trigger_close = float(values[-3]["close"]) + 0.10
+        values[-2].update({"open": trigger_close - 0.06,
+                           "high": trigger_close + 0.04,
+                           "low": trigger_close - 0.60,
+                           "close": trigger_close,
+                           "volume": float(volume_last)})
+    return pd.DataFrame(values, index=pd.to_datetime(stamps, unit="s", utc=True))
+
+
+def test_a74_hunter_excludes_stablecoins_from_all_discovery_paths():
+    assert bot.OpportunityHunter._evaluate_snapshot("USDC/USDT", {}) == []
+    assert bot.OpportunityHunter._evaluate_snapshot("DAI/USDT", {}) == []
+    assert bot.OpportunityHunter.observe_strategy_candidate(
+        SimpleNamespace(symbol="USDC/USDT", side="long"), {}) is None
+    assert bot.OpportunityHunter._evaluate_snapshot("BTC/USDT", {}) == []  # no data, but not blocked as stable
+
+
+def test_a74_swing_hunter_generates_independent_1h_4h_closed_bar_setup():
+    now = time.time()
+    md = {
+        "df_1h": _a74_trending_frame(now, 3600, breakout=True),
+        "df_4h": _a74_trending_frame(now, 14400, breakout=True),
+        "quote_vol_24h": 35_000_000.0,
+        "spread_pct": 0.02,
+    }
+    rows = bot.OpportunityHunter._evaluate_snapshot("AAA/USDT", md, now=now)
+    swing = [r for r in rows if str(r.get("pattern", "")).startswith("SWING_")]
+    assert swing
+    assert any(r["timeframe"] == "1H+4H" and r["evidence"]["strategy_style"] == "SWING"
+               and r["evidence"]["outcome_interval_sec"] == 3600 for r in swing)
+    assert all(float(r["tp1"]) > float(r["entry_ref"]) > float(r["sl_price"]) for r in swing)
+
+
+def test_a74_pullback_and_breakout_quality_gates_reject_weak_volume_and_chasing():
+    cls = bot.OpportunityHunter
+    base = {"source": "READ_ONLY_MARKET_PATTERN", "status": "CONFIRMED", "entry_ref": 100.0,
+            "sl_price": 99.0, "tp1": 102.0, "score": 95.0, "missing_conditions": [],
+            "evidence": {"volume_ratio_5m": 0.45, "spread_pct": 0.02, "quote_vol_24h": 20_000_000,
+                         "trend_1h": True, "trend_4h": True}}
+    md = {"spread_pct": 0.02, "quote_vol_24h": 20_000_000}
+    pull = {**base, "pattern": "PULLBACK_RECLAIM", "confirmation_type": "CLOSED_BAR_PULLBACK_RECLAIM"}
+    q = _v = cls._evaluate_snapshot  # keep class resolution explicit for the regression below
+    evaluated_pull = bot._A74_BASE_EVALUATE_SNAPSHOT if hasattr(bot, "_A74_BASE_EVALUATE_SNAPSHOT") else None
+    # The pure quality evaluator is exported in the runtime namespace for auditability.
+    quality = bot._v702_a74_market_quality(cls, pull, md, h1=None, h4=None)
+    assert quality["status"] == "WATCH"
+    assert quality["evidence"]["strong_alert_eligible"] is False
+
+    breakout = {**base, "pattern": "BREAKOUT_CONTINUATION", "confirmation_type": "CLOSED_BAR_BREAKOUT",
+                "evidence": {**base["evidence"], "volume_ratio_5m": 2.0, "distance_to_resistance_atr": -1.40}}
+    quality2 = bot._v702_a74_market_quality(cls, breakout, md, h1=None, h4=None)
+    assert quality2["status"] == "WATCH"
+    assert "WAIT_FOR_RESISTANCE_RETEST_NO_CHASE" in quality2["missing_conditions"]
+
+
+def test_a74_shadow_outcome_reports_estimated_net_result_after_costs():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={
+        -4: {"high": 101.2, "close": 100.8},
+        -3: {"high": 102.2, "close": 101.8},
+        -2: {"high": 103.2, "close": 102.8},
+    })
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    first_open = int(pd.Timestamp(closed.index[-3]).timestamp())
+    row = _outcome_test_row(first_open - 1, expires_at=now + 600)
+    row["evidence"] = {"spread_pct": 0.02}
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert [e["kind"] for e in events] == ["SHADOW_TP1_TOUCHED", "SHADOW_TP2_TOUCHED", "SHADOW_TP3_TOUCHED"]
+    assert updates["outcome_net_return_pct"] > 0
+    assert updates["outcome_net_r"] > 0
+    assert updates["outcome_realized_fraction"] == pytest.approx(1.0)
+    assert updates["outcome_cost_pct"] > 0
+
+
+def test_a74_stop_shadow_outcome_reports_net_loss_after_costs():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={-2: {"low": 98.5, "close": 99.0}})
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    stop_open = int(pd.Timestamp(closed.index[-2]).timestamp())
+    row = _outcome_test_row(stop_open - 1, expires_at=now + 600)
+    row["evidence"] = {"spread_pct": 0.02}
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert events and events[0]["kind"] == "SHADOW_STOP_HIT"
+    assert updates["outcome_net_return_pct"] < 0
+    assert updates["outcome_net_r"] < 0
+
+
+def test_a74_schema_persists_new_net_outcome_fields(tmp_path):
+    db = tmp_path / "a74_schema.sqlite3"
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db), "TELEGRAM_ENABLED": False}, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db))
+        bot.OpportunityHunter._ensure_schema()
+        conn = bot.sqlite3.connect(db)
+        try:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(opportunity_hunter)")}
+        finally:
+            conn.close()
+    assert {"outcome_net_return_pct", "outcome_net_r", "outcome_realized_fraction", "outcome_cost_pct"}.issubset(columns)
+
+
+def test_a74_data_gap_expiry_is_unknown_not_reported_as_loss_or_no_target(tmp_path, monkeypatch):
+    db = tmp_path / "a74_gap.sqlite3"
+    monkeypatch.setattr(bot.OpportunityHunter, "_evaluate_snapshot", classmethod(lambda cls, *a, **k: []))
+    monkeypatch.setattr(bot.OpportunityHunter, "_queue_alert", classmethod(lambda cls, *a, **k: False))
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db), "TELEGRAM_ENABLED": False,
+                                 "V702_OPPORTUNITY_HUNTER_ENABLE": True}, clear=False):
+        bot.OpportunityHunter._schema_ready_paths.discard(str(db))
+        row, _ = bot.OpportunityHunter._upsert({
+            "candidate_key": "gap|AAA/USDT|1", "symbol": "AAA/USDT", "family": "PULLBACK",
+            "pattern": "PULLBACK_RECLAIM", "status": "WATCH", "entry_ref": 100.0,
+            "sl_price": 99.0, "tp1": 102.0, "tp2": 103.0, "tp3": 104.0,
+            "expires_at": time.time() - 2,
+        }, notify=False)
+        asyncio.run(bot.OpportunityHunter.scan_market_map({"AAA/USDT": {}}))
+        saved = bot.OpportunityHunter._get_by_id(row["opportunity_id"])
+    assert saved["outcome_status"] == "SHADOW_DATA_GAP_EXPIRED"
+    assert saved["outcome_net_return_pct"] is None
+
+
+def test_a74_symbol_alert_cooldown_survives_process_restart(tmp_path, monkeypatch):
+    db = tmp_path / "a74_symbol_cooldown.sqlite3"
+    cls = bot.OpportunityHunter
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db), "TELEGRAM_ENABLED": False,
+                                 "V702_OPPORTUNITY_HUNTER_SYMBOL_ALERT_COOLDOWN_SEC": 900.0}, clear=False):
+        cls._schema_ready_paths.discard(str(db))
+        cls._a74_symbol_alert_last = {}  # simulate process restart: volatile memory is empty
+        row, _ = cls._upsert({
+            "candidate_key": "cooldown|AAA/USDT|one", "symbol": "AAA/USDT",
+            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
+            "confirmation_type": "CLOSED_BAR_BREAKOUT", "entry_ref": 100.0, "sl_price": 99.0,
+            "tp1": 102.0, "tp2": 103.0, "tp3": 104.0, "score": 95.0,
+            "evidence": {"strong_alert_eligible": True},
+        }, notify=False)
+        cls._update_row(row["opportunity_id"], {"symbol_last_alert_at": time.time() - 30.0})
+        queued_calls = []
+        monkeypatch.setattr(bot, "_A74_BASE_QUEUE_ALERT",
+                            lambda cls_, row_, state_, variant="": queued_calls.append(state_) or True)
+        blocked = cls._queue_alert(cls._get_by_id(row["opportunity_id"]), "CONFIRMED")
+    assert blocked is False
+    assert queued_calls == []
+
+
+def test_a74_telegram_ack_persists_symbol_cooldown_timestamp(tmp_path, monkeypatch):
+    db = tmp_path / "a74_symbol_ack.sqlite3"
+    cls = bot.OpportunityHunter
+    async def fake_enqueue(message, on_success=None, on_failure=None):
+        assert message
+        if callable(on_success):
+            on_success("test_ack")
+        return True
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db), "TELEGRAM_ENABLED": False}, clear=False):
+        cls._schema_ready_paths.discard(str(db))
+        row, _ = cls._upsert({
+            "candidate_key": "ack|AAA/USDT|one", "symbol": "AAA/USDT",
+            "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "CONFIRMED",
+            "confirmation_type": "CLOSED_BAR_BREAKOUT", "entry_ref": 100.0, "sl_price": 99.0,
+            "tp1": 102.0, "tp2": 103.0, "tp3": 104.0, "score": 95.0,
+            "evidence": {"strong_alert_eligible": True},
+        }, notify=False)
+        monkeypatch.setattr(bot.TelegramDispatcher, "enqueue", staticmethod(fake_enqueue))
+        monkeypatch.setattr(cls, "_message", classmethod(lambda cls_, *args, **kwargs: "shadow alert"))
+        asyncio.run(cls._deliver_alert(cls._get_by_id(row["opportunity_id"]), "CONFIRMED", "TEST_ACK"))
+        saved = cls._get_by_id(row["opportunity_id"])
+    assert saved["last_alert_delivery"] == "DELIVERED"
+    assert saved["symbol_last_alert_at"] > 0
+
+
+def test_a74_strong_quality_requires_and_accepts_full_technical_execution_regime_edge():
+    cls = bot.OpportunityHunter
+    now = time.time()
+    h1 = _a74_trending_frame(now, 3600, breakout=False)
+    h4 = _a74_trending_frame(now, 14400, breakout=False)
+    item = {
+        "source": "READ_ONLY_MARKET_PATTERN", "status": "CONFIRMED",
+        "confirmation_type": "CLOSED_BAR_BREAKOUT", "pattern": "BREAKOUT_CONTINUATION",
+        "entry_ref": 100.0, "sl_price": 99.0, "tp1": 103.0, "score": 96.0,
+        "missing_conditions": [],
+        "evidence": {"volume_ratio_5m": 2.2, "distance_to_resistance_atr": 0.30,
+                     "spread_pct": 0.02, "quote_vol_24h": 30_000_000.0},
+    }
+    quality = bot._v702_a74_market_quality(
+        cls, item, {"spread_pct": 0.02, "quote_vol_24h": 30_000_000.0}, h1=h1, h4=h4
+    )
+    assert quality["status"] == "CONFIRMED"
+    assert quality["evidence"]["strong_alert_eligible"] is True
+    assert quality["evidence"]["technical_score"] >= 82
+    assert quality["evidence"]["execution_score"] >= 65
+    assert quality["evidence"]["regime_fit_score"] >= 50
+    assert quality["evidence"]["net_rr_tp1_estimate"] >= 0.8
+
+
+def test_a74_stablecoin_block_does_not_depend_on_optional_filter_toggle():
+    with patch.dict(bot.CONFIG, {"V531_STABLECOIN_FILTER_ENABLE": False}, clear=False):
+        assert bot._v531_is_stablecoin("USDC/USDT") is True
+        assert bot._v531_is_stablecoin("FDUSD/USDT") is True
+        assert bot._v531_is_stablecoin("TUSD/USDT") is True
+        assert bot._v531_is_stablecoin("USDG/USDT") is True
+        assert bot._v531_is_stablecoin("EURT/USDT") is True
+        assert bot._v702_a74_is_stable_symbol("USDC/USDT") is True
+        assert bot._v702_a74_is_stable_symbol("XAUT/USDT") is False
+
+
+def test_a74_swing_relative_strength_nonqualification_does_not_duplicate_previous_pattern():
+    now = time.time()
+    symbol_1h = _a74_trending_frame(now, 3600, breakout=True)
+    btc_1h = _a74_trending_frame(now, 3600, breakout=True)
+    # Similar absolute performance means no qualifying BTC-relative advantage.
+    md = {
+        "df_1h": symbol_1h,
+        "df_4h": _a74_trending_frame(now, 14400, breakout=True),
+        "df_btc_1h": btc_1h,
+        "quote_vol_24h": 35_000_000.0,
+        "spread_pct": 0.02,
+    }
+    rows = bot._v702_a74_swing_items(bot.OpportunityHunter, "AAA/USDT", md, now=now)
+    patterns = [str(row.get("pattern")) for row in rows]
+    assert patterns
+    assert "SWING_RELATIVE_STRENGTH" not in patterns
+    assert patterns.count("SWING_BREAKOUT_CONTINUATION") == 1
+
+
+def test_a74_unknown_strategy_family_requires_measured_volume_evidence():
+    cls = bot.OpportunityHunter
+    h1 = _a74_trending_frame(time.time(), 3600, breakout=False)
+    h4 = _a74_trending_frame(time.time(), 14400, breakout=False)
+    item = {
+        "source": "STRATEGY_ENGINE", "status": "CONFIRMED",
+        "confirmation_type": "CANONICAL_SCORE_PASS", "pattern": "ENGINE_UNCLASSIFIED",
+        "entry_ref": 100.0, "sl_price": 99.0, "tp1": 102.0, "score": 98.0,
+        "missing_conditions": [], "evidence": {},
+    }
+    quality = bot._v702_a74_market_quality(
+        cls, item, {"spread_pct": 0.02, "quote_vol_24h": 30_000_000.0}, h1=h1, h4=h4
+    )
+    assert quality["status"] == "WATCH"
+    assert quality["evidence"]["strong_alert_eligible"] is False
+    assert "GENERIC_VOLUME_CONFIRMATION" in quality["missing_conditions"]

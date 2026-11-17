@@ -914,3 +914,78 @@ The following checks were executed against the last release source tree and ZIP 
 | Live exchange / messaging | NOT TESTED live: no authenticated MEXC session, real orders, native stops, actual Telegram delivery, target-platform Docker/Railway validation or profitability claim. |
 
 A monolithic pytest invocation in the final packaging pass was interrupted by the execution timeout before emitting a summary; to avoid counting an incomplete run, the entire suite was rerun as four non-overlapping batches. The grouped results above cover every packaged test module. An earlier one-process suite also completed 544 passed / 1 skipped / 0 failed against the same Python source. This report does not claim that a full modular decomposition of `main.py` was completed.
+
+---
+
+# A74 — Quality-first alerts, stablecoin hard exclusion, independent Swing discovery and net Shadow outcomes (2026-11-17)
+
+**Audited source:** user-uploaded `FINAL_PRODUCTION_RELEASE(5).zip`; extracted and modified in place as the working release source.  
+**Canonical package identity:** A70/A66 compatibility identity deliberately retained.  
+**Active Opportunity Hunter feature revision:** `A74-QUALITY-FIRST-STABLECOIN-FILTER-SWING-AND-NET-SHADOW-OUTCOMES-2026-11-17`.  
+**Effective order authority:** `MONITOR_ONLY_NO_NEW_BUYS`; no authenticated exchange calls or live orders were used.
+
+## A74.1 Requested behavior and applied changes
+
+1. **Stablecoin hard exclusion.** The shared `_v531_is_stablecoin` predicate now enforces the base-asset denylist regardless of the legacy optional filter switch. The list covers major USD/EUR stable assets and bridged variants including USDC, USDT, USDS, USDE, FDUSD, TUSD, DAI, USDD, USDP, GUSD, PYUSD, FRAX, LUSD, CRVUSD, USD0, USD1, USDG, USDGO, EURC, EURS, EUROC, EURT, EURI, AEUR, RLUSD and others. The Hunter fails closed for malformed/unsupported symbols. Gold-backed assets such as XAUT/PAXG are not classified as stablecoins by this denylist.
+2. **Strong-only initial Telegram opportunities.** WATCH remains stored for internal diagnostics but is suppressed from external alerts. Initial CONFIRMED alerts require independent technical, execution and market-regime quality, sufficient liquidity/turnover, acceptable spread, measured pattern-specific relative volume, appropriate absolute/relative momentum, a non-chased entry and cost-adjusted TP1 Net R:R. `TRADEABLE` remains tied to the existing canonical PreSend pass and is not a fill claim.
+3. **Separate quality dimensions.** Technical quality, execution quality and 1H/4H regime fit are stored and displayed separately; the composite ranking is not represented as a win probability.
+4. **Pattern-specific quality gates.** Pullback requires measured volume confirmation; Mean Reversion requires stronger reversal volume; Relative Strength requires positive absolute momentum as well as outperformance vs BTC; breakout requires a closed-bar trigger, volume and a maximum chase distance of 0.65 ATR. Unknown/engine-specific patterns require measured generic volume evidence rather than receiving an automatic pass.
+5. **Independent Swing discovery.** In addition to preserving existing MSE strategy-engine candidates tagged SWING, the Hunter now builds independent closed-1H Swing Breakout, Pullback Reclaim and Relative Strength ideas with closed-4H direction confirmation. Swing monitoring uses closed 1H bars with a seven-day default tracking horizon. Intraday remains on closed 5m bars. This scans the existing bounded `market_data_map`; it does not claim to cover every exchange listing or invent short-side strategies absent from the Spot-long design.
+6. **Cost-aware reference targets.** Read-only Hunter setups rebase TP1/TP2/TP3 to risk multiples that account for the estimated round-trip spread, two taker fees and two per-side slippage assumptions. TP1 is capped at 3R; if the cost model would require more, the idea is not eligible for a strong alert. These are research/reference levels, not exchange orders.
+7. **Outcome tracking for every observed idea.** Existing SQLite outcome lifecycle is extended with estimated net return, net R, assumed cost and exited fraction. TP1/TP2/TP3, stop, post-target stop and expiry are modeled using the project's configured exit weights. A missing-data expiry is `UNKNOWN`, never silently a loss or a win. When one closed OHLC candle touches both target and stop, stop-first remains the conservative rule.
+8. **Restart-safe alert deduplication.** Initial per-symbol alert cooldown state is persisted after Telegram delivery ACK in SQLite; outcome follow-up messages are not throttled by this initial-alert cooldown. A DB read failure fails closed rather than producing duplicate alerts.
+9. **Swing relative-strength edge correction.** A final test pass found a stale-local-variable path in the Swing Relative Strength branch that could duplicate an earlier Swing setup when the relative-strength predicate was not met. The append now occurs only after a qualifying Swing RS idea has been constructed; a regression test covers the non-qualification path.
+
+## A74.2 Applied thresholds (initial conservative operating values)
+
+| Gate | Default |
+|---|---:|
+| Minimum technical score | 82/100 |
+| Minimum execution score | 65/100 |
+| Minimum 1H/4H regime score | 50/100 |
+| Maximum spread | 0.15% |
+| Minimum 24h quote turnover | 2,000,000 USDT |
+| Pullback relative volume | 1.05x |
+| Mean-Reversion relative volume | 1.15x |
+| Breakout relative volume | 1.20x intraday / 1.25x Swing |
+| Maximum breakout chase | 0.65 ATR |
+| Relative-Strength absolute return | +0.15% minimum, plus relative outperformance >=0.30% |
+| Minimum cost-adjusted TP1 Net R:R | 0.80 |
+| Initial per-symbol alert cooldown | 900 seconds |
+| Swing default lifetime / evaluation cadence | 7 days / closed 1H candles |
+
+These are conservative first-pass filters, not statistically optimized values. They must be recalibrated only against out-of-sample historical or forward Paper data. Thresholds were not relaxed to increase alert frequency.
+
+## A74.3 Outcome semantics and limits
+
+`outcome_net_return_pct` and `outcome_net_r` are **hypothetical Shadow estimates**, not realized PnL. The model uses the existing configured TP exit weights (default 50% / 30% / 20%) and fee, spread and slippage assumptions. Because monitor-only ideas have no exchange-confirmed entry or fill, real execution differences, funding, queue position, order-book impact and actual fee tier cannot be known. Telegram wording distinguishes a partial contribution from a completed scenario, and data-gap expiry is explicitly UNKNOWN. Profitability has not been established by this code review.
+
+The independent Swing scanner consumes the same bounded market snapshots as the existing Hunter. It does not issue extra market-data requests, does not make the entire exchange universe available, and does not add Futures/Short authority. Existing MSE Swing engine candidates continue to be observed with their strategy metadata.
+
+## A74.4 Files changed in this release pass
+
+- `main.py` — shared stablecoin hard filter; quality scoring and strong-only gating; separate execution/regime scores; 1H/4H Swing discovery; cost-aware reference targets; fee-aware Shadow outcomes; SQLite-persisted initial-alert cooldown; Swing RS stale-append correction; runtime feature-revision metadata.
+- `test_v702_production_audit_fixes.py` — regression coverage for stablecoin exclusions, quality filters, Swing discovery and non-qualification, net outcomes, persistence, and data gaps.
+- `test_production_guardrails.py` — alert-rate contract now uses strong eligible test alerts under the new policy.
+- `README.md` — A74 behavior, thresholds, limitations and run instructions.
+- `CHANGELOG.md` — A74 release notes.
+- `FINAL_AUDIT_REPORT.md` — this A74 audit record and final verification.
+- `FINAL_MANIFEST.json` — synchronized source digest, current Hunter contract and test/verification record.
+- `A66_RELEASE_MANIFEST.json` — synchronized source digest and supplemental feature evidence while preserving historical release lineage.
+- `A66_SHA256SUMS.txt` — regenerated SHA-256 ledger for all other package files.
+
+No package file is added or deleted. The release remains within the **99-file ceiling**.
+
+## A74.5 Verification status
+
+The final `FINAL_PRODUCTION_RELEASE.zip` was built from the 99 paths in `FINAL_MANIFEST.json`, extracted into a clean directory, and verified there. Results from that extracted release:
+
+- ZIP inventory: **99/99 unique files**, exact match to the manifest; `ZipFile.testzip()` returned `None` (CRC PASS).
+- SHA-256 ledger: **98/98 non-self package files matched** `A66_SHA256SUMS.txt`.
+- Python compilation: `compileall` PASS and explicit `py_compile` **73/73** PASS.
+- Full regression suite: **557 passed, 1 skipped, 0 failed (558 collected), across all 58 test modules**. To avoid a single-process test-runner hang, all modules were executed in four non-overlapping batches; every command exited 0: batch 1 = 89 passed (15 modules), batch 2 = 111 passed (15 modules), batch 3 = 171 passed / 1 skipped (15 modules), batch 4 = 186 passed (13 modules). The single skip is `test_release_contracts.py:375`, which requires a historical A51 runtime log not bundled in the source release. An earlier all-in-one invocation stopped at the tool timeout without a final report; it is not counted as a successful run.
+- Focused Hunter + production-guardrail regression set: **105 passed**. The dedicated A74 Hunter test file: **82 passed**.
+- `python -u main.py --validate-only`: **PASS, process exit 0** from the final clean extraction, with an empty environment (`active_env_aliases=[]`), `pass=true`, `bot_started=false`, and `live_threads=[]`. The internal validator exercises mock self-tests only; no authenticated exchange request, real Telegram delivery or real order was sent.
+- A74 runtime self-test: all checks true, including mandatory stablecoin denial, independent Swing scanner wiring, hourly follow-up horizon, fee-aware Shadow outcome callable, read-only authority and `MONITOR_ONLY_NO_NEW_BUYS`.
+
+No test run establishes profitability. The modeled Shadow net return/R uses assumed costs and configured exit fractions; it is not account PnL or a broker-confirmed fill. Actual MEXC connectivity, Telegram delivery, order fills, exchange-native stop behavior, target Python 3.12/Docker/Railway deployment and live profitability remain unverified. The production decision remains **NO_GO_UNATTENDED_LIVE**.

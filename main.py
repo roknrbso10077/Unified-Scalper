@@ -44477,10 +44477,10 @@ CONFIG.update({
     "SCRIPT_VERSION_FAMILY": "4.5.",
     "V531_STABLECOIN_FILTER_ENABLE": True,
     "V531_STABLECOIN_BASES": (
-        "USDT", "USDC", "USDS", "USDE", "USDE.E", "FDUSD", "TUSD",
+        "USDT", "USDC", "USDC.E", "USDT.E", "USDS", "USDE", "USDE.E", "FDUSD", "TUSD",
         "DAI", "USDD", "USDP", "GUSD", "PYUSD", "FRAX", "LUSD", "CRVUSD",
-        "USD0", "USD1", "USDGO", "EURC", "EURS", "EUROC", "RLUSD", "USDY", "USTC",
-        "BUSD", "UST", "USN", "CUSD", "SUSD", "MIM", "USDN"
+        "USD0", "USD1", "USDG", "USDGO", "EURC", "EURS", "EUROC", "EURT", "EURI", "AEUR",
+        "RLUSD", "USDY", "USTC", "BUSD", "UST", "USN", "CUSD", "SUSD", "MIM", "USDN", "USDTB"
     ),
     "V531_DISCOVERY_MIN_SCORE": 55.0,
     "V531_DISCOVERY_MIN_REVIEWED_SCORE": 80.0,
@@ -44531,12 +44531,12 @@ def _v531_base_asset(symbol: str) -> str:
 
 
 def _v531_is_stablecoin(symbol: str) -> bool:
-    if not bool(CONFIG.get("V531_STABLECOIN_FILTER_ENABLE", True)):
-        return False
+    """Hard denylist for stablecoin base assets; cannot be disabled by config."""
     try:
         return _v531_base_asset(symbol) in _V531_STABLECOIN_BASES
     except Exception:
-        return False
+        # Fail closed: symbol parsing failure must never permit a stable-asset trade.
+        return True
 
 
 def _v531_review_discovery_score(engine_score: float, ctx: Dict[str, Any], family: str) -> Tuple[float, Dict[str, float], str]:
@@ -102340,6 +102340,11 @@ class OpportunityHunter:
                     "outcome_final": "INTEGER NOT NULL DEFAULT 0",
                     "outcome_updated_at": "REAL NOT NULL DEFAULT 0",
                     "outcome_reason": "TEXT NOT NULL DEFAULT ''",
+                    "outcome_net_return_pct": "REAL",
+                    "outcome_net_r": "REAL",
+                    "outcome_realized_fraction": "REAL NOT NULL DEFAULT 0",
+                    "outcome_cost_pct": "REAL",
+                    "symbol_last_alert_at": "REAL NOT NULL DEFAULT 0",
                 }
                 for _column, _definition in _migrations.items():
                     if _column not in _columns:
@@ -102401,6 +102406,11 @@ class OpportunityHunter:
         row.setdefault("outcome_final", 0)
         row.setdefault("outcome_updated_at", 0.0)
         row.setdefault("outcome_reason", "")
+        row.setdefault("outcome_net_return_pct", None)
+        row.setdefault("outcome_net_r", None)
+        row.setdefault("outcome_realized_fraction", 0.0)
+        row.setdefault("outcome_cost_pct", None)
+        row.setdefault("symbol_last_alert_at", 0.0)
         return row
 
     @classmethod
@@ -102600,7 +102610,9 @@ class OpportunityHunter:
                    "evidence_json", "missing_json", "blockers_json", "alerted_states_json",
                    "last_alert_delivery", "last_alert_reason", "updated_at", "expires_at",
                    "outcome_status", "outcome_events_json", "outcome_last_candle_ts", "outcome_final",
-                   "outcome_updated_at", "outcome_reason"}
+                   "outcome_updated_at", "outcome_reason", "outcome_net_return_pct",
+                   "outcome_net_r", "outcome_realized_fraction", "outcome_cost_pct",
+                   "symbol_last_alert_at"}
         values = {k: v for k, v in updates.items() if k in allowed}
         values["updated_at"] = float(WALL_NOW())
         if not values:
@@ -102630,11 +102642,16 @@ class OpportunityHunter:
                 return None
             family_raw = str(getattr(candidate, "family", "") or getattr(candidate, "strategy_mode", "UNKNOWN")).upper()
             engine = str(getattr(candidate, "engine_id", "") or "")
-            if "BREAK" in family_raw: pattern = "BREAKOUT_CONTINUATION"
-            elif "PULL" in family_raw: pattern = "PULLBACK_RECLAIM"
-            elif "MEAN" in family_raw: pattern = "MEAN_REVERSION"
-            elif "RELATIVE" in family_raw or "STRENGTH" in family_raw: pattern = "RELATIVE_STRENGTH_LEADER"
-            else: pattern = ("ENGINE_" + (engine or family_raw))[:80]
+            if "BREAK" in family_raw or any(token in family_raw for token in ("COMPRESSION", "VOLATILITY_BURST", "TREND_CONTINUATION", "LOCAL_STRENGTH")):
+                pattern = "BREAKOUT_CONTINUATION"
+            elif "PULL" in family_raw or "RECLAIM" in family_raw:
+                pattern = "PULLBACK_RECLAIM"
+            elif "MEAN" in family_raw:
+                pattern = "MEAN_REVERSION"
+            elif "RELATIVE" in family_raw or "STRENGTH" in family_raw:
+                pattern = "RELATIVE_STRENGTH_LEADER"
+            else:
+                pattern = ("ENGINE_" + (engine or family_raw))[:80]
             entry = cls._safe_float(getattr(candidate, "entry_ref", None))
             stop = cls._safe_float(getattr(candidate, "sl_price", None))
             if not entry or not stop or entry <= stop or stop <= 0:
@@ -103088,7 +103105,8 @@ class OpportunityHunter:
             final = True
             interval_sec = cls._outcome_interval_sec(row)
             event = {"kind": outcome_status, "candle_open_ts": int(now_s // interval_sec) * interval_sec,
-                     "candle_close_ts": int(now_s), "reference_price": None,
+                     "candle_close_ts": int(now_s),
+                     "reference_price": (float(frame["close"].iloc[-1]) if isinstance(frame, pd.DataFrame) and len(frame) else None),
                      "ambiguous_same_candle_target": False}
             events.append(event); new_events.append(event)
         if new_last_open == last_open and not new_events:
@@ -103286,7 +103304,14 @@ class OpportunityHunter:
             if current and alert_token in (current.get("alerted_states") or []):
                 return
             def on_success(reason="delivered"):
-                cls._update_row(opp_id, {"last_alert_delivery": "DELIVERED", "last_alert_reason": str(reason or "delivered")[:180]})
+                # Persist a per-symbol alert cooldown only after Telegram ACKs
+                # delivery. This survives process restarts and avoids sending
+                # separate strategy alerts for the same underlying move.
+                cls._update_row(opp_id, {
+                    "last_alert_delivery": "DELIVERED",
+                    "last_alert_reason": str(reason or "delivered")[:180],
+                    "symbol_last_alert_at": float(WALL_NOW()),
+                })
                 STATS["v702_opportunity_hunter_alert_delivered"] = int(STATS.get("v702_opportunity_hunter_alert_delivered", 0) or 0) + 1
             def on_failure(reason="delivery_failed"):
                 cls._update_row(opp_id, {"last_alert_delivery": "FAILED", "last_alert_reason": str(reason or "failed")[:180]})
@@ -103409,19 +103434,27 @@ class OpportunityHunter:
                         _events = list(row.get("outcome_events") or [])[-49:]
                         _prior = max((n for n in (1, 2) if any(
                             isinstance(e, dict) and e.get("kind") == f"SHADOW_TP{n}_TOUCHED" for e in _events)), default=0)
-                        _suffix = f"_AFTER_TP{_prior}" if _prior else "_WITHOUT_TARGET"
-                        _expiry_kind = "SHADOW_EXPIRED" + _suffix
+                        if frame is None:
+                            # Missing/stale market data is not a stop or a loss.
+                            # Close the tracking window as UNKNOWN so reports do
+                            # not misclassify data gaps as failed trade ideas.
+                            _expiry_kind = "SHADOW_DATA_GAP_EXPIRED"
+                            _expiry_reason = "انتهت المتابعة دون شموع مغلقة صالحة؛ النتيجة مجهولة وليست ربحًا أو خسارة."
+                        else:
+                            _suffix = f"_AFTER_TP{_prior}" if _prior else "_WITHOUT_TARGET"
+                            _expiry_kind = "SHADOW_EXPIRED" + _suffix
+                            _expiry_reason = "انتهت مدة المتابعة؛ تم تقييم الإغلاق الأخير كخروج افتراضي مرجعي إن توفرت بيانات صالحة."
                         _events.append({"kind": _expiry_kind, "candle_open_ts": int(now // interval_sec) * interval_sec,
-                                        "candle_close_ts": int(now), "reference_price": None,
+                                        "candle_close_ts": int(now), "reference_price": (float(frame["close"].iloc[-1]) if frame is not None and len(frame) else None),
                                         "ambiguous_same_candle_target": False})
                         updates.update({"outcome_status": _expiry_kind,
                                         "outcome_events_json": json.dumps(cls._json_value(_events), ensure_ascii=False, separators=(",", ":")),
                                         "outcome_final": 1, "outcome_updated_at": now,
-                                        "outcome_reason": "انتهت مدة المتابعة دون هدف نهائي؛ النتائج السابقة محفوظة كما هي."})
+                                        "outcome_reason": _expiry_reason})
                         outcome_events_count += 1
                     if updates.get("status") not in ("INVALIDATED", "COMPLETED"):
                         updates["status"] = "EXPIRED"
-                        updates["reason"] = "انتهت نافذة صلاحية setup دون تحقق استمرار صالح."
+                        updates["reason"] = "انتهت نافذة صلاحية setup؛ راجع outcome_status لتمييز الخروج المرجعي من فجوة البيانات."
                 elif price is not None and updates.get("status") != "INVALIDATED":
                     invalid = cls._safe_float(row.get("invalidation_price"))
                     if invalid is not None and price <= invalid:
@@ -103460,7 +103493,9 @@ class OpportunityHunter:
         return [{k: r.get(k) for k in ("opportunity_id", "symbol", "family", "pattern", "source", "status", "score",
                 "timeframe", "candle_ts", "entry_ref", "sl_price", "tp1", "tp2", "tp3", "last_price", "invalidation_price", "reason",
                 "confirmation_type", "missing_conditions", "blockers", "last_alert_delivery", "created_at", "expires_at",
-                "outcome_status", "outcome_events", "outcome_last_candle_ts", "outcome_final", "outcome_reason")}
+                "outcome_status", "outcome_events", "outcome_last_candle_ts", "outcome_final", "outcome_reason",
+                "outcome_net_return_pct", "outcome_net_r", "outcome_realized_fraction", "outcome_cost_pct",
+                "symbol_last_alert_at")}
                 for r in rows]
 
     @classmethod
@@ -104622,6 +104657,651 @@ if _V699_VALIDATE_ONLY_REQUEST:
 
 
 
+
+
+
+# =============================================================================
+# V702 A74 — QUALITY-FIRST / STABLECOIN EXCLUSION / FULL SWING / NET SHADOW PNL
+# Read-only opportunity discovery. This revision does not grant order authority.
+# =============================================================================
+V702_A74_QUALITY_SWING_REVISION = "A74-QUALITY-FIRST-STABLECOIN-FILTER-SWING-AND-NET-SHADOW-OUTCOMES-2026-11-17"
+CONFIG.update({
+    "V702_OPPORTUNITY_HUNTER_SCORE_FLOOR": 82.0,
+    "V702_OPPORTUNITY_HUNTER_MAX_ACTIVE": 3000,
+    "V702_OPPORTUNITY_HUNTER_STRONG_ONLY": True,
+    "V702_OPPORTUNITY_HUNTER_STRONG_MIN_SCORE": 82.0,
+    "V702_OPPORTUNITY_HUNTER_STRONG_MIN_EXECUTION_SCORE": 65.0,
+    "V702_OPPORTUNITY_HUNTER_STRONG_MIN_REGIME_SCORE": 50.0,
+    "V702_OPPORTUNITY_HUNTER_MAX_SPREAD_PCT": 0.15,
+    "V702_OPPORTUNITY_HUNTER_MIN_QUOTE_VOLUME_USDT": 2000000.0,
+    "V702_OPPORTUNITY_HUNTER_MIN_PULLBACK_VOLUME_RATIO": 1.05,
+    "V702_OPPORTUNITY_HUNTER_MIN_REVERSAL_VOLUME_RATIO": 1.15,
+    "V702_OPPORTUNITY_HUNTER_MIN_RS_ABSOLUTE_RETURN_PCT": 0.15,
+    "V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR": 0.65,
+    "V702_OPPORTUNITY_HUNTER_BREAKOUT_HARD_CHASE_ATR": 1.25,
+    "V702_OPPORTUNITY_HUNTER_MIN_NET_RR_TP1": 0.80,
+    "V702_OPPORTUNITY_HUNTER_SYMBOL_ALERT_COOLDOWN_SEC": 900.0,
+    "V702_OPPORTUNITY_HUNTER_SWING_ENABLE": True,
+    "V702_OPPORTUNITY_HUNTER_SWING_MIN_VOLUME_RATIO": 1.05,
+    "V702_OPPORTUNITY_HUNTER_SWING_MIN_SCORE": 82.0,
+    "V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT": float(CONFIG.get("TAKER_FEE_PCT", 0.10) or 0.10),
+    "V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT": float(CONFIG.get("V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT", 0.05) or 0.05),
+})
+
+_A74_BASE_EVALUATE_SNAPSHOT = OpportunityHunter._evaluate_snapshot.__func__
+_A74_BASE_OBSERVE_CANDIDATE = OpportunityHunter.observe_strategy_candidate.__func__
+_A74_BASE_ALERT_ALLOWED = OpportunityHunter._alert_allowed.__func__
+_A74_BASE_QUEUE_ALERT = OpportunityHunter._queue_alert.__func__
+_A74_BASE_MESSAGE = OpportunityHunter._message.__func__
+_A74_BASE_ADVANCE_OUTCOME = OpportunityHunter._advance_shadow_outcome.__func__
+_A74_BASE_OUTCOME_SUMMARY = OpportunityHunter.outcome_summary.__func__
+_A74_BASE_SELF_TEST = OpportunityHunter.self_test.__func__
+OpportunityHunter._a74_symbol_alert_last = {}
+OpportunityHunter._a74_symbol_alert_lock = threading.RLock()
+
+
+def _v702_a74_is_stable_symbol(symbol):
+    """Use the canonical stablecoin base set; fail closed if the filter is unavailable."""
+    try:
+        text_symbol = str(symbol or "").upper().strip()
+        if not text_symbol or not text_symbol.endswith("/USDT"):
+            return True
+        stable_fn = globals().get("_v531_is_stablecoin")
+        stable_set = set(globals().get("_V531_STABLECOIN_BASES", set()))
+        base = text_symbol.split("/", 1)[0]
+        if not callable(stable_fn):
+            return True
+        return bool(stable_fn(text_symbol)) or base in stable_set
+    except Exception:
+        return True
+
+
+def _v702_a74_market_quality(cls, item, md, *, h1=None, h4=None):
+    """Compute separate, transparent technical/execution/regime scores and net RR."""
+    evidence = dict(item.get("evidence") or {})
+    entry = cls._safe_float(item.get("entry_ref"))
+    stop = cls._safe_float(item.get("sl_price"))
+    target = cls._safe_float(item.get("tp1"))
+    raw_score = cls._safe_float(item.get("score"), 0.0) or 0.0
+    spread = cls._safe_float((md or {}).get("spread_pct", evidence.get("spread_pct")))
+    qv = cls._safe_float((md or {}).get("quote_vol_24h", evidence.get("quote_vol_24h")))
+    volr = cls._safe_float(evidence.get("volume_ratio_5m", evidence.get("volume_ratio_1h", evidence.get("volume_ratio"))))
+    fee_pct = max(0.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10) or 0.10))
+    slip_pct = max(0.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT", 0.05) or 0.05))
+    cost_pct = None if spread is None else spread + 2.0 * fee_pct + 2.0 * slip_pct
+
+    # Marketability is a separate score, not hidden inside the technical score.
+    spread_score = 0.0
+    if spread is not None and spread >= 0:
+        if spread <= 0.03: spread_score = 100.0
+        elif spread <= 0.08: spread_score = 85.0 - (spread - 0.03) / 0.05 * 15.0
+        elif spread <= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_SPREAD_PCT", 0.15)):
+            spread_score = 70.0 - (spread - 0.08) / 0.07 * 25.0
+        else: spread_score = max(0.0, 25.0 - (spread - 0.15) * 100.0)
+    volume_score = 0.0
+    if qv is not None and qv > 0:
+        if qv >= 20_000_000: volume_score = 100.0
+        elif qv >= 5_000_000: volume_score = 85.0 + (qv - 5_000_000) / 15_000_000 * 15.0
+        elif qv >= 2_000_000: volume_score = 65.0 + (qv - 2_000_000) / 3_000_000 * 20.0
+        else: volume_score = max(0.0, qv / 2_000_000 * 65.0)
+    execution_score = 0.65 * spread_score + 0.35 * volume_score
+
+    def _trend(frame):
+        if frame is None or len(frame) < 56:
+            return None
+        ind = cls._indicators(frame)
+        close = float(frame["close"].iloc[-1])
+        return bool(ind["ema20"] > ind["ema50"] and close >= ind["ema20"])
+    t1 = _trend(h1)
+    t4 = _trend(h4)
+    if t1 is None and t4 is None:
+        regime_score = 45.0
+    elif t1 is True and t4 is True:
+        regime_score = 100.0
+    elif t1 is True or t4 is True:
+        regime_score = 65.0
+    elif t1 is False and t4 is False:
+        regime_score = 15.0
+    else:
+        regime_score = 40.0
+
+    risk_pct = ((entry - stop) / entry * 100.0) if entry and stop and entry > stop > 0 else None
+    reward_pct = ((target - entry) / entry * 100.0) if entry and target and target > entry > 0 else None
+    net_rr = None
+    if risk_pct and reward_pct is not None and cost_pct is not None and risk_pct > 0:
+        net_reward = reward_pct - cost_pct
+        net_risk = risk_pct + cost_pct
+        net_rr = net_reward / net_risk if net_risk > 0 else None
+
+    technical_score = max(0.0, min(100.0, raw_score))
+    pattern = str(item.get("pattern") or "").upper()
+    ctype = str(item.get("confirmation_type") or "").upper()
+    signal_quality_ok = str(item.get("status") or "").upper() == "CONFIRMED"
+    missing = list(item.get("missing_conditions") or [])
+    if pattern.startswith("BREAKOUT") or "SWING_BREAKOUT" in pattern:
+        chase_source = evidence.get("distance_to_resistance_atr")
+        if chase_source is None:
+            chase_source = -cls._safe_float(evidence.get("breakout_chase_atr"), 0.0)
+        chase = max(0.0, -float(cls._safe_float(chase_source, 999.0) or 999.0))
+        min_breakout_vol = 1.25 if "SWING_BREAKOUT" in pattern else 1.20
+        signal_quality_ok = signal_quality_ok and volr is not None and volr >= min_breakout_vol and chase <= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65))
+        evidence["breakout_chase_atr"] = round(chase, 4)
+        if chase > float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65)):
+            missing.append("WAIT_FOR_RESISTANCE_RETEST_NO_CHASE")
+            technical_score -= min(18.0, chase * 8.0)
+    elif pattern.startswith("PULLBACK") or "SWING_PULLBACK" in pattern:
+        min_pullback_vol = float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_MIN_VOLUME_RATIO", 1.05)) if "SWING_PULLBACK" in pattern else float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_PULLBACK_VOLUME_RATIO", 1.05))
+        signal_quality_ok = signal_quality_ok and volr is not None and volr >= min_pullback_vol
+        if volr is None or volr < min_pullback_vol:
+            missing.append("PULLBACK_VOLUME_CONFIRMATION")
+            technical_score -= 12.0
+    elif pattern.startswith("MEAN_REVERSION") or "MEAN_REVERSION" in pattern:
+        signal_quality_ok = signal_quality_ok and volr is not None and volr >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_REVERSAL_VOLUME_RATIO", 1.15))
+        if volr is None or volr < float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_REVERSAL_VOLUME_RATIO", 1.15)):
+            missing.append("REVERSAL_VOLUME_CONFIRMATION")
+            technical_score -= 12.0
+    elif pattern.startswith("RELATIVE_STRENGTH") or "RELATIVE_STRENGTH" in pattern:
+        abs_ret = cls._safe_float(evidence.get("symbol_return_15m_5bars_pct", evidence.get("symbol_return_1h_6bars_pct", evidence.get("symbol_return_1h_5bars_pct"))))
+        rs_diff = cls._safe_float(evidence.get("relative_strength_diff_pct"))
+        min_rs_volume = 1.10 if "SWING_RELATIVE_STRENGTH" in pattern else 1.15
+        signal_quality_ok = (signal_quality_ok and abs_ret is not None
+                             and abs_ret >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_RS_ABSOLUTE_RETURN_PCT", 0.15))
+                             and rs_diff is not None and rs_diff >= 0.30
+                             and volr is not None and volr >= min_rs_volume)
+        evidence["absolute_momentum_pct"] = abs_ret
+        if abs_ret is None or abs_ret < float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_RS_ABSOLUTE_RETURN_PCT", 0.15)):
+            missing.append("ABSOLUTE_MOMENTUM_MUST_BE_POSITIVE")
+            technical_score -= 10.0
+    else:
+        # Unknown/engine-specific families do not get a free pass: the quality
+        # layer needs measured volume evidence before a candidate can be called
+        # STRONG. Missing volume is not silently treated as neutral.
+        if volr is None or volr < 1.0:
+            signal_quality_ok = False
+            missing.append("GENERIC_VOLUME_CONFIRMATION")
+            technical_score -= 10.0
+
+    strong = bool(
+        signal_quality_ok
+        and technical_score >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_STRONG_MIN_SCORE", 82.0))
+        and execution_score >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_STRONG_MIN_EXECUTION_SCORE", 65.0))
+        and regime_score >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_STRONG_MIN_REGIME_SCORE", 50.0))
+        and spread is not None and spread <= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_SPREAD_PCT", 0.15))
+        and qv is not None and qv >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_QUOTE_VOLUME_USDT", 2_000_000.0))
+        and net_rr is not None and net_rr + 1e-6 >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_NET_RR_TP1", 0.80))
+        and bool(evidence.get("cost_target_feasible", True))
+    )
+    composite = 0.65 * max(0.0, min(100.0, technical_score)) + 0.20 * execution_score + 0.15 * regime_score
+    evidence.update({
+        "technical_score": round(max(0.0, min(100.0, technical_score)), 2),
+        "execution_score": round(execution_score, 2),
+        "regime_fit_score": round(regime_score, 2),
+        "estimated_round_trip_cost_pct": round(cost_pct, 5) if cost_pct is not None else None,
+        "net_rr_tp1_estimate": round(net_rr, 3) if net_rr is not None else None,
+        "risk_pct": round(risk_pct, 5) if risk_pct is not None else None,
+        "quote_vol_24h": qv,
+        "spread_pct": spread,
+        "strong_alert_eligible": bool(strong),
+        "quality_tier": "STRONG" if strong else "NOT_QUALIFIED",
+    })
+    item["evidence"] = evidence
+    item["score"] = round(max(0.0, min(100.0, composite)), 2)
+    if str(item.get("status") or "").upper() == "CONFIRMED" and not strong:
+        item["status"] = "WATCH"
+        item["confirmation_type"] = "WATCH_QUALITY_GATE"
+        item["missing_conditions"] = list(dict.fromkeys(missing + [
+            "STRONG_TECHNICAL_EXECUTION_REGIME_AND_NET_RR_REQUIRED"
+        ]))
+    else:
+        item["missing_conditions"] = list(dict.fromkeys(missing))
+    return item
+
+
+def _v702_a74_cost_aware_targets(cls, item):
+    """Use ATR/stop risk plus round-trip cost to set research targets, not live orders."""
+    if str(item.get("source") or "") != "READ_ONLY_MARKET_PATTERN":
+        return item
+    entry = cls._safe_float(item.get("entry_ref")); stop = cls._safe_float(item.get("sl_price"))
+    evidence = dict(item.get("evidence") or {})
+    spread = cls._safe_float(evidence.get("spread_pct"))
+    if entry is None or stop is None or entry <= stop or spread is None:
+        return item
+    risk_pct = (entry - stop) / entry * 100.0
+    cost_pct = spread + 2.0 * float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10)) + 2.0 * float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT", 0.05))
+    if risk_pct <= 0:
+        return item
+    required_rr1 = max(1.50, 0.80 + 1.80 * cost_pct / risk_pct)
+    # Do not manufacture an implausibly distant TP1 merely to make fees appear viable.
+    # If the cost-aware target would exceed 3R, keep a capped research target and fail the quality gate.
+    rr1 = min(3.00, required_rr1)
+    rr2 = max(rr1 + 0.75, 2.50)
+    rr3 = max(rr2 + 0.75, 3.50)
+    item["tp1"] = entry + (entry - stop) * rr1
+    item["tp2"] = entry + (entry - stop) * rr2
+    item["tp3"] = entry + (entry - stop) * rr3
+    evidence.update({"target_rr_tp1": round(rr1, 3), "target_rr_tp2": round(rr2, 3), "target_rr_tp3": round(rr3, 3),
+                     "required_target_rr_tp1": round(required_rr1, 3),
+                     "cost_target_feasible": bool(required_rr1 <= 3.00),
+                     "target_method": "RISK_DISTANCE_AND_ESTIMATED_ROUND_TRIP_COST"})
+    item["evidence"] = evidence
+    return item
+
+
+def _v702_a74_swing_items(cls, symbol, md, now=None):
+    """Independent 1H setup discovery requiring closed 4H directional confirmation."""
+    if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_ENABLE", True)) or not isinstance(md, dict):
+        return []
+    if _v702_a74_is_stable_symbol(symbol):
+        return []
+    f1, ts1 = cls._closed_frame(md.get("df_1h"), 3600, now=now)
+    f4, ts4 = cls._closed_frame(md.get("df_4h"), 14400, now=now)
+    if f1 is None or f4 is None:
+        return []
+    i1 = cls._indicators(f1); i4 = cls._indicators(f4)
+    c1 = float(f1["close"].iloc[-1]); o1 = float(f1["open"].iloc[-1])
+    prev_high = float(f1["high"].iloc[-2]); low1 = float(f1["low"].iloc[-1])
+    atr1 = max(float(i1["atr"]), c1 * 0.001)
+    trend1 = bool(i1["ema20"] > i1["ema50"] and c1 >= i1["ema20"])
+    trend4 = bool(i4["ema20"] > i4["ema50"] and float(f4["close"].iloc[-1]) >= i4["ema20"])
+    if not trend4 or c1 <= 0 or not math.isfinite(atr1):
+        return []
+    volr1 = max(0.0, min(10.0, float(i1["volume_ratio"])))
+    resistance = float(f1["high"].iloc[-21:-1].max())
+    chase_atr = max(0.0, (c1 - resistance) / atr1)
+    qv = cls._safe_float(md.get("quote_vol_24h"), 0.0) or 0.0
+    spread = cls._safe_float(md.get("spread_pct"))
+    ttl = float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_TTL_SEC", 604800.0))
+    out = []
+
+    breakout = (trend1 and c1 > resistance * 1.0005 and c1 > o1 and volr1 >= 1.25
+                and chase_atr <= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65)))
+    if breakout:
+        stop = max(resistance - 0.70 * atr1, c1 - 1.35 * atr1)
+        if 0 < stop < c1:
+            risk = c1 - stop
+            item = cls._setup_item(symbol, "SWING_BREAKOUT_CONTINUATION", "SWING_BREAKOUT", c1, stop,
+                84 + min(10.0, (volr1 - 1.25) * 5.0) + (5 if trend1 else 0), max(ts1, ts4), "1H+4H",
+                "اختراق ساعة مغلقة بحجم مؤكد مع اتجاه 4H داعم؛ لا مطاردة بعد حد ATR.",
+                ["إغلاق 1H فوق مقاومة 20 شمعة", "استمرار توافق 4H", "فحص التكلفة والعمق"],
+                {"resistance_20_1h": resistance, "volume_ratio_1h": round(volr1, 3),
+                 "breakout_chase_atr": round(chase_atr, 3), "trend_1h": trend1, "trend_4h": trend4,
+                 "spread_pct": spread, "quote_vol_24h": qv, "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "CLOSED_BAR_SWING_BREAKOUT", "CONFIRMED", ttl)
+            item["tp1"] = c1 + risk * 1.8; item["tp2"] = c1 + risk * 2.8; item["tp3"] = c1 + risk * 4.0
+            ev = dict(item.get("evidence") or {}); ev.update({"strategy_style": "SWING", "outcome_interval_sec": 3600}); item["evidence"] = ev
+            out.append(item)
+
+    # Swing pullback: hourly reclaim of EMA20 inside a verified 4H uptrend.
+    touch = trend1 and float(f1["low"].iloc[-1]) <= i1["ema20"] + 0.25 * atr1 and c1 > i1["ema20"] and c1 > prev_high
+    pullback = touch and c1 > o1 and volr1 >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_MIN_VOLUME_RATIO", 1.05))
+    if pullback:
+        structure_low = float(f1["low"].iloc[-11:].min())
+        stop = min(i1["ema50"] - 0.20 * atr1, structure_low - 0.15 * atr1)
+        if 0 < stop < c1:
+            risk = c1 - stop
+            item = cls._setup_item(symbol, "SWING_PULLBACK_RECLAIM", "SWING_PULLBACK", c1, stop,
+                83 + min(10.0, (volr1 - 1.05) * 6.0) + 5.0, max(ts1, ts4), "1H+4H",
+                "تصحيح ساعة استعاد EMA20 وأغلق فوق قمة الساعة السابقة مع توافق اتجاه 4H.",
+                ["ثبات قاع الهيكل", "حجم 1H داعم", "فحص التكلفة والعمق"],
+                {"ema20_1h": i1["ema20"], "ema50_1h": i1["ema50"], "atr1h": atr1,
+                 "volume_ratio_1h": round(volr1, 3), "trend_1h": trend1, "trend_4h": trend4,
+                 "spread_pct": spread, "quote_vol_24h": qv, "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "CLOSED_BAR_SWING_PULLBACK", "CONFIRMED", ttl)
+            item["tp1"] = c1 + risk * 1.8; item["tp2"] = c1 + risk * 2.8; item["tp3"] = c1 + risk * 4.0
+            ev = dict(item.get("evidence") or {}); ev.update({"strategy_style": "SWING", "outcome_interval_sec": 3600}); item["evidence"] = ev
+            out.append(item)
+
+    # Swing relative strength: require positive absolute 1H return and BTC-relative gain.
+    btc, btc_ts = cls._closed_frame(md.get("df_btc_1h"), 3600, now=now)
+    if btc is not None and len(f1) >= 7 and len(btc) >= 7 and c1 >= i1["ema20"]:
+        sym_base = float(f1["close"].iloc[-7]); btc_base = float(btc["close"].iloc[-7]); btc_now = float(btc["close"].iloc[-1])
+        if sym_base > 0 and btc_base > 0 and btc_now > 0:
+            abs_ret = (c1 / sym_base - 1.0) * 100.0
+            btc_ret = (btc_now / btc_base - 1.0) * 100.0
+            rs_diff = abs_ret - btc_ret
+            if abs_ret >= 0.35 and rs_diff >= 0.50 and trend4 and volr1 >= 1.10:
+                stop = min(i1["ema50"] - 0.25 * atr1, float(f1["low"].iloc[-11:].min()) - 0.10 * atr1)
+                if 0 < stop < c1:
+                    risk = c1 - stop
+                    item = cls._setup_item(symbol, "SWING_RELATIVE_STRENGTH", "SWING_RELATIVE_STRENGTH", c1, stop,
+                        84 + min(10.0, rs_diff * 2.0) + min(5.0, volr1), max(ts1, ts4, btc_ts), "1H+4H vs BTC",
+                        "زخم 1H موجب وتفوق واضح على BTC مع اتجاه 4H داعم.",
+                        ["استمرار الزخم المطلق", "عدم فقد EMA20 على 1H", "فحص التكلفة والعمق"],
+                        {"symbol_return_1h_6bars_pct": round(abs_ret, 3), "btc_return_1h_6bars_pct": round(btc_ret, 3),
+                         "relative_strength_diff_pct": round(rs_diff, 3), "volume_ratio_1h": round(volr1, 3),
+                         "trend_1h": trend1, "trend_4h": trend4, "spread_pct": spread, "quote_vol_24h": qv,
+                         "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                        "CLOSED_BAR_SWING_RELATIVE_STRENGTH", "CONFIRMED", ttl)
+                    item["tp1"] = c1 + risk * 1.8; item["tp2"] = c1 + risk * 2.8; item["tp3"] = c1 + risk * 4.0
+                    ev = dict(item.get("evidence") or {}); ev.update({"strategy_style": "SWING", "outcome_interval_sec": 3600}); item["evidence"] = ev
+                    out.append(item)
+    return out
+
+
+def _v702_a74_evaluate_snapshot(cls, symbol, md, now=None):
+    if _v702_a74_is_stable_symbol(symbol):
+        STATS["v702_a74_stablecoin_hunter_exclusions"] = int(STATS.get("v702_a74_stablecoin_hunter_exclusions", 0) or 0) + 1
+        return []
+    if not isinstance(md, dict):
+        return []
+    try:
+        h1, _ = cls._closed_frame(md.get("df_1h"), 3600, now=now)
+        h4, _ = cls._closed_frame(md.get("df_4h"), 14400, now=now)
+        intraday = list(_A74_BASE_EVALUATE_SNAPSHOT(cls, symbol, md, now=now) or [])
+        swing = list(_v702_a74_swing_items(cls, symbol, md, now=now) or [])
+        items = intraday + swing
+        enriched = []
+        for item in items:
+            item = _v702_a74_cost_aware_targets(cls, item)
+            item = _v702_a74_market_quality(cls, item, md, h1=h1, h4=h4)
+            enriched.append(item)
+        # Same-symbol strategy overlap is confluence, not multiple independent trades.
+        qualified = [x for x in enriched if bool((x.get("evidence") or {}).get("strong_alert_eligible"))]
+        if len(qualified) > 1:
+            families = list(dict.fromkeys(str(x.get("family") or x.get("pattern") or "") for x in qualified))
+            for item in qualified:
+                ev = dict(item.get("evidence") or {})
+                ev["confluence_count"] = len(qualified)
+                ev["confluence_families"] = families[:5]
+                item["evidence"] = ev
+                item["score"] = min(100.0, float(item.get("score") or 0) + min(3.0, len(qualified) - 1))
+        # Keep only potentially actionable setups internally. Telegram still
+        # requires all independent strong-quality gates.
+        enriched = [x for x in enriched if float(x.get("score") or 0) >= 68.0]
+        enriched.sort(key=lambda x: (bool((x.get("evidence") or {}).get("strong_alert_eligible")),
+                                     float(x.get("score") or 0)), reverse=True)
+        return enriched[:5]
+    except Exception as exc:
+        STATS["v702_a74_hunter_evaluation_errors"] = int(STATS.get("v702_a74_hunter_evaluation_errors", 0) or 0) + 1
+        logger.debug("[A74-HUNTER] evaluation suppressed: %s:%s", type(exc).__name__, str(exc)[:120])
+        return []
+
+
+def _v702_a74_observe_candidate(cls, candidate, snapshot=None):
+    try:
+        symbol = str(getattr(candidate, "symbol", "") or "").upper()
+        if _v702_a74_is_stable_symbol(symbol):
+            STATS["v702_a74_stablecoin_candidate_exclusions"] = int(STATS.get("v702_a74_stablecoin_candidate_exclusions", 0) or 0) + 1
+            return None
+        row = _A74_BASE_OBSERVE_CANDIDATE(cls, candidate, snapshot)
+        if not row:
+            return row
+        md = snapshot if isinstance(snapshot, dict) else {}
+        h1, _ = cls._closed_frame(md.get("df_1h"), 3600)
+        h4, _ = cls._closed_frame(md.get("df_4h"), 14400)
+        quality_item = {
+            "symbol": row.get("symbol"), "family": row.get("family"), "pattern": row.get("pattern"),
+            "status": "CONFIRMED", "confirmation_type": "CANONICAL_SCORE_PASS",
+            "score": row.get("score"), "entry_ref": row.get("entry_ref"), "sl_price": row.get("sl_price"),
+            "tp1": row.get("tp1"), "evidence": dict(row.get("evidence") or {}),
+        }
+        ev = quality_item["evidence"]
+        fs = ev.get("features_snapshot") if isinstance(ev.get("features_snapshot"), dict) else {}
+        ev.setdefault("volume_ratio", fs.get("volume_ratio", fs.get("volume_ratio_5m")))
+        q = _v702_a74_market_quality(cls, quality_item, md, h1=h1, h4=h4)
+        merged = dict(row.get("evidence") or {})
+        merged.update(q.get("evidence") or {})
+        merged["strategy_style"] = str(getattr(candidate, "strategy_style", "INTRADAY") or "INTRADAY").upper()
+        merged["outcome_interval_sec"] = 3600 if merged["strategy_style"] == "SWING" else 300
+        cls._update_row(row.get("opportunity_id"), {
+            "evidence_json": json.dumps(cls._json_value(merged), ensure_ascii=False, separators=(",", ":")),
+            "score": q.get("score", row.get("score", 0.0)),
+        })
+        return cls._get_by_id(row.get("opportunity_id"))
+    except Exception as exc:
+        STATS["v702_a74_candidate_quality_errors"] = int(STATS.get("v702_a74_candidate_quality_errors", 0) or 0) + 1
+        logger.debug("[A74-HUNTER] candidate quality suppressed: %s:%s", type(exc).__name__, str(exc)[:120])
+        return None
+
+
+def _v702_a74_alert_allowed(cls, row, state):
+    if not isinstance(row, dict) or _v702_a74_is_stable_symbol(row.get("symbol")):
+        return False
+    state = str(state or "").upper()
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    ctype = str(row.get("confirmation_type") or "").upper()
+    if state == "CONFIRMED" and ctype not in ("CANONICAL_PRESEND_PASS",) and not bool(evidence.get("strong_alert_eligible")):
+        STATS["v702_a74_weak_alerts_suppressed"] = int(STATS.get("v702_a74_weak_alerts_suppressed", 0) or 0) + 1
+        return False
+    return _A74_BASE_ALERT_ALLOWED(cls, row, state)
+
+
+def _v702_a74_queue_alert(cls, row, state, variant=""):
+    state_u = str(state or "").upper()
+    symbol = str((row or {}).get("symbol") or "").upper()
+    # One initial alert per asset during cooldown. Outcome/stop/expiry follow-ups
+    # are not throttled by this symbol-level idea deduplicator.
+    if state_u in ("CONFIRMED", "TRADEABLE") and symbol:
+        now = float(WALL_NOW())
+        cooldown = max(0.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SYMBOL_ALERT_COOLDOWN_SEC", 900.0)))
+        with cls._a74_symbol_alert_lock:
+            previous = float(cls._a74_symbol_alert_last.get(symbol, 0.0) or 0.0)
+            try:
+                with cls._DB_LOCK:
+                    cls._ensure_schema()
+                    conn = cls._connect()
+                    try:
+                        raw_last = conn.execute(
+                            "SELECT MAX(symbol_last_alert_at) FROM opportunity_hunter WHERE symbol=?",
+                            (symbol,),
+                        ).fetchone()
+                        durable_previous = float((raw_last[0] if raw_last else 0.0) or 0.0)
+                    finally:
+                        conn.close()
+                previous = max(previous, durable_previous)
+            except Exception as exc:
+                # The DB is also required by the queue path. Avoid duplicating
+                # messages when persistent cooldown state cannot be verified.
+                STATS["v702_a74_symbol_alert_dedup_db_errors"] = int(
+                    STATS.get("v702_a74_symbol_alert_dedup_db_errors", 0) or 0) + 1
+                logger.debug("[A74-HUNTER] durable symbol cooldown unavailable: %s", type(exc).__name__)
+                return False
+            if cooldown and now - previous < cooldown:
+                STATS["v702_a74_symbol_alert_dedup"] = int(STATS.get("v702_a74_symbol_alert_dedup", 0) or 0) + 1
+                return False
+            queued = _A74_BASE_QUEUE_ALERT(cls, row, state, variant)
+            if queued:
+                cls._a74_symbol_alert_last[symbol] = now
+            return queued
+    return _A74_BASE_QUEUE_ALERT(cls, row, state, variant)
+
+
+def _v702_a74_message(cls, row, state, alert_token=""):
+    base = _A74_BASE_MESSAGE(cls, row, state, alert_token)
+    ev = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    lines = []
+    if ev:
+        lines.append("\n<b>تقييم الجودة المنفصل</b>")
+        for key, label in (("technical_score", "الجودة الفنية"), ("execution_score", "جودة التنفيذ"), ("regime_fit_score", "توافق الإطار الأعلى"), ("net_rr_tp1_estimate", "Net RR تقديري عند TP1")):
+            value = cls._safe_float(ev.get(key))
+            if value is not None:
+                lines.append(f"• {label}: <code>{value:.2f}</code>")
+        families = ev.get("confluence_families")
+        if isinstance(families, list) and len(families) > 1:
+            safe_families = "، ".join(OpportunityTelegramNotifier._escape(x) for x in families[:5])
+            lines.append(f"• توافق استراتيجيات متعددة: {safe_families}")
+    net = cls._safe_float(row.get("outcome_net_return_pct"))
+    frac = cls._safe_float(row.get("outcome_realized_fraction"), 0.0) or 0.0
+    outcome_status = str(row.get("outcome_status") or "").upper()
+    outcome_final = bool(row.get("outcome_final", 0))
+    if net is not None:
+        lines.append("\n<b>نتيجة Shadow مرجعية — ليست صفقة منفذة</b>")
+        if outcome_status == "SHADOW_DATA_GAP_EXPIRED":
+            lines.append(f"• المساهمة الصافية الجزئية المعروفة: <code>{net:+.3f}%</code> من رأس المال الافتراضي")
+            lines.append("• النتيجة الإجمالية النهائية: UNKNOWN — انتهت المتابعة مع فجوة بيانات؛ لا تُصنف ربحًا أو خسارة.")
+        elif outcome_final:
+            lines.append(f"• صافي العائد المرجعي التقديري للسيناريو المكتمل: <code>{net:+.3f}%</code>")
+        else:
+            lines.append(f"• مساهمة الخروج الجزئي حتى الآن: <code>{net:+.3f}%</code> من رأس المال الافتراضي؛ الجزء المتبقي لم يُحسم بعد.")
+        lines.append(f"• الجزء الذي تم تقييم خروجه: <code>{frac * 100:.1f}%</code>")
+        lines.append("• التقدير يخص رسوم/انزلاق/سبريد مفترضة؛ لا يمثل تعبئة فعلية أو ربحًا محققًا.")
+    return base + ("\n" + "\n".join(lines) if lines else "")
+
+
+def _v702_a74_advance_shadow_outcome(cls, row, frame, *, now=None):
+    """Advance fee-aware shadow outcomes; preserve conservative intrabar ordering."""
+    updates, new_events = _A74_BASE_ADVANCE_OUTCOME(cls, row, frame, now=now)
+    if not updates:
+        return updates, new_events
+    events_json = updates.get("outcome_events_json")
+    try:
+        all_events = cls._loads(events_json, []) if events_json else list(row.get("outcome_events") or [])
+        entry = cls._safe_float(row.get("entry_ref"))
+        stop = cls._safe_float(row.get("sl_price"))
+        if entry is None or stop is None or entry <= stop:
+            return updates, new_events
+        q1 = max(0.0, min(1.0, float(CONFIG.get("TP1_EXIT_PCT", 0.50))))
+        q2 = max(0.0, min(1.0, float(CONFIG.get("TP2_EXIT_PCT", 0.30))))
+        q3 = max(0.0, min(1.0, float(CONFIG.get("RUNNER_KEEP_PCT_AT_TP3", 0.20)))) if bool(CONFIG.get("ENABLE_RUNNER_MODE", True)) else max(0.0, 1.0 - q1 - q2)
+        total_q = q1 + q2 + q3
+        if total_q <= 0:
+            return updates, new_events
+        q1, q2, q3 = q1 / total_q, q2 / total_q, q3 / total_q
+        weights = {1: q1, 2: q2, 3: q3}
+        fee = max(0.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10)))
+        slip = max(0.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT", 0.05)))
+        spread = cls._safe_float((row.get("evidence") or {}).get("spread_pct"))
+        if spread is None:
+            spread = cls._safe_float((row.get("evidence") or {}).get("estimated_round_trip_cost_pct"))
+            # If only total estimated cost is known, do not add spread twice.
+            cost_pct = spread if spread is not None else None
+        else:
+            cost_pct = spread + 2.0 * fee + 2.0 * slip
+        if cost_pct is None:
+            updates["outcome_net_return_pct"] = None
+            updates["outcome_net_r"] = None
+            updates["outcome_cost_pct"] = None
+            return updates, new_events
+        targets = {1: cls._safe_float(row.get("tp1")), 2: cls._safe_float(row.get("tp2")), 3: cls._safe_float(row.get("tp3"))}
+        realized_fraction = 0.0
+        net_contribution = 0.0
+        seen_tps = set()
+        terminal_price = None
+        terminal_kind = ""
+        for event in all_events:
+            if not isinstance(event, dict):
+                continue
+            kind = str(event.get("kind") or "").upper()
+            if kind.startswith("SHADOW_TP") and "_TOUCHED" in kind:
+                try: n = int(kind.split("TP", 1)[1].split("_", 1)[0])
+                except Exception: continue
+                if n in weights and n not in seen_tps and targets.get(n):
+                    w = weights[n]
+                    gross_pct = (targets[n] / entry - 1.0) * 100.0
+                    net_contribution += w * (gross_pct - cost_pct)
+                    realized_fraction += w
+                    seen_tps.add(n)
+            elif kind.startswith("SHADOW_STOP"):
+                terminal_kind = kind
+                terminal_price = stop
+            elif kind.startswith("SHADOW_EXPIRED"):
+                terminal_kind = kind
+                terminal_price = cls._safe_float(event.get("reference_price"))
+            elif kind == "SHADOW_DATA_GAP_EXPIRED":
+                terminal_kind = kind
+                terminal_price = None
+        if terminal_kind and terminal_price is not None and realized_fraction < 0.999999:
+            remaining = max(0.0, 1.0 - realized_fraction)
+            gross_pct = (terminal_price / entry - 1.0) * 100.0
+            net_contribution += remaining * (gross_pct - cost_pct)
+            realized_fraction += remaining
+        risk_pct = (entry - stop) / entry * 100.0
+        net_r = net_contribution / (risk_pct + cost_pct) if (risk_pct + cost_pct) > 0 else None
+        updates["outcome_net_return_pct"] = round(net_contribution, 6)
+        updates["outcome_net_r"] = round(net_r, 4) if net_r is not None else None
+        updates["outcome_realized_fraction"] = round(min(1.0, realized_fraction), 6)
+        updates["outcome_cost_pct"] = round(cost_pct, 6)
+        # Add explicit per-event modeled cost and contribution for auditability.
+        for ev in all_events:
+            if isinstance(ev, dict) and "net_cost_pct_estimate" not in ev:
+                ev["net_cost_pct_estimate"] = round(cost_pct, 6)
+        updates["outcome_events_json"] = json.dumps(cls._json_value(all_events[-50:]), ensure_ascii=False, separators=(",", ":"))
+        return updates, new_events
+    except Exception as exc:
+        STATS["v702_a74_outcome_pnl_errors"] = int(STATS.get("v702_a74_outcome_pnl_errors", 0) or 0) + 1
+        logger.debug("[A74-OUTCOME] net result calculation suppressed: %s:%s", type(exc).__name__, str(exc)[:120])
+        return updates, new_events
+
+
+def _v702_a74_outcome_summary(cls):
+    base = _A74_BASE_OUTCOME_SUMMARY(cls)
+    try:
+        cls._ensure_schema()
+        conn = cls._connect()
+        try:
+            rows = conn.execute("SELECT outcome_final, outcome_net_return_pct, outcome_status, COUNT(*) FROM opportunity_hunter GROUP BY outcome_final, outcome_net_return_pct, outcome_status").fetchall()
+        finally:
+            conn.close()
+        profitable = losing = breakeven = unknown = final_count = 0
+        for final, net, status, count in rows:
+            n = int(count or 0)
+            if bool(final):
+                final_count += n
+                if net is None or str(status) == "SHADOW_DATA_GAP_EXPIRED": unknown += n
+                elif float(net) > 0.0001: profitable += n
+                elif float(net) < -0.0001: losing += n
+                else: breakeven += n
+        return {**(base or {}), "final_scenarios": final_count, "net_profitable_reference": profitable,
+                "net_losing_reference": losing, "net_breakeven_reference": breakeven,
+                "unknown_due_to_data_gap": unknown,
+                "basis": "HYPOTHETICAL_PARTIAL_EXIT_WEIGHTS_AFTER_ESTIMATED_FEES_SPREAD_SLIPPAGE_NOT_ACTUAL_PNL"}
+    except Exception:
+        return base or {}
+
+
+def _v702_a74_self_test(cls):
+    base = {
+        "stablecoin_filter_callable": callable(globals().get("_v531_is_stablecoin")),
+        "stablecoin_hard_denylist_uncancellable": all(
+            _v531_is_stablecoin(x) for x in ("USDC/USDT", "FDUSD/USDT", "TUSD/USDT", "DAI/USDT")
+        ),
+        "swing_discovery_callable": callable(_v702_a74_swing_items),
+        "quality_metrics_callable": callable(_v702_a74_market_quality),
+        "net_outcome_tracking_callable": callable(cls._advance_shadow_outcome),
+        "stablecoin_examples_blocked": all(_v702_a74_is_stable_symbol(x) for x in ("USDC/USDT", "USDT/USDT", "DAI/USDT")),
+        "volatile_assets_not_blocked": all(not _v702_a74_is_stable_symbol(x) for x in ("BTC/USDT", "ETH/USDT", "GOLD(XAUT)/USDT")),
+        "read_only_authority_preserved": cls.execution_authority is False,
+        "swing_horizon_is_hourly": cls._outcome_interval_sec({"evidence": {"strategy_style": "SWING"}}) == 3600,
+        "entry_policy_remains_monitor_only": str(CONFIG.get("LIVE_ENTRY_POLICY", "MONITOR_ONLY_NO_NEW_BUYS")) == "MONITOR_ONLY_NO_NEW_BUYS"
+            or str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")) == "MONITOR_ONLY_NO_NEW_BUYS",
+    }
+    return base
+
+
+OpportunityHunter._evaluate_snapshot = classmethod(_v702_a74_evaluate_snapshot)
+OpportunityHunter.observe_strategy_candidate = classmethod(_v702_a74_observe_candidate)
+OpportunityHunter._alert_allowed = classmethod(_v702_a74_alert_allowed)
+OpportunityHunter._queue_alert = classmethod(_v702_a74_queue_alert)
+OpportunityHunter._message = classmethod(_v702_a74_message)
+OpportunityHunter._advance_shadow_outcome = classmethod(_v702_a74_advance_shadow_outcome)
+OpportunityHunter.outcome_summary = classmethod(_v702_a74_outcome_summary)
+OpportunityHunter.a74_self_test = classmethod(_v702_a74_self_test)
+
+def _v702_a74_full_hunter_self_test(cls):
+    return {**_A74_BASE_SELF_TEST(cls), **_v702_a74_self_test(cls)}
+
+OpportunityHunter.self_test = classmethod(_v702_a74_full_hunter_self_test)
+
+FINAL_CANONICAL_RUNTIME.update({
+    "opportunity_hunter_quality_revision": V702_A74_QUALITY_SWING_REVISION,
+    "opportunity_hunter_strong_only_alerts": True,
+    "opportunity_hunter_stablecoin_exclusion": True,
+    "opportunity_hunter_independent_swing_discovery": True,
+    "opportunity_hunter_swing_timeframes": ["1H", "4H"],
+    "opportunity_hunter_separate_scores": ["technical_score", "execution_score", "regime_fit_score"],
+    "opportunity_hunter_cost_aware_targets": True,
+    "opportunity_hunter_net_shadow_result_tracking": True,
+    "opportunity_hunter_data_gap_is_unknown_not_loss": True,
+    "opportunity_hunter_symbol_alert_dedup_seconds": float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SYMBOL_ALERT_COOLDOWN_SEC", 900.0)),
+    "opportunity_hunter_execution_authority": False,
+    "live_enabled_by_default": False,
+})
+# A74 is an additive opportunity-hunter feature revision. Preserve the A70
+# canonical package identity used by existing release validators; advertise A74
+# in a separate runtime feature field rather than rewriting historical lineage.
+FINAL_CANONICAL_RUNTIME["active_opportunity_hunter_revision_current"] = V702_A74_QUALITY_SWING_REVISION
+STATS["v702_a74_revision"] = V702_A74_QUALITY_SWING_REVISION
+STATS["v702_a74_self_test"] = OpportunityHunter.a74_self_test()
 
 
 if __name__ == "__main__":

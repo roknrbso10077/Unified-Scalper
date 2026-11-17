@@ -431,8 +431,9 @@ class ProductionGuardrailTests(unittest.TestCase):
                 "V702_OPPORTUNITY_HUNTER_MAX_ALERTS_PER_MINUTE": 999,
             }), patch.object(hunter, "_deliver_alert", new=classmethod(no_delivery)):
                 async def submit():
-                    accepted = [hunter._queue_alert({"opportunity_id": f"cap-{i}", "status": "CONFIRMED",
-                                                     "confirmation_type": "CLOSED_BAR_BREAKOUT"}, "CONFIRMED") for i in range(4)]
+                    accepted = [hunter._queue_alert({"opportunity_id": f"cap-{i}", "symbol": f"CAP{i}/USDT",
+                                                     "status": "CONFIRMED", "confirmation_type": "CLOSED_BAR_BREAKOUT",
+                                                     "evidence": {"strong_alert_eligible": True}}, "CONFIRMED") for i in range(4)]
                     await asyncio.sleep(0)
                     return accepted
                 accepted = asyncio.run(submit())

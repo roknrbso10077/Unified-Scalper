@@ -2495,3 +2495,21 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Monitor intraday ideas with closed 5m candles and Swing ideas with closed 1h candles, using the same conservative stop-first rule when one OHLC candle touches both target and stop. Label outcome messages with the actual interval.
 - Add tests for alert-state gating, Prequal-vs-Score progression, TradingView link generation, closed-hourly Swing outcome sequencing, stable Swing de-duplication/TTL, and scan-level WATCH suppression.
 - No strategy engine, score floor, cost/risk/PreSend gate, API polling load, or execution authority was expanded. Live order submission was not used; effective policy remains `MONITOR_ONLY_NO_NEW_BUYS` and the package remains `NO_GO_UNATTENDED_LIVE`.
+
+## 2026-11-17 — A74 Quality-First / Stablecoin Hard Exclusion / Swing / Net Shadow Outcomes
+
+- Enforced the canonical stablecoin-base denylist unconditionally at the shared stablecoin predicate, so USDC/FDUSD/TUSD/etc. cannot be re-enabled by the legacy optional filter toggle. The Hunter also fails closed for unknown symbols.
+- Restricted initial Hunter Telegram opportunity alerts to strong setups only. `WATCH` remains persisted internally. Strong admission now checks technical quality, execution quality, 1H/4H regime, spread, 24h quote turnover, pattern-specific relative volume/chase/momentum and cost-adjusted net TP1 R:R.
+- Added separate Technical / Execution / Regime scores and cost-aware research targets for read-only Hunter setups.
+- Added independent closed-1H Swing Breakout, Swing Pullback Reclaim and Swing Relative Strength discovery requiring closed-4H directional confirmation; existing MSE `SWING` candidates remain included and tracked hourly.
+- Added positive absolute-momentum requirements to Relative Strength; added Pullback/Mean-Reversion volume confirmation and a breakout chase cap to avoid late entries.
+- Added same-symbol strategy confluence and a per-symbol initial-alert cooldown persisted after Telegram delivery ACK in SQLite, surviving restarts.
+- Added modeled net Shadow return, net R, cost and exit-fraction fields using reference fee/spread/slippage assumptions and existing TP exit weights. Data-gap expiry is UNKNOWN; ambiguous same-candle TP/SL resolves stop-first.
+- Added regression coverage for stablecoin hard exclusion, high-quality acceptance and weak-quality rejection, Swing discovery, net TP/SL results, data gaps, and persistent alert cooldown. No live orders or authenticated exchange/Telegram calls were made.
+- Preserved the A70 canonical package identity for backward-compatible release checks and recorded A74 as the active Opportunity Hunter feature revision.
+
+### A74 verification addendum — final review corrections
+
+- Corrected the Swing Relative Strength branch so an unqualified relative-strength condition cannot append a stale preceding Swing candidate; added a regression for the exact non-qualification case.
+- Extended the hard stablecoin denylist for additional common USD/EUR stable assets and bridged variants.
+- Unknown strategy-engine families now require measured volume evidence; missing volume cannot qualify an otherwise high raw score as a strong alert.
