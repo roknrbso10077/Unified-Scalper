@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from v702_intraday_shadow import V702IntradayShadow
+from v702_intraday_shadow import V702IntradayShadow, select_balanced_shadow_symbols
 
 
 class IntradayShadowTests(unittest.TestCase):
@@ -18,6 +18,9 @@ class IntradayShadowTests(unittest.TestCase):
         self.cfg = {
             "V702_INTRADAY_SHADOW_ENABLE": True,
             "V702_INTRADAY_SHADOW_LIVE_ENABLE": False,
+            "V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE": True,
+            "V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC": 180,
+            "V702_INTRADAY_LSA_MAX_AGE_SEC": 120,
             "V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT": 1_000_000,
             "V702_INTRADAY_SHADOW_MIN_1M_CANDLES": 40,
             "V702_INTRADAY_SHADOW_MAX_HOLD_BARS": 30,
@@ -83,6 +86,76 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertGreater(row[4], 0)
         self.assertGreaterEqual(row[5], 0.35)  # fee + fallback spread + two-sided slippage
         self.assertIn('"higher_timeframe_bullish_required":false', row[6])
+
+    def test_micro_shadow_alert_is_persisted_without_live_order_authority(self):
+        result = self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        self.assertGreaterEqual(result["signals"], 1)
+        alerts = self.study.pending_micro_alerts(limit=5, max_age_sec=180)
+        self.assertTrue(alerts, "new micro sample must create an independent Shadow alert outbox row")
+        self.assertTrue(all(x["payload"].get("alert_mode") == "MONITOR_ONLY_NO_ORDERS" for x in alerts))
+        self.assertTrue(all(x["payload"].get("liquidation_spot_absorption", {}).get("status") == "UNAVAILABLE" for x in alerts))
+        first = alerts[0]["sample_id"]
+        self.assertTrue(self.study.mark_micro_alert_queued(first))
+        self.assertNotIn(first, {x["sample_id"] for x in self.study.pending_micro_alerts(limit=5, max_age_sec=180)})
+        self.assertFalse(self.cfg["V702_INTRADAY_SHADOW_LIVE_ENABLE"])
+
+    def test_micro_alert_outbox_expires_stale_rows_and_deduplicates_same_candle(self):
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        first = self.study.pending_micro_alerts(limit=5, max_age_sec=180)
+        self.assertTrue(first)
+        # Replaying the same closed candle cannot create another sample/alert.
+        replay = self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        self.assertEqual(replay["signals"], 0)
+        with self.connect() as conn:
+            count_before = conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_alerts").fetchone()[0]
+            conn.execute("UPDATE v702_intraday_shadow_alerts SET created_ts=? WHERE sample_id=?", (time.time()-600, first[0]["sample_id"]))
+        self.assertEqual(count_before, 1)
+        self.assertEqual(self.study.pending_micro_alerts(limit=5, max_age_sec=60), [])
+        with self.connect() as conn:
+            state = conn.execute("SELECT state FROM v702_intraday_shadow_alerts WHERE sample_id=?", (first[0]["sample_id"],)).fetchone()[0]
+        self.assertEqual(state, "EXPIRED")
+
+    def test_lsa_contract_qualifies_only_with_complete_fresh_cross_market_evidence(self):
+        now_ms = int(time.time() * 1000)
+        snapshot = self.snapshot("DOT/USDT")
+        snapshot["liquidation_spot_absorption"] = {
+            "source": "test-provider", "observed_at_ms": now_ms, "symbol": "DOT/USDT",
+            "long_liquidations_usdt_15m": 300000.0, "baseline_long_liquidations_usdt_15m": 100000.0,
+            "open_interest_change_pct_15m": -3.0, "funding_rate_current": 0.00005,
+            "funding_rate_previous": 0.00010, "spot_buy_volume_usdt_5m": 700000.0,
+            "spot_sell_volume_usdt_5m": 300000.0, "reclaimed_support": True,
+        }
+        assessment = self.study._assess_liquidation_spot_absorption(snapshot, symbol="DOT/USDT", now_ms=now_ms)
+        self.assertEqual(assessment["status"], "QUALIFIED")
+        self.assertEqual(assessment["conditions_passed"], 5)
+
+    def test_lsa_stale_or_incomplete_data_is_unavailable(self):
+        now_ms = int(time.time() * 1000)
+        incomplete = self.study._assess_liquidation_spot_absorption({"liquidation_spot_absorption":{"source":"x"}}, "DOT/USDT", now_ms)
+        self.assertEqual(incomplete["status"], "UNAVAILABLE")
+        stale_context = {
+            "source": "test-provider", "observed_at_ms": now_ms - 600000, "symbol": "DOT/USDT",
+            "long_liquidations_usdt_15m": 300000.0, "baseline_long_liquidations_usdt_15m": 100000.0,
+            "open_interest_change_pct_15m": -3.0, "funding_rate_current": 0.00005,
+            "funding_rate_previous": 0.00010, "spot_buy_volume_usdt_5m": 700000.0,
+            "spot_sell_volume_usdt_5m": 300000.0, "reclaimed_support": True,
+        }
+        stale = self.study._assess_liquidation_spot_absorption({"symbol":"DOT/USDT","liquidation_spot_absorption":stale_context}, "DOT/USDT", now_ms)
+        self.assertEqual(stale["status"], "UNAVAILABLE")
+
+    def test_balanced_selector_prevents_rs_leaders_crowding_out_micro_pool(self):
+        core = [(f"CORE{i}/USDT", 5_000_000-i*1000) for i in range(40)]
+        micro = [(f"MICRO{i}/USDT", 2_000_000-i*1000) for i in range(30)]
+        leaders = [f"CORE{i}/USDT" for i in range(10)]
+        result = select_balanced_shadow_symbols(core, micro, leaders, batch_size=24, core_offset=0, micro_offset=0)
+        self.assertEqual(len(result["selected"]), 24)
+        self.assertEqual(result["core_selected"], 12)
+        self.assertEqual(result["micro_selected"], 12)
+        self.assertEqual(len(set(result["selected"])), 24)
+        self.assertLessEqual(result["rs_leaders_selected"], 3)
+        rotated = select_balanced_shadow_symbols(core, micro, leaders, batch_size=24, core_offset=result["core_offset"], micro_offset=result["micro_offset"])
+        self.assertEqual(rotated["micro_selected"], 12)
+        self.assertNotEqual(result["selected"], rotated["selected"])
 
     def test_cost_aware_target_accounts_for_round_trip_costs(self):
         self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())

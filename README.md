@@ -314,3 +314,14 @@ A74 does not create orders, enable futures, relax Prequal/Score/PreSend/risk gat
 ## A75 — نتيجة آخر تدقيق للحزمة المستلمة (2026-11-17)
 
 آخر إعادة تحقق على الحزمة المرفوعة أثبتت 73/73 Python compile، و557 اختبارًا ناجحًا مع اختبار تاريخي واحد متخطى، ونجاح `--validate-only` مع `bot_started=false` و`live_threads=[]`. يشرح `FINAL_AUDIT_REPORT.md` سبب رفض PULLBACK في BTC bearish ورفض السبريد المرتفع، ويفصل حالة ASTER الظلية عن الصفقة المنفذة. لم تُخفف بوابات المخاطر ولم يُضف مسار Shorts/Futures. لا يثبت هذا التدقيق الربحية أو سلامة التداول الحي؛ Python 3.12/Docker وتكامل MEXC/Telegram الحقيقي ما زالت غير مختبرة في هذه البيئة. راجع القسم 22 للتفاصيل وحدود إعادة الهيكلة.
+
+
+## A76 — Micro Shadow visibility and liquidity evidence
+
+A76 fixes the A9 research-lane selection bug where top relative-strength leaders were prepended to the whole cohort and could consume the micro-liquidity slots before the 1m scan. A new rotating selector reserves approximately half of the bounded batch for eligible micro-liquidity symbols (when both core and micro pools are populated); RS leaders can occupy only a small portion of the core allocation. Runtime logs now expose `core_selected`, `micro_selected`, `rs_leaders`, and fetch/alert counts.
+
+New closed-candle 1m micro samples can create a separate persistent Telegram Shadow alert. Messages are labelled `MICRO SHADOW 1M — MONITOR ONLY`, include reference levels and modeled costs, and explicitly state that they are not live opportunities or orders. The persistent alert table applies symbol cooldown and TTL expiry; a successfully queued message is not described as delivered until Telegram itself acknowledges it. Disable this path with `V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE=0`; cap and timing are adjustable with the other A76 variables in `.env`.
+
+`LSA_V1` is an optional evidence schema for future liquidation-to-Spot absorption research. It requires timestamped/source-labelled liquidation, OI, funding, Spot buy/sell-volume and reclaim evidence. A75/A76 does not ship a Futures or Spot-CVD provider, therefore this dimension remains `UNAVAILABLE` unless a real provider is connected. It is informative only and cannot authorize orders. The existing `LIQUIDITY_ACCEPTANCE_RECLAIM` strategy is retained; there is no duplicate LTR strategy. Narrative/Smart-Money, event/Parrondo and cash-secured Put remain outside the Spot scalper.
+
+A76 does not relax the bearish macro family policy, spread ceiling, post-cost profitability filter or any execution/protection gate. The core `MICRO_TREND_CONTINUATION` may still be rejected in bearish BTC macro conditions by design. The new Telegram lane is only for the independent A9 1m research patterns and remains `SHADOW_ONLY_NO_ORDERS`.

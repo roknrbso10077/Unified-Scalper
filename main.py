@@ -1278,6 +1278,21 @@ def _apply_loaded_environment_config() -> None:
     if _value is not None:
         CONFIG["TELEGRAM_CHANNEL_USERNAME"] = _value.lstrip("@")
 
+    # A76: optional controls for the independent 1m Micro Shadow alert lane.
+    _shadow_alerts = _env_first("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE")
+    if _shadow_alerts is not None:
+        CONFIG["V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE"] = _shadow_alerts.strip().lower() in {"1", "true", "yes", "on"}
+    for _env_key, _cfg_key in (("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", "V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH"),
+                               ("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", "V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC"),
+                               ("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", "V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC")):
+        _raw = _env_first(_env_key)
+        if _raw is not None:
+            try:
+                CONFIG[_cfg_key] = float(_raw) if "AGE" in _env_key or "COOLDOWN" in _env_key else int(_raw)
+            except (TypeError, ValueError):
+                # Invalid optional tuning never changes any live safety gate.
+                pass
+
 
 # Apply settings after load_dotenv and before the runtime snapshots any config
 # or credentials. This keeps host-injected env values and local .env behavior
@@ -27368,20 +27383,8 @@ async def run_bot(universe: List[str]):
                     _shadow_pool_core.sort(key=lambda x: x[1], reverse=True)
                     _shadow_pool_micro.sort(key=lambda x: x[1], reverse=True)
                     _shadow_batch = max(2, min(40, int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 24))))
-                    _shadow_each = max(1, _shadow_batch // 2)
-                    def _shadow_rotate(_pool, _attr, _limit):
-                        if not _pool or _limit <= 0:
-                            return []
-                        _n = min(len(_pool), int(_limit))
-                        _off = int(getattr(run_bot, _attr, 0) or 0) % len(_pool)
-                        _out = [_pool[(_off + _i) % len(_pool)][0] for _i in range(_n)]
-                        setattr(run_bot, _attr, (_off + _n) % len(_pool))
-                        return _out
-                    _shadow_selected = _shadow_rotate(_shadow_pool_core, "_v702_intraday_core_offset", _shadow_each)
-                    _shadow_selected += _shadow_rotate(_shadow_pool_micro, "_v702_intraday_micro_offset", _shadow_each)
-                    _shadow_selected = list(dict.fromkeys(_shadow_selected))
-                    # Ensure the independent adaptive-RS cohort actually observes
-                    # the current top-10 leaders, not only the volume-rotated pool.
+                    # Compute RS leaders first; the fair selector admits them only
+                    # into core slots so they cannot displace the micro-liquidity cohort.
                     try:
                         _shadow_rs_leaders = _intraday_shadow.rank_relative_strength(
                             market_data_map,
@@ -27389,14 +27392,21 @@ async def run_bot(universe: List[str]):
                         )
                     except Exception:
                         _shadow_rs_leaders = {}
-                    _shadow_selected = list(dict.fromkeys(list(_shadow_rs_leaders.keys()) + _shadow_selected))[:_shadow_batch]
-                    if len(_shadow_selected) < _shadow_batch:
-                        _shadow_selected_set = set(_shadow_selected)
-                        _shadow_remaining = [x for x in sorted(_shadow_pool_core + _shadow_pool_micro, key=lambda x:x[1], reverse=True) if x[0] not in _shadow_selected_set]
-                        _shadow_selected.extend(x[0] for x in _shadow_remaining[:_shadow_batch-len(_shadow_selected)])
+                    _shadow_selection = _v702_select_balanced_shadow_symbols(
+                        _shadow_pool_core, _shadow_pool_micro, list(_shadow_rs_leaders.keys()),
+                        batch_size=_shadow_batch,
+                        core_offset=int(getattr(run_bot, "_v702_intraday_core_offset", 0) or 0),
+                        micro_offset=int(getattr(run_bot, "_v702_intraday_micro_offset", 0) or 0),
+                    )
+                    _shadow_selected = list(_shadow_selection.get("selected", []))
+                    setattr(run_bot, "_v702_intraday_core_offset", int(_shadow_selection.get("core_offset", 0) or 0))
+                    setattr(run_bot, "_v702_intraday_micro_offset", int(_shadow_selection.get("micro_offset", 0) or 0))
                     STATS["v702_intraday_shadow_batch_selected"] = len(_shadow_selected)
                     STATS["v702_intraday_shadow_pool_core"] = len(_shadow_pool_core)
                     STATS["v702_intraday_shadow_pool_micro"] = len(_shadow_pool_micro)
+                    STATS["v702_intraday_shadow_core_selected"] = int(_shadow_selection.get("core_selected", 0) or 0)
+                    STATS["v702_intraday_shadow_micro_selected"] = int(_shadow_selection.get("micro_selected", 0) or 0)
+                    STATS["v702_intraday_shadow_rs_leaders_selected"] = int(_shadow_selection.get("rs_leaders_selected", 0) or 0)
                     async def _v702_intraday_process_batch(_selected, _snapshots, _service=_intraday_shadow):
                         """Run the research-only data lane away from the canonical scan critical path."""
                         async def _v702_intraday_fetch_1m(_sym):
@@ -27456,6 +27466,63 @@ async def run_bot(universe: List[str]):
                                 _fail_count += 1
                                 STATS["v702_intraday_shadow_process_errors"] = int(STATS.get("v702_intraday_shadow_process_errors", 0) or 0) + 1
                                 logger.debug(f"[V702-A9-INTRADAY] {_sym} suppressed: {_process_exc}")
+                        # Independent, persistent Telegram notification lane for 1m
+                        # micro research signals. It cannot select candidates or submit orders.
+                        _micro_tg_queued = _micro_tg_blocked = 0
+                        if bool(CONFIG.get("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)):
+                            _pending_alerts = await asyncio.to_thread(
+                                _service.pending_micro_alerts,
+                                max(1, min(10, int(CONFIG.get("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", 3)))),
+                                float(CONFIG.get("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", 180.0)),
+                            )
+                            for _alert in _pending_alerts:
+                                _payload = _alert.get("payload", {}) if isinstance(_alert.get("payload"), dict) else {}
+                                def _safe_tg_text(_value):
+                                    return str(_value if _value is not None else "n/a").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                                def _price_text(_value):
+                                    try:
+                                        _number = float(_value)
+                                        return (f"{_number:.8f}".rstrip("0").rstrip(".")) if _number < 1 else (f"{_number:.6f}".rstrip("0").rstrip("."))
+                                    except Exception:
+                                        return "n/a"
+                                _lsa = _payload.get("liquidation_spot_absorption", {}) if isinstance(_payload.get("liquidation_spot_absorption"), dict) else {}
+                                _lsa_status = str(_lsa.get("status", "UNAVAILABLE"))
+                                if _lsa_status == "QUALIFIED":
+                                    _lsa_line = "LSA evidence: QUALIFIED (cross-market evidence only; buyer identity is not proven)"
+                                elif _lsa_status == "NOT_CONFIRMED":
+                                    _lsa_line = "LSA evidence: NOT CONFIRMED"
+                                else:
+                                    _lsa_line = "LSA evidence: UNAVAILABLE (no connected Futures/CVD provider)"
+                                _economic = str(_payload.get("economic_status", "TECHNICAL_ONLY_COST_GATE_NOT_MET"))
+                                _economic_label = ("ECONOMICALLY VIABLE under modeled costs" if _economic == "VIABLE_AFTER_MODELED_COSTS"
+                                                   else "TECHNICAL PATTERN ONLY — cost gate not met")
+                                _msg = (
+                                    "🟣 <b>MICRO SHADOW 1M — MONITOR ONLY</b>\n"
+                                    f"<b>{_safe_tg_text(_alert.get('symbol'))}</b> | {_safe_tg_text(_alert.get('strategy_mode'))}\n"
+                                    f"Entry reference: {_price_text(_payload.get('entry'))}\n"
+                                    f"Stop reference: {_price_text(_payload.get('stop'))}\n"
+                                    f"Target reference: {_price_text(_payload.get('target'))}\n"
+                                    f"Estimated round-trip cost: {_price_text(_payload.get('cost_pct')) if _payload.get('cost_pct') is None else f'{float(_payload.get('cost_pct')):.3f}%'}\n"
+                                    f"Modeled net at target: {float(_payload.get('target_net_pct_after_costs', 0.0) or 0.0):.3f}% / {float(_payload.get('target_net_r_after_costs', 0.0) or 0.0):.3f}R\n"
+                                    f"Economic assessment: {_economic_label}\n"
+                                    f"{_lsa_line}\n"
+                                    "Closed-candle research alert only. No BUY order, no selector handoff, and no live execution authority."
+                                )
+                                try:
+                                    _accepted = await TelegramDispatcher.enqueue(_msg)
+                                except Exception as _tg_exc:
+                                    _accepted = False
+                                    logger.warning("[V702-A9-MICRO-SHADOW-TG] enqueue exception: %s", type(_tg_exc).__name__)
+                                if _accepted:
+                                    _marked = await asyncio.to_thread(_service.mark_micro_alert_queued, _alert.get("sample_id"), "telegram_durable_outbox_accepted")
+                                    if _marked:
+                                        _micro_tg_queued += 1
+                                else:
+                                    _micro_tg_blocked += 1
+                        STATS["v702_intraday_micro_shadow_tg_queued"] = int(STATS.get("v702_intraday_micro_shadow_tg_queued", 0) or 0) + _micro_tg_queued
+                        STATS["v702_intraday_micro_shadow_tg_blocked"] = int(STATS.get("v702_intraday_micro_shadow_tg_blocked", 0) or 0) + _micro_tg_blocked
+                        if _micro_tg_queued or _micro_tg_blocked:
+                            logger.info("[V702-A9-MICRO-SHADOW-TG] queued=%d blocked=%d lane=SHADOW_ONLY_NO_ORDERS", _micro_tg_queued, _micro_tg_blocked)
                         _report = await asyncio.to_thread(_service.periodic_report_if_due)
                         return {
                             "v702_intraday_shadow_fetch_ok": _ok_count,
@@ -27463,6 +27530,8 @@ async def run_bot(universe: List[str]):
                             "v702_intraday_shadow_signals_cycle": _signal_count,
                             "v702_intraday_shadow_resolved_cycle": _resolved_count,
                             "v702_intraday_shadow_batch_selected_completed": len(_selected),
+                            "v702_intraday_micro_shadow_tg_queued": _micro_tg_queued,
+                            "v702_intraday_micro_shadow_tg_blocked": _micro_tg_blocked,
                             "selected_count": len(_selected),
                             "engine_cycle": _engine_cycle_aggregate,
                             "report": _report,
@@ -27476,7 +27545,7 @@ async def run_bot(universe: List[str]):
                             STATS["v702_intraday_shadow_lane_errors"] = int(STATS.get("v702_intraday_shadow_lane_errors", 0) or 0) + 1
                             logger.warning(f"[V702-A9-INTRADAY-SHADOW] detached research batch failed safely: {_batch_exc}")
                             return
-                        for _key in ("v702_intraday_shadow_fetch_ok", "v702_intraday_shadow_fetch_fail", "v702_intraday_shadow_signals_cycle", "v702_intraday_shadow_resolved_cycle", "v702_intraday_shadow_batch_selected_completed"):
+                        for _key in ("v702_intraday_shadow_fetch_ok", "v702_intraday_shadow_fetch_fail", "v702_intraday_shadow_signals_cycle", "v702_intraday_shadow_resolved_cycle", "v702_intraday_shadow_batch_selected_completed", "v702_intraday_micro_shadow_tg_queued", "v702_intraday_micro_shadow_tg_blocked"):
                             STATS[_key] = int(_result.get(_key, 0) or 0)
                         _cycle_engines = _result.get("engine_cycle", {}) or {}
                         if isinstance(_cycle_engines, dict):
@@ -27540,9 +27609,12 @@ async def run_bot(universe: List[str]):
                                 )
                             _rfiles = _report.get("report_files", {}) or {}
                             logger.info(
-                                "[V702-A9-INTRADAY-SHADOW] mode=NO_ORDERS selected=%d fetch_ok=%d fetch_fail=%d signals=%d resolved=%d evals=%d rejects=%d total_samples=%d pending=%d db_path=%s report_json=%s report_md=%s",
-                                int(_result.get("selected_count", 0) or 0), STATS.get("v702_intraday_shadow_fetch_ok", 0), STATS.get("v702_intraday_shadow_fetch_fail", 0),
-                                STATS.get("v702_intraday_shadow_signals_cycle", 0), STATS.get("v702_intraday_shadow_resolved_cycle", 0),
+                                "[V702-A9-INTRADAY-SHADOW] mode=NO_ORDERS selected=%d core_selected=%d micro_selected=%d rs_leaders=%d fetch_ok=%d fetch_fail=%d signals=%d micro_tg_queued=%d micro_tg_blocked=%d resolved=%d evals=%d rejects=%d total_samples=%d pending=%d db_path=%s report_json=%s report_md=%s",
+                                int(_result.get("selected_count", 0) or 0), int(STATS.get("v702_intraday_shadow_core_selected", 0) or 0),
+                                int(STATS.get("v702_intraday_shadow_micro_selected", 0) or 0), int(STATS.get("v702_intraday_shadow_rs_leaders_selected", 0) or 0),
+                                STATS.get("v702_intraday_shadow_fetch_ok", 0), STATS.get("v702_intraday_shadow_fetch_fail", 0),
+                                STATS.get("v702_intraday_shadow_signals_cycle", 0), int(_result.get("v702_intraday_micro_shadow_tg_queued", 0) or 0),
+                                int(_result.get("v702_intraday_micro_shadow_tg_blocked", 0) or 0), STATS.get("v702_intraday_shadow_resolved_cycle", 0),
                                 int(_totals.get("evaluations", 0) or 0), int(_totals.get("rejections", 0) or 0),
                                 int(_totals.get("samples", 0) or 0), int(_totals.get("pending", 0) or 0),
                                 _report.get("db_path", "UNKNOWN"), _rfiles.get("json", "UNKNOWN"), _rfiles.get("markdown", "UNKNOWN")
@@ -90343,6 +90415,15 @@ CONFIG.setdefault("V702_INTRADAY_SHADOW_ENABLE", True)
 CONFIG["V702_INTRADAY_SHADOW_LIVE_ENABLE"] = False  # hard invariant: this module cannot enable live orders
 CONFIG.setdefault("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 1_000_000.0)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 24)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", 3)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", 180.0)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", 180.0)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_MAX_ROWS", 10000)
+CONFIG.setdefault("V702_INTRADAY_LSA_MAX_AGE_SEC", 120.0)
+CONFIG.setdefault("V702_INTRADAY_LSA_MIN_LIQUIDATION_BURST_RATIO", 2.5)
+CONFIG.setdefault("V702_INTRADAY_LSA_MAX_OI_CHANGE_PCT", -2.0)
+CONFIG.setdefault("V702_INTRADAY_LSA_MIN_SPOT_BUY_SHARE", 0.55)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_1M_LIMIT", 180)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_FETCH_TIMEOUT_SEC", 5.0)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_BATCH_TIMEOUT_SEC", 6.0)
@@ -90380,6 +90461,7 @@ _V702_INTRADAY_SHADOW = None
 _V702_INTRADAY_SHADOW_INSTALL_ERROR = ""
 try:
     from v702_intraday_shadow import V702IntradayShadow as _V702IntradayShadow
+    from v702_intraday_shadow import select_balanced_shadow_symbols as _v702_select_balanced_shadow_symbols
     _v702_intraday_db_path = str(CONFIG.get("DB_PATH", "./unified_scalper.db") or "./unified_scalper.db")
     _v702_intraday_parent = os.path.dirname(os.path.abspath(_v702_intraday_db_path))
     def _v702_intraday_canonical_forbidden(_symbol):
@@ -104266,9 +104348,11 @@ STATS["v702_a74_self_test"] = OpportunityHunter.a74_self_test()
 
 # V702 A75 — FINAL PRODUCTION AUDIT CLOSURES (READ-ONLY / NO LIVE AUTHORITY)
 # =============================================================================
+V702_A76_MICRO_LIQUIDITY_SHADOW_REVISION = "A76-MICRO-SHADOW-ALERT-FAIR-ROTATION-LIQUIDATION-EVIDENCE-CONTRACT-2026-11-17"
 V702_A75_CANONICAL_REVISION = "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17"
 FINAL_CANONICAL_RUNTIME.update({
     "active_final_audit_revision_current": V702_A75_CANONICAL_REVISION,
+    "active_micro_shadow_revision_current": V702_A76_MICRO_LIQUIDITY_SHADOW_REVISION,
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "operator_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",

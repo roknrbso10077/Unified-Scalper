@@ -1,3 +1,44 @@
+# A76 — Micro Shadow, Liquidity Evidence and Log Root-Cause Closure (2026-11-17)
+
+**Active supplemental feature revision:** `A76-MICRO-SHADOW-ALERT-FAIR-ROTATION-LIQUIDATION-EVIDENCE-CONTRACT-2026-11-17`  
+**Canonical distribution identity:** A66/A70 lineage retained.  
+**Archive ceiling:** 99 files; no files added or removed.  
+**Production disposition:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`.
+
+## A76 root-cause findings from the supplied operator digests
+
+1. The primary MSE candidate funnel is blocked before Selection, Builder and Telegram in the supplied bearish-BTC windows. The 30-minute windows show `DISC/RANK/PRE` progress but `PASS=0`, `SEL=0`, `BUILDER=0`, `QUEUE=0`, `TG=0`. The dominant rejection is `family_regime_disallowed.macro` (examples in the supplied digest: 170/178, 186/219, 212/232 and 350/370 reject records); `policy_ctx_top=PULLBACK@BEARISH[allow=BULLISH+NEUTRAL]` confirms the explicit family policy. This is not a Telegram transport failure: the canonical candidate never reaches the handoff stages. The policy has not been loosened.
+2. `MICRO_TREND_CONTINUATION` is a core LONG strategy governed by strategy-family and higher-timeframe policy. In the current `BEARISH` BTC regime its BULLISH/NEUTRAL eligibility can correctly reject it. A76 does not add a bearish bypass or turn this core strategy into an always-on long entry.
+3. The separate A9 `MICRO_*_1M` engines were `SHADOW_ONLY`: their samples were persisted to SQLite, but there was no independent Telegram alert handoff. Consequently a valid 1m research pattern could exist without an operator message.
+4. The A9 rotating cohort had a confirmed allocation defect: top relative-strength leaders were prepended to the combined selection and the list was truncated at the batch ceiling. This could consume reserved places and starve the micro-liquidity pool. A76 confines RS preference to core slots and preserves the rotating micro quota when eligible micro symbols exist.
+5. The supplied digest also shows a measured spread rejection at `0.5269%` above the configured ceiling. That is a real cost/liquidity rejection, not a reason to lower the spread gate. A76 keeps observed spread, conservative fallback costs, fee coverage and post-cost target checks unchanged.
+
+## A76 changes implemented
+
+- **Fair Micro cohort:** balanced core/micro selection, independent rotation offsets, a bounded RS leader preference that cannot displace micro slots, and explicit `core_selected`, `micro_selected`, and `rs_leaders` telemetry. If one pool is under-filled, unused places can be supplied from the other pool only after its reserved allocation is attempted.
+- **Micro Shadow Telegram path:** every newly persisted eligible 1m `MICRO_MOMENTUM_1M`, `MICRO_SWEEP_RECLAIM_1M`, or `MICRO_PULLBACK_RECLAIM_1M` sample may create a durable SQLite alert record. A bounded scanner batch reads fresh records and calls the existing `TelegramDispatcher` outbox. The message says `MICRO SHADOW 1M — MONITOR ONLY`, includes reference Entry/Stop/Target, modeled round-trip cost and a post-cost viability label. Symbol cooldown, TTL expiry and per-batch cap bound message volume. A successful enqueue means durable queue admission, not Telegram delivery ACK.
+- **Strict execution isolation:** the 1m lane remains outside `_MSE_ENGINES`, Selector, Builder, order sizing and exchange order APIs. `V702_INTRADAY_SHADOW_LIVE_ENABLE` remains hard-set to `False`; the global monitor-only entry policy is not changed. No alert is represented as a canonical confirmed opportunity or a live trade.
+- **LSA evidence contract:** added `LSA_V1` validation for source, symbol, timestamp freshness, long liquidation burst, OI change, funding-rate decrease, Spot buy/sell flow and support reclaim. Defaults require a 2.5x liquidation burst, OI contraction of at least 2% over 15m, Spot buy share of at least 55%, falling funding and an explicit reclaim. Incomplete/stale/mismatched data is `UNAVAILABLE`; complete but failing evidence is `NOT_CONFIRMED`.
+- **Provider limitation:** the A75 source package is Spot-only and contains no actual Futures liquidation, Open Interest, Funding or Spot CVD provider. A76 therefore adds the evidence contract and truthful `UNAVAILABLE` reporting only; it does not fabricate these observations, infer Smart Money identity, fetch an unconfigured data source or grant a new trading gate. A real provider and exchange-specific field mapping remain future integration work.
+- **Strategy architecture:** the existing `LIQUIDITY_ACCEPTANCE_RECLAIM` is retained as the technical baseline; a duplicate LTR engine is not added. Narrative/Smart-Money wallet tracking, news/Parrondo switching and cash-secured Puts remain separate systems because they require on-chain labels, event feeds or options support that this Spot scalper does not have.
+
+## A76 verification status
+
+- Build-tree `python -m pytest -q`: **570 passed, 1 skipped, 0 failed**; 571 collected; one-process run completed in 31.06 seconds after syncing the canonical source digests. The one skip is `test_release_contracts.py:375`, which requires a historical A51 runtime log not included in the clean source archive.
+- Clean-extracted ZIP test coverage: all **58 test modules** were run in non-overlapping batches; combined totals were **570 passed, 1 skipped, 0 failed**. A monolithic clean-extract attempt timed out at 63% before a summary and is not counted as a pass; modular batch coverage completed with zero failures.
+- Targeted `python -m pytest -q test_v702_intraday_shadow.py`: **20 passed, 0 failed**. This includes balanced core/micro rotation, independent research alert persistence and queue-state handling, expiry/deduplication, LSA evidence freshness/schema validation, and missing-provider `UNAVAILABLE` behavior.
+- `python -m compileall -q .`: PASS for all 73 packaged Python files.
+- `python -u main.py --validate-only` from the clean-extracted ZIP: **PASS, exit code 0**; the validator returned `pass=true`, `bot_started=false`, and `live_threads=[]`. This is a one-shot offline validation, not a persistent deployment test.
+- Final ZIP integrity: **99/99 unique paths**, CRC test PASS, exact manifest inventory PASS, and **98/98 SHA-256 entries matched** (`A66_SHA256SUMS.txt` excludes itself by design).
+- The 5 intermediate test failures in the first final rerun were all the same stale `main.py` SHA-256 value in the two release manifests. Both manifests were synchronized and the subsequent full single-process suite completed with 570 passed, 1 skipped, and 0 failed.
+- No live MEXC order/API test, Telegram network delivery ACK, configured Futures liquidation/OI/Funding/Spot-CVD provider, options/on-chain/news integration, Docker build, Railway deployment, or out-of-sample profitability test is claimed.
+
+## Operating decision
+
+A76 improves the visibility and sampling coverage of the independent 1m research lane. It does **not** fix the intentionally blocked bearish macro family policy by bypassing it, and it does not prove that the micro patterns are profitable. Continue monitor-only and evaluate the new research samples after modeled costs. A successful Telegram outbox enqueue is not an actual delivery ACK, and Shadow reference levels are not executable trade instructions.
+
+---
+
 # A71 — Integrated corrective production audit (2026-11-16)
 
 **Active corrective layer:** `A71-BOOT-MEMORY-PM-COVERAGE-RESEARCH-RETENTION-2026-11-16`

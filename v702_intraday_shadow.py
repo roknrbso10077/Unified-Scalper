@@ -34,7 +34,7 @@ try:
 except Exception:  # pragma: no cover - guarded by runtime install/validator
     pd = None
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STRATEGIES = (
     "MICRO_MOMENTUM_1M",
     "MICRO_SWEEP_RECLAIM_1M",
@@ -43,6 +43,100 @@ STRATEGIES = (
     "ADAPTIVE_RS_PULLBACK_15M",
 )
 _HARD_EXCLUDED_BASES = HARD_FORBIDDEN_BASES
+
+
+def select_balanced_shadow_symbols(
+    core_pool: Sequence[Any],
+    micro_pool: Sequence[Any],
+    rs_leader_symbols: Sequence[str] = (),
+    batch_size: int = 24,
+    core_offset: int = 0,
+    micro_offset: int = 0,
+) -> Dict[str, Any]:
+    """Select a rotating, fair core/micro cohort without RS crowd-out.
+
+    RS leaders can consume only core slots (up to 25% of that quota); they can
+    never displace a symbol reserved for the micro-liquidity cohort.
+    Pools may contain symbols or ``(symbol, quote_volume)`` tuples.
+    """
+    def symbols(pool):
+        out, seen = [], set()
+        for item in pool or ():
+            value = item[0] if isinstance(item, (tuple, list)) and item else item
+            value = str(value or "").upper().strip()
+            if value and value not in seen:
+                seen.add(value); out.append(value)
+        return out
+
+    core = symbols(core_pool); micro = symbols(micro_pool)
+    batch = max(0, min(40, int(batch_size or 0)))
+    if batch == 0 or (not core and not micro):
+        return {"selected": [], "core_selected": 0, "micro_selected": 0,
+                "core_offset": 0, "micro_offset": 0, "rs_leaders_selected": 0}
+
+    # 50/50 target when both pools exist. If one is short/empty, unused places
+    # are filled from the other pool without reducing the available micro quota.
+    if core and micro:
+        core_quota = (batch + 1) // 2
+        micro_quota = batch - core_quota
+    elif core:
+        core_quota, micro_quota = batch, 0
+    else:
+        core_quota, micro_quota = 0, batch
+
+    def rotate(pool, offset, limit):
+        if not pool or limit <= 0:
+            return [], int(offset or 0)
+        start = int(offset or 0) % len(pool)
+        count = min(len(pool), int(limit))
+        return [pool[(start + i) % len(pool)] for i in range(count)], (start + count) % len(pool)
+
+    core_rotated, next_core = rotate(core, core_offset, core_quota)
+    micro_rotated, next_micro = rotate(micro, micro_offset, micro_quota)
+    core_set = set(core)
+    leaders = []
+    seen_leaders = set()
+    for item in rs_leader_symbols or ():
+        sym = str(item or "").upper().strip()
+        if sym in core_set and sym not in seen_leaders:
+            leaders.append(sym); seen_leaders.add(sym)
+    leader_cap = min(len(leaders), core_quota, max(1, core_quota // 4)) if core_quota else 0
+    chosen_core = []
+    for sym in leaders[:leader_cap] + core_rotated:
+        if sym not in chosen_core:
+            chosen_core.append(sym)
+        if len(chosen_core) >= core_quota:
+            break
+    chosen_micro = list(micro_rotated[:micro_quota])
+
+    # Fill only after honoring reserved cohort slots. Prefer the underfilled
+    # cohort first, then use the other pool; duplicate symbols are never returned.
+    selected = list(chosen_core) + list(chosen_micro)
+    selected_set = set(selected)
+    for pool, target in ((micro, micro_quota), (core, core_quota)):
+        current = len(chosen_micro) if target == micro_quota and pool is micro else len(chosen_core)
+        if current >= target:
+            continue
+        for sym in pool:
+            if sym not in selected_set:
+                selected.append(sym); selected_set.add(sym)
+                if len(selected) >= batch:
+                    break
+        if len(selected) >= batch:
+            break
+    if len(selected) < batch:
+        for sym in core + micro:
+            if sym not in selected_set:
+                selected.append(sym); selected_set.add(sym)
+                if len(selected) >= batch:
+                    break
+    core_count = sum(1 for x in selected if x in core_set)
+    micro_set = set(micro)
+    micro_count = sum(1 for x in selected if x in micro_set)
+    return {"selected": selected[:batch], "core_selected": core_count,
+            "micro_selected": micro_count, "core_offset": next_core,
+            "micro_offset": next_micro,
+            "rs_leaders_selected": sum(1 for x in selected if x in set(leaders[:leader_cap]))}
 
 
 def _num(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -312,6 +406,14 @@ class V702IntradayShadow:
             conn.execute("""CREATE TABLE IF NOT EXISTS v702_intraday_shadow_meta (
                 k TEXT PRIMARY KEY, v TEXT NOT NULL, updated_ts REAL NOT NULL
             )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS v702_intraday_shadow_alerts (
+                alert_id TEXT PRIMARY KEY, sample_id TEXT NOT NULL UNIQUE, symbol TEXT NOT NULL,
+                strategy_mode TEXT NOT NULL, signal_ts_ms INTEGER NOT NULL, created_ts REAL NOT NULL,
+                state TEXT NOT NULL DEFAULT 'PENDING', payload_json TEXT NOT NULL DEFAULT '{}',
+                updated_ts REAL NOT NULL, note TEXT NOT NULL DEFAULT ''
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_alert_state ON v702_intraday_shadow_alerts(state,created_ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_alert_symbol ON v702_intraday_shadow_alerts(symbol,created_ts)")
 
     @staticmethod
     def _symbol_allowed(symbol: str) -> bool:
@@ -721,6 +823,121 @@ class V702IntradayShadow:
             return inserted_total
         return inserted_total
 
+    def _assess_liquidation_spot_absorption(
+        self, snapshot: Dict[str, Any], symbol: Optional[str] = None, now_ms: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Validate external liquidation/Spot evidence; never fabricate missing feeds.
+
+        The current A75/A76 package has no Futures liquidation/OI/Funding provider.
+        This contract is optional and Shadow-only; absent/stale evidence is UNAVAILABLE.
+        """
+        context = snapshot.get("liquidation_spot_absorption") if isinstance(snapshot, dict) else None
+        if not isinstance(context, dict):
+            return {"status": "UNAVAILABLE", "reason": "provider_not_configured",
+                    "evidence_contract": "LSA_V1", "score": None}
+        required = (
+            "source", "observed_at_ms", "symbol", "long_liquidations_usdt_15m",
+            "baseline_long_liquidations_usdt_15m", "open_interest_change_pct_15m",
+            "funding_rate_current", "funding_rate_previous",
+            "spot_buy_volume_usdt_5m", "spot_sell_volume_usdt_5m", "reclaimed_support",
+        )
+        missing = [key for key in required if key not in context]
+        if missing:
+            return {"status": "UNAVAILABLE", "reason": "incomplete_provider_schema",
+                    "missing_fields": missing, "evidence_contract": "LSA_V1", "score": None}
+        try:
+            observed = int(context.get("observed_at_ms"))
+            now = int(now_ms if now_ms is not None else time.time() * 1000)
+            max_age_ms = int(max(30.0, min(300.0, _num(self._cfg().get("V702_INTRADAY_LSA_MAX_AGE_SEC"), 120.0) or 120.0)) * 1000)
+            age_ms = now - observed
+            expected_symbol = str(symbol or snapshot.get("symbol") or "").upper().strip()
+            actual_symbol = str(context.get("symbol") or "").upper().strip()
+            source = str(context.get("source") or "").strip()[:80]
+            numeric_keys = (
+                "long_liquidations_usdt_15m", "baseline_long_liquidations_usdt_15m",
+                "open_interest_change_pct_15m", "funding_rate_current", "funding_rate_previous",
+                "spot_buy_volume_usdt_5m", "spot_sell_volume_usdt_5m",
+            )
+            values = {key: _num(context.get(key), None) for key in numeric_keys}
+            if (not source or not actual_symbol or (expected_symbol and actual_symbol != expected_symbol)
+                    or age_ms < -5000 or age_ms > max_age_ms
+                    or any(value is None for value in values.values())
+                    or values["long_liquidations_usdt_15m"] < 0
+                    or values["baseline_long_liquidations_usdt_15m"] <= 0
+                    or values["spot_buy_volume_usdt_5m"] < 0
+                    or values["spot_sell_volume_usdt_5m"] < 0
+                    or not isinstance(context.get("reclaimed_support"), bool)):
+                return {"status": "UNAVAILABLE", "reason": "invalid_identity_freshness_or_values",
+                        "source": source or None, "age_ms": age_ms if "age_ms" in locals() else None,
+                        "evidence_contract": "LSA_V1", "score": None}
+            liquidation_ratio = values["long_liquidations_usdt_15m"] / values["baseline_long_liquidations_usdt_15m"]
+            spot_total = values["spot_buy_volume_usdt_5m"] + values["spot_sell_volume_usdt_5m"]
+            buy_share = values["spot_buy_volume_usdt_5m"] / spot_total if spot_total > 0 else 0.0
+            thresholds = {
+                "liquidation_burst_ratio_min": _num(self._cfg().get("V702_INTRADAY_LSA_MIN_LIQUIDATION_BURST_RATIO"), 2.5) or 2.5,
+                "open_interest_change_pct_max": _num(self._cfg().get("V702_INTRADAY_LSA_MAX_OI_CHANGE_PCT"), -2.0) or -2.0,
+                "spot_buy_share_min": _num(self._cfg().get("V702_INTRADAY_LSA_MIN_SPOT_BUY_SHARE"), 0.55) or 0.55,
+            }
+            tests = {
+                "liquidation_burst": liquidation_ratio >= thresholds["liquidation_burst_ratio_min"],
+                "open_interest_contraction": values["open_interest_change_pct_15m"] <= thresholds["open_interest_change_pct_max"],
+                "funding_decreased": values["funding_rate_current"] <= values["funding_rate_previous"],
+                "spot_buy_flow": buy_share >= thresholds["spot_buy_share_min"],
+                "support_reclaimed": bool(context.get("reclaimed_support")),
+            }
+            passed = sum(1 for ok in tests.values() if ok)
+            return {
+                "status": "QUALIFIED" if all(tests.values()) else "NOT_CONFIRMED",
+                "reason": "all_lsa_conditions_met" if all(tests.values()) else "one_or_more_conditions_not_met",
+                "evidence_contract": "LSA_V1", "source": source, "symbol": actual_symbol,
+                "age_ms": age_ms, "liquidation_burst_ratio": round(liquidation_ratio, 4),
+                "open_interest_change_pct_15m": values["open_interest_change_pct_15m"],
+                "funding_rate_current": values["funding_rate_current"],
+                "funding_rate_previous": values["funding_rate_previous"],
+                "spot_buy_share_5m": round(buy_share, 4), "tests": tests,
+                "conditions_passed": passed, "conditions_total": len(tests),
+                "thresholds": thresholds, "score": passed / len(tests),
+                "interpretation": "evidence_consistent_with_forced_long_unwind_and_spot_buy_flow; buyer_identity_not_proven",
+            }
+        except Exception as exc:
+            return {"status": "UNAVAILABLE", "reason": f"provider_validation_error:{type(exc).__name__}",
+                    "evidence_contract": "LSA_V1", "score": None}
+
+    def pending_micro_alerts(self, limit: int = 4, max_age_sec: float = 180.0) -> List[Dict[str, Any]]:
+        """Return fresh alert-outbox items; expire stale items instead of sending late setups."""
+        limit = max(1, min(10, int(limit or 4)))
+        max_age = max(30.0, min(600.0, _num(max_age_sec, 180.0) or 180.0))
+        now = time.time()
+        try:
+            with self._db() as conn:
+                conn.execute("UPDATE v702_intraday_shadow_alerts SET state='EXPIRED',updated_ts=?,note='alert_ttl_expired' WHERE state='PENDING' AND created_ts<?", (now, now-max_age))
+                # Retain unresolved PENDING alerts; trim only old terminal/queued
+                # research rows when the outbox exceeds its bounded capacity.
+                max_alert_rows = int(max(1000, min(50000, _num(self._cfg().get("V702_INTRADAY_SHADOW_ALERT_MAX_ROWS"), 10000) or 10000)))
+                alert_total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_alerts").fetchone()[0])
+                alert_excess = max(0, alert_total - max_alert_rows)
+                if alert_excess:
+                    conn.execute("DELETE FROM v702_intraday_shadow_alerts WHERE alert_id IN (SELECT alert_id FROM v702_intraday_shadow_alerts WHERE state!='PENDING' ORDER BY created_ts ASC LIMIT ?)", (alert_excess,))
+                rows = conn.execute("SELECT sample_id,symbol,strategy_mode,signal_ts_ms,created_ts,payload_json FROM v702_intraday_shadow_alerts WHERE state='PENDING' AND created_ts>=? ORDER BY created_ts ASC LIMIT ?", (now-max_age, limit)).fetchall()
+            out = []
+            for sample_id, sym, mode, signal_ts, created, payload in rows:
+                try: body = json.loads(payload or "{}")
+                except Exception: body = {}
+                out.append({"sample_id": sample_id, "symbol": sym, "strategy_mode": mode,
+                            "signal_ts_ms": int(signal_ts), "created_ts": float(created), "payload": body})
+            return out
+        except Exception:
+            return []
+
+    def mark_micro_alert_queued(self, sample_id: str, note: str = "telegram_durable_outbox_accepted") -> bool:
+        """Mark a Shadow alert only after TelegramDispatcher accepts durable enqueue."""
+        try:
+            with self._db() as conn:
+                cur = conn.execute("UPDATE v702_intraday_shadow_alerts SET state='QUEUED',updated_ts=?,note=? WHERE sample_id=? AND state='PENDING'", (time.time(), str(note or "")[:120], str(sample_id or "")))
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
     def _record_signal(self, symbol: str, signal: Dict[str, Any], snapshot: Dict[str, Any]) -> bool:
         entry, stop, _initial_target, risk = (float(signal[k]) for k in ("entry", "stop", "target", "risk"))
         risk_pct = 100.0 * risk / entry
@@ -801,6 +1018,26 @@ class V702IntradayShadow:
                      signal_close_ms - 60_000,0,"PENDING",cost_pct,qv,tier,_json(features),
                      "virtual_entry_at_closed_signal_bar;adaptive_partial_exit" if adaptive else "virtual_entry_at_closed_signal_bar"))
                 inserted = cur.rowcount > 0
+                if inserted and mode in {"MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M"} and bool(cfg.get("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)):
+                    now_alert = time.time()
+                    cooldown = max(30.0, min(900.0, _num(cfg.get("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC"), 180.0) or 180.0))
+                    recent = conn.execute("SELECT 1 FROM v702_intraday_shadow_alerts WHERE symbol=? AND created_ts>=? AND state IN ('PENDING','QUEUED') LIMIT 1", (symbol, now_alert-cooldown)).fetchone()
+                    if not recent:
+                        alert_payload = {
+                            "entry": entry, "stop": stop, "target": target, "risk_pct": risk_pct,
+                            "cost_pct": cost_pct, "target_net_pct_after_costs": target_net_pct,
+                            "target_net_r_after_costs": target_net_r, "post_cost_target_viable": post_cost_viable,
+                            "quote_volume_24h": qv, "tier": tier,
+                            "liquidation_spot_absorption": features.get("liquidation_spot_absorption", {"status":"UNAVAILABLE","reason":"provider_not_configured"}),
+                            "economic_status": "VIABLE_AFTER_MODELED_COSTS" if post_cost_viable else "TECHNICAL_ONLY_COST_GATE_NOT_MET",
+                            "timeframe": str(signal.get("tf", "1m")),
+                            "alert_mode": "MONITOR_ONLY_NO_ORDERS",
+                        }
+                        alert_id = hashlib.sha256(("MICRO_SHADOW_ALERT|" + sample_id).encode("utf-8")).hexdigest()[:32]
+                        conn.execute("""INSERT OR IGNORE INTO v702_intraday_shadow_alerts
+                            (alert_id,sample_id,symbol,strategy_mode,signal_ts_ms,created_ts,state,payload_json,updated_ts,note)
+                            VALUES(?,?,?,?,?,?, 'PENDING',?,?,?)""",
+                            (alert_id,sample_id,symbol,mode,signal_close_ms,now_alert,_json(alert_payload),now_alert,"new_closed_bar_shadow_signal"))
                 max_rows = int(max(1000, min(200000, _num(self._cfg().get("V702_INTRADAY_SHADOW_MAX_ROWS"), 50000) or 50000)))
                 if inserted:
                     self._prune_sample_rows(conn, max_rows)
@@ -972,6 +1209,10 @@ class V702IntradayShadow:
                               "outcome":"BLOCKED","reason":str(block_reason or "btc_15m_crash_guard"),"quote_volume_24h":qv})
         else:
             one_min_signals = self._make_signals_1m(rows, diagnostics=diag)
+            for _micro_signal in one_min_signals:
+                _micro_features = dict(_micro_signal.get("features") or {})
+                _micro_features["liquidation_spot_absorption"] = self._assess_liquidation_spot_absorption(snapshot, symbol=symbol)
+                _micro_signal["features"] = _micro_features
             signals.extend(one_min_signals)
             vwap_signal, vwap_reason = self._make_vwap_rs_signal_detailed(snapshot)
             if vwap_signal:
@@ -1088,6 +1329,8 @@ class V702IntradayShadow:
                 eval_rows = conn.execute("SELECT strategy_mode,outcome,reason,cost_pct,post_cost_viable,quote_volume_24h,features_json FROM v702_intraday_shadow_evaluations ORDER BY evaluated_ts ASC").fetchall()
                 pending = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples WHERE status='PENDING'").fetchone()[0])
                 total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
+                alert_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_alerts GROUP BY state").fetchall()
+                alert_states = {str(k): int(v) for k, v in alert_state_rows}
             all_eval_signals = all_eval_rejects = all_eval_skips = all_eval_count = 0
             for mode in STRATEGIES:
                 subset = [r for r in sample_rows if r[0] == mode]
@@ -1131,6 +1374,17 @@ class V702IntradayShadow:
                 }
             report["totals"]={"samples":total,"pending":pending,"resolved":sum(v["resolved"] for v in report["strategies"].values()),
                               "evaluations":all_eval_count,"signals":all_eval_signals,"rejections":all_eval_rejects,"skipped_evaluations":all_eval_skips}
+            report["micro_alerts"] = {
+                "enabled": bool(self._cfg().get("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)),
+                "states": alert_states, "pending": int(alert_states.get("PENDING", 0)),
+                "queued": int(alert_states.get("QUEUED", 0)), "expired": int(alert_states.get("EXPIRED", 0)),
+                "max_per_batch": int(max(1, min(10, _num(self._cfg().get("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH"), 3) or 3))),
+            }
+            report["liquidation_spot_absorption"] = {
+                "provider_status": "UNCONFIGURED",
+                "data_contract": "LSA_V1",
+                "note": "No native Futures liquidation/Open Interest/Funding/Spot-CVD provider is configured in this release; missing evidence remains UNAVAILABLE and cannot gate or authorize orders.",
+            }
         except Exception as exc:
             report["error"]=f"{type(exc).__name__}:{str(exc)[:180]}"
         return report
@@ -1199,7 +1453,10 @@ class V702IntradayShadow:
                     and node.func.attr in {"create_order", "create_market_buy", "submit_entry", "submit_order"}
                     for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
                 ),
-                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta"}.issubset(tables),
+                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta","v702_intraday_shadow_alerts"}.issubset(tables),
+                "shadow_alert_outbox_present": "v702_intraday_shadow_alerts" in tables,
+                "balanced_core_micro_selector_available": callable(select_balanced_shadow_symbols),
+                "lsa_missing_data_fails_unavailable": self._assess_liquidation_spot_absorption({}).get("status") == "UNAVAILABLE",
             }
             return {"pass":all(checks.values()),"checks":checks,"schema_version":SCHEMA_VERSION}
         except Exception as exc:

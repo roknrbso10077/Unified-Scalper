@@ -1,3 +1,14 @@
+# A76 — Micro Shadow alert delivery, fair scan rotation and LSA evidence contract (2026-11-17)
+
+- Fixed the A9 1m research selection starvation: relative-strength leaders are now confined to core-liquidity slots, while a balanced rotating selector preserves a dedicated micro-liquidity allocation whenever eligible micro symbols exist. Pool shortages are reallocated only after reserved quotas are honored; allocation counts are exposed in runtime stats and logs.
+- Added a persistent, deduplicated SQLite alert outbox for newly recorded 1m micro research samples. Fresh alerts are sent through the existing Telegram durable outbox with an explicit `MICRO SHADOW 1M — MONITOR ONLY` label, reference Entry/SL/TP, modeled round-trip cost and post-cost assessment. Per-symbol cooldown, age expiry and per-batch cap bound noise. The alert lane cannot enter the selector, create an order, or change live authority. Queue acceptance is not represented as Telegram delivery ACK.
+- Added an optional `LSA_V1` liquidation-to-Spot evidence contract. It requires source identity, matching symbol, fresh timestamp, long-liquidation burst, OI contraction, falling funding, Spot buy-flow share and support reclaim. Missing/stale/incomplete provider data is explicitly `UNAVAILABLE`; no Futures/CVD source is configured in A76, so the integration does not fabricate or fetch nonexistent evidence.
+- Kept the existing `LIQUIDITY_ACCEPTANCE_RECLAIM` engine as the technical baseline; no duplicate LTR engine was added. Narrative/Smart-Money, news/Parrondo and cash-secured Put remain separate research/products because A75 has no on-chain wallet-label, event-news, or options execution provider.
+- Preserved all family-regime, spread, cost, risk, PreSend, execution and PositionManager gates; no Futures/Short authority was added. `MONITOR_ONLY_NO_NEW_BUYS`, `NO_GO_UNATTENDED_LIVE`, and the hard `V702_INTRADAY_SHADOW_LIVE_ENABLE=False` invariant remain in force.
+- Added regression coverage for micro alert persistence/deduplication, LSA evidence completeness/freshness, and balanced core/micro cohort selection.
+
+---
+
 # A72 — public discovery without private account credentials; independent BTC macro (2026-11-16)
 
 - Split the monitor-only runtime into an unauthenticated public MEXC Spot market-data client and an optional authenticated account client. Public ticker/market/OHLCV/order-book discovery no longer depends on MEXC API keys or wallet balance.
