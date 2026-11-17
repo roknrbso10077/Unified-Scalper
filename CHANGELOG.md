@@ -2522,3 +2522,15 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Re-ran Python compilation (73/73), the grouped full regression suite (557 passed, 1 historical skip, 0 failures), a 141-test focused integration/guardrail set, and `--validate-only` (exit 0, no bot or live worker started).
 - Refreshed the audit report, README, release manifests and SHA-256 ledger. No runtime source, strategy threshold, execution gate, or risk parameter was changed because no new source defect was reproduced; no files were added or deleted.
 - Recorded unresolved target-environment gaps: Python 3.12/Docker not available, `ccxt`/`aiosqlite` missing from the audit runtime, direct dependency version drift, no full transitive hash lock in the archive, and no live MEXC/Telegram or profitability evidence.
+
+## 2026-11-17 — A75 final production audit integration
+
+- Fixed final validation aggregation and deferred `--validate-only` until the active A74/A75 runtime layer is installed.
+- Added bounded retry of existing-position reconciliation when an authenticated private client exists; no new-entry authority is granted.
+- Enabled read-only Telegram command polling in Monitor-only, blocked account-mutating commands, and added `/opportunities`.
+- Added closed-BTC-4H unique-bar Regime confirmation, actual-timestamp candle validation, RSI edge-case fixes, post-expiry outcome clipping, unknown-gap outcomes and rotating active-record pagination.
+- Froze opportunity setup geometry/cost inputs, made zero cost values explicit, rejected negative/non-finite costs, separated score semantics and preserved `volume_quality` versus measured `volume_ratio`.
+- Added Hunter/MTF-D1 and Regime-source observability to `/digest`; offloaded Hunter SQLite calls from the async scan loop; mark alerts delivered only on success ACK.
+- Added A75 regression tests in the existing test module. Kept historical engine and file inventory; no live gates relaxed.
+- Residual gates: transactional Telegram Outbox/rate-limit durability, application-wide SQLite writer and backup/restore, broader modularization/static audit, per-strategy data contract, full dependency hash lock, Python 3.12/Docker/target memory soak, and MEXC/Telegram live integration remain unverified.
+- Decision remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.

@@ -1065,3 +1065,41 @@ No test run establishes profitability. The modeled Shadow net return/R uses assu
 5. ثبّت قاعدة SQLite على Google Drive عند الحاجة إلى الاستمرارية. Colab قد ينقطع، لذلك ليس مضيفًا دائمًا ولا يصلح للتداول الآلي غير المراقب.
 
 **الحكم النهائي:** الحزمة قابلة للفك، مترجمة، واجتازت الاختبارات غير المتصلة المحددة أعلاه. لكنها ليست اعتمادًا للتداول الحي أو وعدًا بدخل يومي؛ كما أن refactor المونوليث الكبير، واختبار Python 3.12/Docker، وتكامل MEXC/Telegram الحقيقي، وإثبات الربحية ما زالت خارج ما أمكن إثباته في هذه الجولة.
+
+
+# A75 — merged audit implementation and release status (2026-11-17)
+
+The A75 integration is applied to the canonical source package in-place. The historical A66 lineage and strategy inventory are retained; the active additive runtime closure is `A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17`. The release stays `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## Implemented in this package
+
+1. Final validation now requires the inherited/base checks, A66 checks and A72 read-only source checks to all pass. A non-empty A72 failure list cannot coexist with a PASS decision.
+2. The `--validate-only` exit is deferred until the A74/A75 effective runtime wrappers and self-tests are installed.
+3. Private account recovery now retries recovered-position and exit-state reconciliation with bounded exponential backoff when a private client was created but startup reconciliation failed. It starts PositionManager only after a successful healthy protection cycle. It does not make missing private credentials appear, nor does it permit new BUYs.
+4. The Telegram command poller starts in Monitor-only when enabled. Read-only commands are allowed; commands that mutate account/order state are rejected without the verified private client / authorized runtime.
+5. Hunter SQLite work in the asynchronous scan path is moved to worker threads; strategy-candidate observation also uses a worker thread when invoked from an active event loop.
+6. Closed-candle parsing uses the actual timestamp of the last retained row, excludes forming bars, rejects stale bars and recent internal gaps, and retains sufficient history for 7-day hourly replay.
+7. Hunter RSI edge cases are explicit: 100 for positive gains with zero losses, 0 for positive losses with zero gains, and 50 for a flat series.
+8. The policy Regime source is the last closed BTC 4H candle, and confirmation increments only once per unique closed candle. Descriptive macro and candidate policy Regime remain separately identified in diagnostics.
+9. `COMPLETED`, `INVALIDATED`, and `EXPIRED` opportunity IDs are terminal. Setup entry/SL/invalidation/targets/cost assumptions are frozen in the initial setup snapshot rather than silently rewritten by repeated scans.
+10. Shadow outcomes are clipped at `expires_at`; data gaps are pending/unknown, and a gap at expiry is not labelled as a realized or assumed loss. Active-row scanning uses a rotating keyset cursor.
+11. Observation, confirmation, delivery and simulated-entry timestamps are represented separately. Hunter score semantics and floor names distinguish technical, execution, regime-fit and composite ranking. A normalized `volume_quality` is not converted into a measured volume ratio.
+12. Explicit zero cost inputs remain zero; negative/non-finite fee, slippage or spread inputs fail closed. Frozen setup costs are used for the later Shadow outcome estimate.
+13. `/digest` now reports Hunter and MTF-D1 lane coverage and distinguishes descriptive BTC macro from candidate policy Regime. `/opportunities` lists persisted active observations without execution authority.
+14. Hunter notification state is marked delivered only after dispatcher success ACK. Pending and failed states remain separate; this is at-least-once delivery, not an exactly-once guarantee.
+
+## Explicit residual gates (not represented as completed)
+
+- **Telegram durability:** process-kill proof of semantic Outbox state, idempotent replay and durable deferral of every rate-limited terminal event is still required. A failed or rate-limited terminal event must be checked under kill/restart integration before claiming durable delivery.
+- **Storage:** Hunter I/O is offloaded from the event loop, but the entire application does not yet use one global SQLite writer actor; WAL backup/restore, disk-full and concurrent-process recovery require dedicated tests.
+- **Data contract:** the shared market-data map is still upstream-filtered. A full per-strategy snapshot-quality contract and a proof that no independent 1D/4H lane is starved by the shared map need additional instrumented replay. A74/A75 diagnostic visibility does not manufacture missing candles.
+- **Large-file maintenance:** broad extraction of the 105k-line `main.py`, full classification of 3,402 exception handlers and all undefined-name warnings were not safely completed. Existing wrappers were kept rather than removed without parity evidence.
+- **Build/runtime:** no Docker executable or Python 3.12 target environment was available here. The installed interpreter is Python 3.13.5. The complete transitive hash lock, target image build, pip check, healthcheck-in-container and deployment-specific memory/soak tests remain required. A previous validate-only memory measurement around 583 MiB remains above a 512 MiB budget; no evidence here proves a past OOM.
+- **Exchange proof:** no authenticated MEXC account, real order, partial fill, real native SL/OCO, Telegram API delivery, crash/restart protection or live PnL was tested in this environment. Code presence is not proof of exchange support or live protection.
+- **Income/performance:** no profitability or recurring trading income is claimed. Existing strategy gates remain unchanged; additional strategies are not added until the current engines' out-of-sample and net-of-cost performance can be measured.
+
+## Validation report
+
+A75 regression suite: 8 targeted regression tests pass. The existing offline suite baseline before A75 test additions was 557 passed, 1 skipped; the full suite must be rerun on the final tree and its final count recorded in the release manifest. `python main.py --validate-only` passed after A75 installation with `exit_code=0`, `bot_started=false`, `live_threads=[]`, and `active_env_aliases=[]`. Docker/Python 3.12 and MEXC/Telegram live checks were not run.
+
+**Release decision remains NO_GO_UNATTENDED_LIVE.** The package is for monitoring, offline validation and supervised Paper/Shadow research. Do not enable live trading based on this audit alone.

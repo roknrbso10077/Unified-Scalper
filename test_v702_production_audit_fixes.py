@@ -1594,6 +1594,8 @@ def test_a74_telegram_ack_persists_symbol_cooldown_timestamp(tmp_path, monkeypat
         saved = cls._get_by_id(row["opportunity_id"])
     assert saved["last_alert_delivery"] == "DELIVERED"
     assert saved["symbol_last_alert_at"] > 0
+    assert "TEST_ACK" in saved["alerted_states"]
+    assert "TEST_ACK" not in saved["pending_alert_states"]
 
 
 def test_a74_strong_quality_requires_and_accepts_full_technical_execution_regime_edge():
@@ -1666,3 +1668,149 @@ def test_a74_unknown_strategy_family_requires_measured_volume_evidence():
     assert quality["status"] == "WATCH"
     assert quality["evidence"]["strong_alert_eligible"] is False
     assert "GENERIC_VOLUME_CONFIRMATION" in quality["missing_conditions"]
+
+
+# A75 regression closures: these turn independently reproduced audit cases
+# into permanent no-regression checks. They do not grant live execution authority.
+
+def test_a75_hunter_rsi_handles_monotone_and_flat_series():
+    base = pd.DataFrame({
+        "open": [100.0] * 80, "high": [101.0] * 80, "low": [99.0] * 80,
+        "close": [100.0 + i for i in range(80)], "volume": [100.0] * 80,
+    })
+    rising = bot.OpportunityHunter._indicators(base)["rsi14"]
+    falling_frame = base.copy()
+    falling_frame["close"] = [200.0 - i for i in range(80)]
+    falling = bot.OpportunityHunter._indicators(falling_frame)["rsi14"]
+    flat_frame = base.copy()
+    flat_frame["close"] = [100.0] * 80
+    flat = bot.OpportunityHunter._indicators(flat_frame)["rsi14"]
+    assert rising == pytest.approx(100.0)
+    assert falling == pytest.approx(0.0)
+    assert flat == pytest.approx(50.0)
+
+
+def test_a75_cost_inputs_keep_zero_and_reject_negative_or_nonfinite():
+    with patch.dict(bot.CONFIG, {
+        "V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT": 0.0,
+        "V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT": 0.0,
+    }, clear=False):
+        assert bot._v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10) == 0.0
+        assert bot._v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT", 0.05) == 0.0
+    with patch.dict(bot.CONFIG, {"V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT": -0.01}, clear=False):
+        assert bot._v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10) is None
+    with patch.dict(bot.CONFIG, {"V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT": float("nan")}, clear=False):
+        assert bot._v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10) is None
+
+
+def test_a75_completed_opportunity_is_terminal_and_setup_geometry_is_frozen(tmp_path):
+    db_path = tmp_path / "a75_terminal_geometry.sqlite3"
+    cls = bot.OpportunityHunter
+    payload = {
+        "candidate_key": "a75-terminal|AAA/USDT|BREAKOUT|1", "symbol": "AAA/USDT",
+        "family": "BREAKOUT", "pattern": "BREAKOUT_CONTINUATION", "status": "WATCH",
+        "timeframe": "1H+4H", "entry_ref": 100.0, "sl_price": 98.0,
+        "invalidation_price": 97.5, "tp1": 103.0, "tp2": 105.0, "tp3": 108.0,
+        "evidence": {"strategy_style": "SWING", "spread_pct": 0.02},
+    }
+    with patch.dict(bot.CONFIG, {"DB_PATH": str(db_path), "TELEGRAM_ENABLED": False}, clear=False):
+        cls._schema_ready_paths.discard(str(db_path))
+        first, created = cls._upsert(payload, notify=False)
+        assert created is True
+        cls._update_row(first["opportunity_id"], {"status": "COMPLETED"})
+        second, recreated = cls._upsert({
+            **payload, "status": "CONFIRMED", "entry_ref": 110.0, "sl_price": 109.0,
+            "invalidation_price": 108.5, "tp1": 115.0, "tp2": 120.0, "tp3": 125.0,
+        }, notify=False)
+    assert recreated is False
+    assert second["status"] == "COMPLETED"
+    assert second["entry_ref"] == pytest.approx(100.0)
+    assert second["sl_price"] == pytest.approx(98.0)
+    assert second["invalidation_price"] == pytest.approx(97.5)
+    assert second["tp1"] == pytest.approx(103.0)
+    assert second["tp2"] == pytest.approx(105.0)
+    assert second["tp3"] == pytest.approx(108.0)
+    assert second["evidence"]["setup_snapshot"]["entry_ref"] == pytest.approx(100.0)
+
+
+def test_a75_shadow_outcome_ignores_target_touch_after_expiry():
+    now = time.time()
+    raw = _outcome_test_frame(now, bars={-2: {"high": 104.0, "close": 103.5}})
+    closed, _ = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    assert closed is not None
+    last_target_open = int(pd.Timestamp(closed.index[-2]).timestamp())
+    row = _outcome_test_row(last_target_open - 1200, expires_at=last_target_open + 299)
+    updates, events = bot.OpportunityHunter._advance_shadow_outcome(row, closed, now=now)
+    assert not any(str(e.get("kind", "")).startswith("SHADOW_TP") for e in events)
+    assert updates.get("outcome_status") != "SHADOW_TP3_TOUCHED"
+
+
+def test_a75_closed_frame_uses_last_actual_retained_timestamp_after_dropna():
+    now = time.time()
+    raw = _outcome_test_frame(now)
+    expected = int(pd.Timestamp(raw.index[-2]).timestamp())
+    raw.iloc[-1, raw.columns.get_loc("close")] = float("nan")
+    closed, actual_ts = bot.OpportunityHunter._closed_frame(raw, 300, now=now)
+    assert closed is not None
+    assert int(pd.Timestamp(closed.index[-1]).timestamp()) == expected
+    assert actual_ts == expected
+
+
+def test_a75_regime_confirmation_advances_once_per_distinct_closed_candle(monkeypatch):
+    cls = bot.MarketRegime
+    old_state = (cls._last_regime, cls._pending_regime, cls._pending_bars, cls._last_shift_ts,
+                 getattr(cls, "_a75_last_closed_bar_key", None))
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=6), periods=220, freq="4h")
+    frame = pd.DataFrame({"close": [100.0] * len(idx)}, index=idx)
+    monkeypatch.setattr(bot, "_v702_a33_closed_index", lambda df, interval: len(df) - 1)
+    monkeypatch.setattr(bot, "_v702_a33_timestamp_ms", lambda df: [int(x.value // 1_000_000) for x in df.index])
+    monkeypatch.setattr(bot.Indicators, "ema", staticmethod(lambda series, period: pd.Series([90.0] * len(series), index=series.index)))
+    monkeypatch.setattr(cls, "_classify_hysteresis", classmethod(lambda klass, pct: "BULLISH"))
+    monkeypatch.setattr(bot, "MONO_NOW", lambda: 1000.0)
+    try:
+        cls._last_regime = "BEARISH"
+        cls._pending_regime = None
+        cls._pending_bars = 0
+        cls._last_shift_ts = 0.0
+        cls._a75_last_closed_bar_key = None
+        with patch.dict(bot.CONFIG, {"REGIME_HYSTERESIS_ENABLE": True, "REGIME_CONFIRM_BARS": 3, "REGIME_MIN_DWELL_SEC": 0}, clear=False):
+            for _ in range(10):
+                cls.classify_from_btc_4h(frame)
+            assert cls._pending_bars == 1
+            next_idx = idx.append(pd.DatetimeIndex([idx[-1] + pd.Timedelta(hours=4)]))
+            next_frame = pd.DataFrame({"close": [100.0] * len(next_idx)}, index=next_idx)
+            cls.classify_from_btc_4h(next_frame)
+            assert cls._pending_bars == 2
+    finally:
+        cls._last_regime, cls._pending_regime, cls._pending_bars, cls._last_shift_ts, cls._a75_last_closed_bar_key = old_state
+
+
+def test_a75_final_validator_fails_when_a72_fails(monkeypatch):
+    monkeypatch.setattr(bot, "_V702_A66_PREVIOUS_VALIDATE_CONFIG", lambda: True)
+    monkeypatch.setattr(bot, "_v702_a66_startup_recovery_source_check",
+                        lambda: {"pass": True, "checks": {"base": True}, "failed": []})
+    monkeypatch.setattr(bot, "_v702_a72_read_only_runtime_source_check",
+                        lambda: {"pass": False, "checks": {"forced": False}, "failed": ["forced_failure"]})
+    assert bot._v702_a66_validate_config() is False
+    result = bot.STATS["v702_a66_final_validation"]
+    assert result["pass"] is False
+    assert "a72:forced_failure" in result["failed"]
+
+
+def test_a75_monitor_only_telegram_listener_allows_reads_but_blocks_mutations(monkeypatch):
+    calls = []
+    replies = []
+    async def prior(cls, exchange, message):
+        calls.append((exchange, message.get("text")))
+    async def reply(cls, chat_id, text):
+        replies.append(text)
+    monkeypatch.setattr(bot.TelegramCommandController, "_authorized", classmethod(lambda cls, msg: True))
+    monkeypatch.setattr(bot, "_A75_PREV_TG_HANDLE", prior)
+    monkeypatch.setattr(bot.TelegramCommandController, "_reply", classmethod(reply))
+    with patch.dict(bot.FINAL_CANONICAL_RUNTIME, {
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS", "production_decision": "NO_GO_UNATTENDED_LIVE",
+    }, clear=False):
+        asyncio.run(bot.TelegramCommandController._handle(None, {"text": "/cancel", "chat": {"id": 1}}))
+        asyncio.run(bot.TelegramCommandController._handle(None, {"text": "/ping", "chat": {"id": 1}}))
+    assert calls == [(None, "/ping")]
+    assert replies and "MONITOR_ONLY" in replies[0]

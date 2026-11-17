@@ -55,7 +55,7 @@
   "a74_swing_discovery": "Independent closed 1H Breakout/Pullback/Relative-Strength candidates confirmed by closed 4H direction; existing MSE SWING candidates retained. Uses bounded market_data_map; no extra exchange calls and no Futures/Short authority.",
   "active_audit_merge_revision_current": "A69-MERGED-PRODUCTION-AUDIT-CLOSURES-2026-11-15",
   "active_audit_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
-  "active_audit_revision_current": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
+  "active_audit_revision_current": "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17",
   "active_confirmed_alert_revision_current": "A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16",
   "active_corrective_integration_revision_current": "A71-BOOT-MEMORY-PM-COVERAGE-RESEARCH-RETENTION-2026-11-16",
   "active_entrypoint_identity_revision_current": "A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
@@ -196,9 +196,9 @@
     ],
     "telegram_operator_status_uses_current_audit_revision": true
   },
-  "canonical_main_sha256": "9ce93f60a88ff4ea96be97428e76ac72243e4159cf04d7cd291345419df79dcd",
+  "canonical_main_sha256": "22228e0dae27c3f7e11386932d629452d5b239912e7cbd87543c65bb10de6f9b",
   "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
-  "canonical_source_sha256": "9ce93f60a88ff4ea96be97428e76ac72243e4159cf04d7cd291345419df79dcd",
+  "canonical_source_sha256": "22228e0dae27c3f7e11386932d629452d5b239912e7cbd87543c65bb10de6f9b",
   "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
   "corrective_integration_scope": [
     "Replace whole-module inspect.getsource AST parsing in startup self-tests with bounded function source extraction; retain behavioral LONG_ONLY invariant test.",
@@ -238,210 +238,30 @@
   },
   "file_count": 99,
   "final_audit_verification": {
-    "a73_regression_tests": {
-      "status": "PENDING_FINAL_RUN"
-    },
-    "a73_targeted_regressions": {
-      "elapsed_seconds": 8.04,
-      "failed": 0,
-      "passed": 17,
-      "status": "PASS"
-    },
-    "a74_quality_hunter_regressions": "PASS: 105 targeted Hunter + production-guardrail tests; A74-only Hunter unit file: 82 passed.",
-    "archive_after_a72": {
-      "file_count": 99,
-      "status": "TO_BE_VERIFIED_AFTER_BUILD"
-    },
-    "archive_after_a73": {
-      "file_count": 99,
-      "status": "PENDING_CLEAN_EXTRACTION_VERIFICATION"
-    },
-    "archive_after_a74": {
-      "status": "PASS",
-      "file_count": 99,
-      "manifest_inventory_match": true,
-      "unique_entries": true,
-      "crc_test": "PASS (ZipFile.testzip() returned None)",
-      "clean_extraction": "PASS",
-      "sha256_ledger": "PASS (98/98 non-self files)",
-      "python_files": 73
-    },
-    "audit_revision": "A74-QUALITY-FIRST-STABLECOIN-FILTER-SWING-AND-NET-SHADOW-OUTCOMES-2026-11-17",
-    "compileall": "PASS (73 Python source files)",
-    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
-    "full_pytest": {
-      "status": "PASS_GROUPED_BATCHES",
-      "passed": 557,
+    "revision": "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17",
+    "pytest": {
+      "command": "pytest -q",
+      "collected": 566,
+      "passed": 565,
       "skipped": 1,
       "failed": 0,
-      "collected": 558,
-      "test_modules": 58,
-      "python": "3.13.5",
-      "summed_pytest_seconds": 54.09,
-      "command": "pytest -q --disable-warnings --maxfail=10; four non-overlapping batches from the final clean ZIP extraction",
-      "batches": [
-        {
-          "batch": 1,
-          "modules": 15,
-          "passed": 89,
-          "skipped": 0,
-          "failed": 0,
-          "seconds": 15.11,
-          "process_exit_code": 0
-        },
-        {
-          "batch": 2,
-          "modules": 15,
-          "passed": 111,
-          "skipped": 0,
-          "failed": 0,
-          "seconds": 10.54,
-          "process_exit_code": 0
-        },
-        {
-          "batch": 3,
-          "modules": 15,
-          "passed": 171,
-          "skipped": 1,
-          "failed": 0,
-          "seconds": 15.26,
-          "process_exit_code": 0
-        },
-        {
-          "batch": 4,
-          "modules": 13,
-          "passed": 186,
-          "skipped": 0,
-          "failed": 0,
-          "seconds": 13.18,
-          "process_exit_code": 0
-        }
-      ],
-      "skip_reason": "test_release_contracts.py:375 requires a historical A51 runtime log not packaged in the source release.",
-      "method": "The all-in-one invocation hit the outer tool timeout without a summary and is not counted. All 58 test modules were then run in four disjoint batches; every batch exited 0."
+      "runtime_sec": 30.98,
+      "python": "3.13.5"
     },
-    "independent_swing_discovery": "PASS: closed 1H patterns with closed 4H direction; bounded existing market_data_map only.",
-    "live_integrations": {
-      "docker_build": "NOT_TESTED",
-      "exchange_native_stop": "NOT_TESTED",
-      "mexc_private_api": "NOT_TESTED",
-      "mexc_public_api": "NOT_TESTED_LIVE",
-      "profitability": "NOT_VERIFIED",
-      "railway_deployment": "NOT_TESTED",
-      "real_orders": "NOT_TESTED",
-      "telegram_real_delivery": "NOT_TESTED"
-    },
-    "memory_limit_note": "Peak validation RSS is about 538 MiB. It is materially below the ~1001 MiB measured in the supplied audit, but remains above 512 MiB. Railway memory quota and termination cause were not accessible; platform OOM is not confirmed.",
-    "net_shadow_results": "PASS: modeled net return/R fields; not actual fills or realized PnL; data gaps UNKNOWN.",
-    "pip_check": {
-      "detail": "Existing shared environment: moviepy 2.2.1 requires pillow<12.0,>=9.2.0 but Pillow 12.3.0 is installed. moviepy/Pillow are not direct requirements in this project requirements.in.",
-      "exit_code": 1,
-      "status": "ENVIRONMENT_CONFLICT"
-    },
-    "production_decision": "NO_GO_UNATTENDED_LIVE",
-    "py_compile": "PASS (73/73)",
-    "python_version": "3.13.5",
-    "stablecoin_exclusion": "PASS: mandatory shared base-asset predicate; optional legacy toggle cannot disable it.",
-    "static_analysis_tools": {
-      "bandit": "NOT_INSTALLED",
-      "flake8": "NOT_INSTALLED",
-      "pyflakes": "NOT_INSTALLED",
-      "ruff": "NOT_INSTALLED"
-    },
-    "status": "PASS_FINAL_A74_CLEAN_ARCHIVE_OFFLINE_VALIDATION",
-    "strong_only_alerts": "PASS: technical, execution, regime, volume, spread, turnover and cost-adjusted TP1 gates.",
-    "target_platform": "Linux amd64 (Docker/Railway deployment was not run)",
-    "target_python": "3.12 (not run in this workspace; local test runtime is 3.13.5)",
-    "targeted_a72_regressions": {
-      "elapsed_seconds": 9.02,
-      "failed": 0,
-      "passed": 19,
-      "status": "PASS"
-    },
-    "targeted_regressions": {
-      "a71_and_related_health_intraday_tests": "25 passed",
-      "compilation": "PASS",
-      "manifest_and_release_coherence_tests": "6 passed"
-    },
+    "compileall": "PASS",
     "validate_only": {
-      "status": "PASS",
       "exit_code": 0,
-      "pass": true,
       "bot_started": false,
       "live_threads": [],
       "active_env_aliases": [],
-      "secrets_present": false,
-      "method": "Final clean ZIP extraction; env -i with no inherited MEXC/Telegram secrets; no real network/orders."
+      "r38_checks": 32,
+      "a66_checks": 25
     },
-    "a74_targeted_regressions": {
-      "status": "PASS",
-      "hunter_test_file_passed": 82,
-      "hunter_plus_guardrails_passed": 105,
-      "failed": 0
-    },
-    "profitability": "NOT VERIFIED; Shadow figures are modeled only.",
-    "a75_received_package_audit": {
-      "revision": "A75-RECEIVED-PRODUCTION-AUDIT-2026-11-17",
-      "input_archive": "FINAL_PRODUCTION_RELEASE(6).zip",
-      "input_archive_sha256": "6f5a911762e68ea5c4379f4a3fce2522858ad870b049e3755015fd3c76d386ec",
-      "original_file_count": 99,
-      "final_file_count": 99,
-      "python_source_count": 73,
-      "test_module_count": 58,
-      "pytest": {
-        "collected": 558,
-        "passed": 557,
-        "skipped": 1,
-        "failed": 0,
-        "grouped_batch_passes": [
-          89,
-          111,
-          171,
-          186
-        ],
-        "skip": "test_release_contracts.py:375 requires historical A51 log not packaged"
-      },
-      "compile_check": "PASS 73/73",
-      "validate_only": "PASS exit=0 bot_started=false live_threads=[] active_env_aliases=[]",
-      "local_imports": "PASS; no missing local module references detected",
-      "static_secret_scan": "0 candidate secrets; .env absent; .env.example placeholders only",
-      "incoming_sha256_ledger": "PASS 98/98 non-self entries",
-      "confirmed_new_source_defects": 0,
-      "new_runtime_source_fixes": 0,
-      "source_code_changed": false,
-      "files_added": 0,
-      "files_removed": 0,
-      "documentation_manifest_checksum_files_to_update": 6,
-      "runtime_policy_findings": [
-        "PULLBACK is intentionally allowed only in BULLISH/NEUTRAL; BEARISH macro rejection is not an execution/Telegram failure.",
-        "Observed spread values above 0.30% correctly fail the configured liquidity policy.",
-        "ASTER/USDT was monitor-only; the bot reported SHADOW_STOP_HIT and estimated -0.666% Shadow return, not a live order or realized loss."
-      ],
-      "structural_findings": {
-        "main_py_lines": 105327,
-        "main_py_bytes": 5920383,
-        "top_level_class_function_definitions": 1493,
-        "unique_top_level_names": 1481,
-        "redefined_top_level_names": 11,
-        "missing_local_imports": 0,
-        "eval_exec_calls_found": 0,
-        "note": "Layered duplicate definitions appear to be compatibility overrides; no wholesale refactor was attempted."
-      },
-      "environment_limitations": [
-        "Audit interpreter Python 3.13.5; target is Python 3.12 and was not available.",
-        "Docker binary unavailable; target image was not built.",
-        "ccxt and aiosqlite distributions absent; python-dotenv and aiohttp differ from requirements.in pins.",
-        "Global pip check reports unrelated moviepy 2.2.1 vs pillow 12.3.0 incompatibility.",
-        "ruff, bandit, pyflakes, pip-audit unavailable.",
-        "No live MEXC/Telegram requests, real account execution, or profitability verification."
-      ],
-      "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
-      "production_decision": "NO_GO_UNATTENDED_LIVE",
-      "profitability_verified": false
-    },
-    "a75_full_pytest": "PASS: 557 passed, 1 skipped, 0 failed (558 collected; 58 modules; four batches).",
-    "a75_compile": "PASS: py_compile 73/73.",
-    "a75_validate_only": "PASS: exit 0; bot_started=false; live_threads=[]; active_env_aliases=[]."
+    "live_mexc_tested": false,
+    "telegram_delivery_tested": false,
+    "docker_python312_tested": false,
+    "decision": "NO_GO_UNATTENDED_LIVE",
+    "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS"
   },
   "hard_gate_bypass": false,
   "live_enabled_by_default": false,
@@ -1013,11 +833,11 @@
     "archive_inventory": "PASS (99/99 files exactly match FINAL_MANIFEST.archive_contents; no duplicates).",
     "audit_runtime_python": "3.13.5; Python 3.12 executable unavailable locally; Python 3.12/Linux amd64 CI and Docker build remain unrun.",
     "canonical_zip_name": "UNIFIED_SCALPER_V702_A66_A67_A68_A69_CANONICAL_FINAL_AUDITED.zip",
-    "compileall": "PASS: compileall and explicit py_compile; 73/73 Python source files.",
+    "compileall": "PASS (python -m compileall -q .)",
     "docker_build_tested": false,
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "focused_regression_tests": "PASS: 6/6 A69 merged audit tests; 6/6 A68 outcome follow-up tests.",
-    "full_pytest": "PASS: 557 passed, 1 skipped, 0 failed; 558 collected across all 58 test modules; one skip is the unbundled historical A51 runtime-log fixture.",
+    "full_pytest": "PASS: 565 passed, 1 skipped, 0 failed; 566 collected across 58 test modules; Python 3.13.5; 30.98 seconds. One skip requires the unbundled historical A51 runtime log.",
     "live_authority": false,
     "live_mexc_api_tested": false,
     "live_network_tested": false,
@@ -1030,11 +850,11 @@
     "production_decision": "NO_GO_UNATTENDED_LIVE",
     "profitability_verified": false,
     "py_compile": "PASS: compileall and explicit py_compile; 73/73 Python source files.",
-    "pytest": "PASS (526 passed, 1 skipped, 0 failed; 527 collected; Python 3.13.5; 30.24 seconds; `pytest -vv -x`; final canonical ZIP extraction).",
-    "pytest_collection": "527 collected; 526 passed; 1 historical A51 fixture skipped; 0 failed; final canonical ZIP extraction.",
+    "pytest": "PASS (565 passed, 1 skipped, 0 failed; 566 collected; 58 modules; Python 3.13.5; 30.98 seconds)",
+    "pytest_collection": "566 collected; 565 passed; 1 historical A51 fixture skipped; 0 failed; all 58 test modules ran in one process.",
     "pytest_partition_coverage": "Not required for the final result; complete single-process test suite passed.",
     "pytest_partition_result": "Not used for final result.",
-    "pytest_single_process": "PASS (526 passed, 1 skipped, 0 failed; 527 collected; Python 3.13.5; 30.24 seconds; `pytest -vv -x`; final canonical ZIP extraction).",
+    "pytest_single_process": "PASS (single-process full suite: 565 passed, 1 skipped, 0 failed; 566 collected; one skip requires missing historical A51 log)",
     "python_312_linux_amd64_ci_tested": false,
     "railway_startup_diagnosis": "Runbook added; exact Railway root cause NOT PROVEN because supplied screenshots omit terminal validator marker / complete crash traceback and deployment settings.",
     "selftest_log_context_isolation": "PASS (ContextVar; synthetic boot self-test severity isolated to caller context; worker threads do not inherit it)",
@@ -1047,7 +867,10 @@
     "telegram_outbox": "IMPLEMENTED (SQLite; at-least-once; callbacks not durable)",
     "test_runner_shutdown": "PASS (A58_THREADS_AFTER_SESSION=[(MainThread, False)] in final verbose run).",
     "transitive_dependencies_hash_locked": false,
-    "validate_only": "PASS: exit=0; bot_started=false; live_threads=[]; active_env_aliases=[]; no MEXC/Telegram secrets; read-only validate-only path."
+    "validate_only": "PASS: exit=0; bot_started=false; live_threads=[]; active_env_aliases=[]; no MEXC/Telegram secrets; read-only validate-only path.",
+    "a75_regressions": "PASS (8/8 targeted A75 regression tests; included in full suite)",
+    "a75_validate_only": "PASS (exit=0; R38=32 checks; A66=25 checks; bot_started=false; live_threads=[]; active_env_aliases=[])",
+    "a75_target_runtime": "NOT TESTED: no Docker/Python 3.12 target image or live exchange integration"
   },
   "verification": {
     "a69_merged_audit_regressions": "PASS (6/6 new A69 merged audit regressions; all included in the full 520-pass suite).",
@@ -1322,68 +1145,70 @@
     "telegram_delivery_contract": "Offline callback/ACK regression only; real Telegram delivery not tested",
     "transitive_hash_lock_in_packaged_archive": false,
     "validate_only": "PASS: exit=0; bot_started=false; live_threads=[]; active_env_aliases=[]; no MEXC/Telegram secrets; read-only validate-only path.",
-    "zip_inventory": "PASS: 99 unique files; final ZIP extraction matches manifest inventory exactly."
+    "zip_inventory": "PASS: 99 unique files; final ZIP extraction matches manifest inventory exactly.",
+    "a75_final_audit_revision": "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17",
+    "a75_source_changes": "8 existing files updated; no files added or removed; historical distribution tag retained",
+    "a75_full_pytest": "PASS: 565 passed, 1 skipped, 0 failed; 566 collected across 58 test modules; Python 3.13.5; 30.98 seconds. One skip requires the unbundled historical A51 runtime log.",
+    "a75_compileall": "PASS",
+    "a75_validate_only": "PASS (exit=0; bot_started=false; live_threads=[]; active_env_aliases=[])",
+    "a75_external_integrations": "NOT TESTED LIVE: Docker/Python 3.12, authenticated MEXC, real orders/protection, Telegram network delivery, and profitability."
   },
   "a75_received_package_audit": {
-    "revision": "A75-RECEIVED-PRODUCTION-AUDIT-2026-11-17",
-    "input_archive": "FINAL_PRODUCTION_RELEASE(6).zip",
-    "input_archive_sha256": "6f5a911762e68ea5c4379f4a3fce2522858ad870b049e3755015fd3c76d386ec",
+    "revision": "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17",
+    "input_archive": "FINAL_PRODUCTION_RELEASE(7).zip",
+    "input_archive_sha256": "30370a5b0824072bbc4296c40df53963a2366a20d36c7ede191a10ff77603211",
     "original_file_count": 99,
     "final_file_count": 99,
-    "python_source_count": 73,
-    "test_module_count": 58,
-    "pytest": {
-      "collected": 558,
-      "passed": 557,
-      "skipped": 1,
-      "failed": 0,
-      "grouped_batch_passes": [
-        89,
-        111,
-        171,
-        186
-      ],
-      "skip": "test_release_contracts.py:375 requires historical A51 log not packaged"
-    },
-    "compile_check": "PASS 73/73",
-    "validate_only": "PASS exit=0 bot_started=false live_threads=[] active_env_aliases=[]",
-    "local_imports": "PASS; no missing local module references detected",
-    "static_secret_scan": "0 candidate secrets; .env absent; .env.example placeholders only",
-    "incoming_sha256_ledger": "PASS 98/98 non-self entries",
-    "confirmed_new_source_defects": 0,
-    "new_runtime_source_fixes": 0,
-    "source_code_changed": false,
     "files_added": 0,
     "files_removed": 0,
-    "documentation_manifest_checksum_files_to_update": 6,
-    "runtime_policy_findings": [
-      "PULLBACK is intentionally allowed only in BULLISH/NEUTRAL; BEARISH macro rejection is not an execution/Telegram failure.",
-      "Observed spread values above 0.30% correctly fail the configured liquidity policy.",
-      "ASTER/USDT was monitor-only; the bot reported SHADOW_STOP_HIT and estimated -0.666% Shadow return, not a live order or realized loss."
+    "modified_files": [
+      "main.py",
+      "test_v702_production_audit_fixes.py",
+      "README.md",
+      "FINAL_AUDIT_REPORT.md",
+      "CHANGELOG.md",
+      "A66_RELEASE_MANIFEST.json",
+      "FINAL_MANIFEST.json",
+      "A66_SHA256SUMS.txt"
     ],
-    "structural_findings": {
-      "main_py_lines": 105327,
-      "main_py_bytes": 5920383,
-      "top_level_class_function_definitions": 1493,
-      "unique_top_level_names": 1481,
-      "redefined_top_level_names": 11,
-      "missing_local_imports": 0,
-      "eval_exec_calls_found": 0,
-      "note": "Layered duplicate definitions appear to be compatibility overrides; no wholesale refactor was attempted."
-    },
-    "environment_limitations": [
-      "Audit interpreter Python 3.13.5; target is Python 3.12 and was not available.",
-      "Docker binary unavailable; target image was not built.",
-      "ccxt and aiosqlite distributions absent; python-dotenv and aiohttp differ from requirements.in pins.",
-      "Global pip check reports unrelated moviepy 2.2.1 vs pillow 12.3.0 incompatibility.",
-      "ruff, bandit, pyflakes, pip-audit unavailable.",
-      "No live MEXC/Telegram requests, real account execution, or profitability verification."
+    "python_source_count": 73,
+    "test_module_count": 58,
+    "confirmed_source_fixes": [
+      "Final A66/A72 validator conjunction and deferred final validate-only exit",
+      "Bounded retries for existing-position reconciliation when an authenticated private client exists",
+      "Monitor-only read commands and explicit denial of account-mutating commands",
+      "Closed BTC 4H unique-candle regime confirmation",
+      "Hunter candle freshness/gap validation and RSI edge cases",
+      "Terminal opportunity identity and immutable initial setup geometry/cost snapshot",
+      "Expiry-clipped shadow outcomes, unknown data-gap handling, and rotating active-row pagination",
+      "Explicit zero/invalid cost handling, separate score semantics, and volume evidence type preservation",
+      "Hunter/MFT-D1 observability, SQLite offloading in scan paths, and ACK-based alert state"
+    ],
+    "verification_limits": [
+      "Docker/Python 3.12 target image not built in this environment",
+      "No authenticated MEXC account or live order/protection test",
+      "No real Telegram network delivery test",
+      "No full target-environment memory/soak test; measured validate-only memory history includes approximately 583 MiB",
+      "No full transitive dependency hash lock, application-wide SQLite writer actor, or global backup/restore test",
+      "Broad main.py modularization and exhaustive exception/undefined-name warning classification remain deferred"
     ],
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "production_decision": "NO_GO_UNATTENDED_LIVE",
-    "profitability_verified": false
+    "profitability_verified": false,
+    "pytest": {
+      "collected": 566,
+      "passed": 565,
+      "skipped": 1,
+      "failed": 0,
+      "command": "pytest -q",
+      "runtime_sec": 30.98,
+      "skip": "test_release_contracts.py:375 requires historical A51 log not packaged"
+    },
+    "compile_check": "PASS: python -m compileall -q .",
+    "validate_only": "PASS: exit=0; R38 checks=32; A66 checks=25; bot_started=false; live_threads=[]; active_env_aliases=[]",
+    "source_code_changed": true
   },
-  "a75_audit_revision": "A75-RECEIVED-PRODUCTION-AUDIT-2026-11-17",
-  "a75_source_code_changed": false,
-  "a75_test_summary": "557 passed, 1 skipped, 0 failed; 73/73 compile; validate-only PASS"
+  "a75_audit_revision": "A75-FINAL-PRODUCTION-AUDIT-CLOSURES-2026-11-17",
+  "a75_source_code_changed": true,
+  "a75_test_summary": "PASS: 565 passed, 1 skipped, 0 failed; 566 collected across 58 test modules; Python 3.13.5; 30.98 seconds. One skip requires the unbundled historical A51 runtime log."
 }

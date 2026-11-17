@@ -1,10 +1,29 @@
-# UNIFIED SCALPER V702 — A66 CANONICAL BASE + A67 HUNTER + A68 TP/SL OUTCOMES + A69 AUDIT CLOSURES + A70 ENTRYPOINT + A71 CORRECTIVE INTEGRATION + A73 CONFIRMED ALERTS
+# UNIFIED SCALPER V702 — A75 FINAL PRODUCTION AUDIT INTEGRATION
 
-**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL` (A67 read-only Hunter + A68 outcome follow-up + A69 config/audit closures + A70 entrypoint identity closure; A73 confirmed-alert follow-up closure)  
-**Release date:** 2026-11-16 (A73 confirmed-opportunity alert and multi-timeframe follow-up closure; canonical A70 lineage retained)  
+**Release ID:** `UNIFIED-SCALPER-V702-A66-CANONICAL-FINAL+A75-AUDIT-INTEGRATION` (historical A66 distribution identity retained; A75 is the active audit closure)  
+**Release date:** 2026-11-17 (A75 validation, lifecycle, HTF observability, data-integrity and monitor-only command closures)  
 **Canonical executable:** `main.py`  
 **Base runtime lineage:** A64  
 **Production decision:** `NO_GO_UNATTENDED_LIVE`
+
+
+## A75 — final production audit integration (2026-11-17)
+
+A75 integrates the reproducible audit fixes into the existing package without adding files, removing strategy engines, loosening acceptance thresholds, changing Spot LONG-only scope, or granting Hunter/order execution authority.
+
+- **Validation:** final A66 validation is the conjunction of the inherited validator, A66 startup checks and A72 checks. A72 failure is terminal. `--validate-only` now runs after A74/A75 installation so the final effective runtime wrappers are included.
+- **Existing positions:** if a private MEXC client exists but startup position/exit reconciliation fails, a bounded exponential-backoff task retries reconciliation. It starts the dedicated PositionManager only after a healthy protection cycle is proven. This recovery does not unblock new entries; missing credentials cannot be repaired by software retry.
+- **Telegram operator commands:** the polling controller can run in Monitor-only. Read-only `/help`, `/commands`, `/ping`, `/digest` and `/opportunities` remain available; account-mutating commands are rejected without a verified private client and appropriate live authority.
+- **BTC regime:** candidate policy regime uses the latest closed BTC 4H candle and advances its confirmation count only once per distinct closed candle. The descriptive macro label and candidate-policy label remain separately visible; the policy is not silently relaxed.
+- **Hunter data quality:** closed-candle validation derives freshness from the actual last retained timestamp, rejects stale/non-contiguous histories, and retains enough hourly history for the 7-day observation horizon. RSI edge cases are explicit (100 on uninterrupted gains, 0 on uninterrupted losses, 50 on a flat sequence).
+- **Lifecycle and outcomes:** terminal `COMPLETED`/`INVALIDATED`/`EXPIRED` setups cannot be resurrected with the same identity; initial price geometry and cost assumptions are frozen in the setup snapshot; post-expiry candles are excluded; data gaps remain UNKNOWN and cannot be treated as stop/target outcomes. Active record pagination rotates to avoid fixed-prefix starvation.
+- **Cost and score semantics:** zero fee/slippage is a valid explicit input; negative/non-finite cost inputs and negative spread fail closed. `volume_quality` is never coerced into `volume_ratio`. Technical, execution, regime-fit and composite rank floors are separately labelled.
+- **Observability:** `/digest` includes Hunter scanned/created/active/error/data-gap counts, candidate policy regime source/confirmations, and the 1D MTF lane attempted/ok/failed/covered counters. `/opportunities` lists persisted active Hunter observations read-only.
+- **Async I/O and alerts:** Hunter's SQLite operations in the market scan are offloaded from the event loop. The Hunter records an alert as delivered only after dispatcher success ACK, preserves pending state separately, and keeps a failed send retryable. Telegram delivery is at-least-once, not exactly-once.
+
+**Still not certified/fully closed:** no transactional semantic Telegram outbox or durable deferral of every rate-limited terminal event has been proven under process-kill tests; no dedicated single-writer actor, automated backup/restore test, broad `main.py` modularization, 3,402-exception severity audit, complete undefined-name warning classification, per-strategy market-data contract split, full transitive hash lock, Docker/Python 3.12 build, 512 MiB memory/soak test, or live MEXC/Telegram integration test was completed here. The target environment, account, and real exchange were unavailable. Treat these as explicit residual release gates, not as passed checks.
+
+A75 regression tests were added to the existing test module for RSI edge cases, explicit zero/invalid cost inputs, terminal lifecycle and frozen geometry, post-expiry outcome filtering, actual last-candle timestamps after null filtering, unique-bar Regime confirmation, A72 validator failure propagation, and monitor-only Telegram command authorization. The package remains `NO_GO_UNATTENDED_LIVE` and `MONITOR_ONLY_NO_NEW_BUYS`.
 
 ## A73 — confirmed opportunities, TradingView and swing follow-up (2026-11-16)
 
