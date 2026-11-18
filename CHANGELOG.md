@@ -2599,3 +2599,21 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Validate-only exits 0 with `bot_started=false` and `live_threads=[]`.
 - Final A80 package is rebuilt from the exact 99-path source inventory; no files added or removed. SHA ledger verifies 98 non-self files and ZIP CRC passes.
 - Live Telegram/MEXC integrations and profitability are not validated offline; monitor-only and no-order authority remain in force.
+
+
+## 2026-11-18 — A81 research tunables wiring closure
+
+- Fixed an environment/configuration wiring defect: the documented A9 intraday Shadow minimum quote-volume and per-cycle batch-size controls were not copied into the runtime `CONFIG`. They are now loaded from the existing environment variables.
+- Fixed A79 supplemental research controls that were parsed but ignored by the run loop. The supplement now uses its configured minimum quote turnover (with the existing 250k research floor), bounded concurrency (1–16), and cycle budget (3–30 seconds) for candidate selection and snapshot fetching.
+- Added a regression test that sets non-default environment values and verifies they reach the A9/A79 settings while the canonical core liquidity floor remains 3,000,000 USDT and live gates remain unchanged.
+- No strategy entry policy, score floor, spread/depth check, position/risk limit, execution route, or live-order authorization was relaxed. A79/A9 remain research-only.
+- No files added or deleted; the source package remains at 99 files.
+
+
+### A81 final verification
+
+- 595 tests passed, 1 historical fixture skipped, 0 failed (596 collected across 58 modules).
+- `compileall` and explicit `py_compile`: 73/73 Python files passed.
+- `python main.py --validate-only`: exit 0, `bot_started=false`, `live_threads=[]`.
+- Final ZIP rebuilt with 99 files; CRC and manifest inventory verified; SHA-256 ledger verifies 98 non-self files.
+- No live MEXC/Telegram request, live order, deployment soak, or profitability claim was made.

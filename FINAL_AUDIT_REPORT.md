@@ -162,3 +162,54 @@ Offline tests and the supplied logs do not verify exchange fills, actual fee/sli
 - A80-specific regression tests: 14/14 passed; A80 runtime self-test: 10/10 passed. Python compile checks: 73/73. Validate-only: exit 0, `bot_started=false`, `live_threads=[]`.
 - A user-supplied Telegram `/status` reply confirms at least one successful command-response round trip; continuous Telegram alert delivery, Railway network stability, authenticated MEXC calls, live orders/fills, and out-of-sample profitability were not tested in this offline audit. `MONITOR_ONLY_NO_NEW_BUYS` remains enforced; no live order authority was added.
 - Research scope is capped at 500 active Spot/USDT markets with at least 250,000 USDT quote turnover, up to 32 supplemental symbols per cycle, 16-way concurrency and a 30-second fetch budget. This is a rotating research ceiling, not a promise to fetch 500 markets each cycle. The canonical core 3M USDT liquidity requirement and canonical order-selection path remain unchanged.
+
+
+## A81 — final audit and targeted production patch (2026-11-18)
+
+### Scope and source evidence
+
+- Audited the supplied `FINAL_PRODUCTION_RELEASE_A80.zip` archive: 99 unique files; ZIP CRC check passed; no packaged runtime logs were present, so operational-log interpretation below is based only on the three digest snapshots supplied in the user prompt.
+- Python source inventory: 73 `.py` files. Compilation check passed before and after the A81 source change. The canonical source is a large `main.py` monolith (~107k lines) with historical/versioned wrappers and repeated assignment layers. A full structural decomposition was not attempted: doing so under an offline constrained audit would risk altering the canonical runtime and invalidating its extensive backward-compatibility contracts.
+- The archive has 18 registered core strategy engines whose `enabled()` checks returned true. This proves registration/configuration only; it does not prove that each strategy generated a qualified signal or has positive expectancy.
+
+### Findings and changes
+
+1. **A81 defect fixed — A79 config was parsed but not honored by its execution lane.** The supplement hard-coded 250,000 USDT minimum quote volume, concurrency 16, and 30-second budget rather than using the declared A79 settings. The loop now honors configured minimum (not below the pre-existing 250,000 research floor), concurrency bounded to 1–16, and time budget bounded to 3–30 seconds.
+2. **A81 defect fixed — A9 research settings were not loaded into `CONFIG`.** The declared intraday Shadow minimum quote volume and per-cycle symbol batch size now flow through the existing environment loader.
+3. Added a regression test in the existing test module; no new file was added. The focused A80/A81 selection passed 10 tests.
+4. The package identity and canonical safety policy are preserved. No strategy family regime allowlist, score threshold, spread/depth gate, stop-loss, position-sizing, pre-send, order-reconciliation, or execution gate was loosened. No live orders were sent.
+
+### Liquidity finding — do not conflate research and tradable universes
+
+- **Canonical core Spot/USDT scanner floor:** 3,000,000 USDT 24-hour quote turnover. Some strategy/tier policies require a higher tier (for example, the Large tier is 15,000,000 USDT).
+- **A79 supplemental research floor:** 250,000 USDT; **A9 intraday Shadow floor:** 500,000 USDT. These are isolated research/shadow populations and cannot enter the canonical order route.
+- Quote turnover is not order-book liquidity. The independent spread/depth controls still apply. The user-supplied digest includes a spread rejection of 0.5168% against a 0.300% ceiling. That is a valid rejection, not evidence that the spread gate should be lowered.
+
+### Operational diagnosis from supplied digests
+
+- `MONITOR_ONLY_NO_NEW_BUYS` is active, therefore the bot is intentionally not authorized to place new buys.
+- The sampled bearish BTC regime, combined with `PULLBACK@BEARISH[allow=BULLISH+NEUTRAL]`, explains the repeated `family_regime_disallowed.macro` rejects. HTF strength rejects form a second major choke; spread rejection appears in another sample. These are upstream PreQual decisions. Since `PASS=0` and `SEL/Q/TG/EXEC=0`, the downstream queue, Telegram signal delivery, and execution stages are not being exercised by these cycles; this is not enough evidence to diagnose them as broken.
+- Universe is reported READY and market data is reported ready; A51 prefilter errors and observed event-buffer/backpressure drops are zero in the supplied digest. No measured queue or event-retention bottleneck is shown in that sample.
+- All 18 core strategy engines report enabled in code, but the log evidence is not enough to claim all 18 have successfully generated signals. The A9 log counts show evaluation and a small number of Micro shadow signals; these lanes are read-only. `VWAP_RECLAIM_RS_5M` and `ADAPTIVE_RS_PULLBACK_15M` had zero signals in the displayed sample, not zero evaluations. Swing hunter produced no confirmed candidate in the sample.
+
+### Verification boundary
+
+- A81 targeted regression: **10 passed** for tests selected by `-k 'a80 or a81'`.
+- `python main.py --validate-only`: exit 0, `bot_started=false`, no live worker threads; internal A79/A80 self-tests passed. This is offline validation, not an authenticated MEXC/Telegram test.
+- `compileall` and explicit `py_compile` passed 73/73. The complete collected test set was run in groups; see the final A81 verification block below.
+- No authenticated exchange access, Telegram network delivery, real order placement, target-platform Python/Docker memory soak, or profitability/backtest validation was performed. No daily-income claim is made.
+
+### Architectural limitations retained
+
+- The 100k+ line canonical runtime remains monolithic and has layered historical wrappers. A wholesale refactor was deliberately not performed because this package depends on versioned contracts and the supplied logs show a live-monitor-only state. The scoped A81 fixes avoid changing those contracts.
+- `ccxt` and `aiosqlite` are not installed in the audit execution environment; dependency declarations exist in the package. Exchange-facing integration paths therefore remain unverified here.
+- No files were added or removed; total package inventory remains 99.
+
+
+### A81 final release verification
+
+- Full grouped pytest run: **595 passed, 1 skipped, 0 failed** across **58 test modules** (**596 collected**). The only skip is `test_release_contracts.py:375`, because the immutable historical A51 validation log is intentionally absent from the clean source archive. The A81 environment-wiring regression is included in the 105-test `test_v702_production_audit_fixes.py` module; that module passed 105/105.
+- Python compile verification: `compileall` passed and explicit `py_compile` passed **73/73** Python files.
+- `python main.py --validate-only`: exit **0**; `bot_started=false`; `live_threads=[]`; internal validation reported PASS. This mode did not start the persistent bot and made no live trading/API requests.
+- ZIP content inventory: exactly **99 files**, no additions/deletions relative to A80; archive CRC and manifest inventory verified after rebuild. SHA-256 ledger covers **98/98** other packaged files (the ledger does not hash itself).
+- Import-time environment caveat: the audit container does not have `ccxt` or `aiosqlite` installed, although package dependencies are declared. Therefore direct exchange/SQLite integration paths, Docker build, authenticated MEXC/Telegram access, runtime memory soak, live fills, and profitability remain unverified. Install the declared dependencies in the target deployment before starting the service.

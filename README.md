@@ -380,3 +380,13 @@ Swing outcome checks use closed 1H candles. Structural stop references use bound
 ### A80 release verification
 
 The A80 source package was validated with 594 passing tests and one skipped historical A51-log fixture across 58 test modules; no test failures remain. A80-focused tests passed 14/14 and the A80 self-test passed 10/10. All 73 Python source files compiled, and `--validate-only` exited successfully without starting the bot or live threads. The ZIP contains exactly 99 files. Actual Telegram network delivery, authenticated exchange connectivity, live fills, and profitability remain unverified.
+
+
+### A81 configuration-wiring fix (2026-11-18)
+
+A81 corrects two research-lane configuration mismatches: A9 intraday Shadow `MIN_QUOTE_VOLUME_USDT` and `MAX_SYMBOLS_PER_CYCLE` now load from the documented environment variables; A79 supplemental research now honors its configured minimum quote turnover, bounded concurrency, and cycle budget instead of hard-coded values. These settings affect research coverage only. The canonical tradable Spot universe still requires at least **3,000,000 USDT 24h quote turnover** (and strategy/tier policies may require more); the 250,000 USDT A79 floor and 500,000 USDT A9 shadow floor do not authorize a live entry. `MONITOR_ONLY_NO_NEW_BUYS` remains the effective entry policy.
+
+
+### A81 verification status
+
+A81 final validation: 595 passed, 1 historical fixture skipped, 0 failed (596 collected across 58 test modules); 73/73 Python files compile; `--validate-only` exits 0 without starting the bot or live threads. The clean ZIP contains 99 files and passes CRC/manifest checks. The audit environment did not have `ccxt` or `aiosqlite` installed, so networked exchange/Telegram integration, target-runtime soak, live fills and profitability were not verified.

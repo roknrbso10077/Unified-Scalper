@@ -2034,6 +2034,45 @@ def test_a80_supplement_selector_scales_to_32_symbols_without_bypassing_liquidit
 
 
 
+def test_a81_research_environment_tunables_are_loaded_and_wired(monkeypatch):
+    keys = (
+        "V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT",
+        "V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE",
+        "V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT",
+        "V702_A79_SUPPLEMENT_CONCURRENCY",
+        "V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC",
+    )
+    previous = {key: bot.CONFIG.get(key) for key in keys}
+    try:
+        values = {
+            "V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT": "900000",
+            "V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE": "7",
+            "V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT": "900000",
+            "V702_A79_SUPPLEMENT_CONCURRENCY": "5",
+            "V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC": "9",
+        }
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+        bot._apply_loaded_environment_config()
+        assert bot.CONFIG["V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT"] == 900000
+        assert bot.CONFIG["V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE"] == 7
+        assert bot.CONFIG["V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT"] == 900000
+        assert bot.CONFIG["V702_A79_SUPPLEMENT_CONCURRENCY"] == 5
+        assert bot.CONFIG["V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC"] == 9.0
+        source = bot._v702_read_source_text()
+        assert 'min_quote_volume=max(250_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT"' in source
+        assert 'concurrency=max(1, min(16, int(CONFIG.get("V702_A79_SUPPLEMENT_CONCURRENCY"' in source
+        assert 'cycle_budget_sec=max(3.0, min(30.0, float(CONFIG.get("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC"' in source
+        assert bot.CONFIG["LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME"] == 3_000_000.0
+        assert bot.FINAL_CANONICAL_RUNTIME.get("active_a81_revision_current") == bot.V702_A81_REVISION
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                bot.CONFIG.pop(key, None)
+            else:
+                bot.CONFIG[key] = value
+
+
 def test_a80_status_keyboard_text_alias_is_read_only_in_monitor_only(monkeypatch):
     replies = []
     async def reply(cls, chat_id, text):

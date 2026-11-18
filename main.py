@@ -1314,7 +1314,9 @@ def _apply_loaded_environment_config() -> None:
                                ("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", "V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT"),
                                ("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", "V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT"),
                                ("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", "V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS"),
-                               ("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", "V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT")):
+                               ("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", "V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT"),
+                               ("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", "V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT"),
+                               ("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", "V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE")):
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
@@ -27548,13 +27550,13 @@ async def run_bot(universe: List[str]):
                     _a79_selected = _v702_a79_select_supplemental_symbols(
                         list(_a80_research_universe), _a79_tickers, set(market_data_map),
                         max_symbols=max(16, min(32, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)))),
-                        min_quote_volume=250_000.0,
+                        min_quote_volume=max(250_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 250_000.0))),
                         offset=_a79_offset, priority_symbols=_a79_active_priority,
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
                     _a79_pool_count = _v702_a79_supplement_pool_size(
                         list(_a80_research_universe), _a79_tickers, set(market_data_map),
-                        min_quote_volume=250_000.0,
+                        min_quote_volume=max(250_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 250_000.0))),
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
                     if _a79_pool_count:
@@ -27567,8 +27569,8 @@ async def run_bot(universe: List[str]):
                             exchange, _a79_selected, _a79_tickers,
                             btc_frames={"df_btc_5m": shared_btc_5m, "df_btc_15m": shared_btc_15m,
                                         "df_btc_1h": shared_btc_1h, "df_btc_4h": shared_btc_4h},
-                            concurrency=16,
-                            cycle_budget_sec=30.0,
+                            concurrency=max(1, min(16, int(CONFIG.get("V702_A79_SUPPLEMENT_CONCURRENCY", 16)))),
+                            cycle_budget_sec=max(3.0, min(30.0, float(CONFIG.get("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 30.0)))),
                             read_timeout_sec=5.0,
                         )
                         _a79_research_market_data_map.update(_a79_extra)
@@ -107233,6 +107235,20 @@ def _v702_a80_self_test():
 
 STATS["v702_a80_self_test"] = _v702_a80_self_test()
 FINAL_CANONICAL_RUNTIME["a80_self_test"] = STATS["v702_a80_self_test"]
+
+# V702 A81 — documented research tunables must be honored by their own lanes.
+# This closure only wires settings; the 3M canonical core liquidity floor and
+# every execution/risk/policy gate remain unchanged.
+V702_A81_REVISION = "A81-RESEARCH-TUNABLES-ENV-WIRING-CLOSURE-2026-11-18"
+STATS["v702_a81_revision"] = V702_A81_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "active_a81_revision_current": V702_A81_REVISION,
+    "research_tunables_are_env_backed": True,
+    "canonical_core_min_quote_volume_usdt": float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)),
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
 
 
 if __name__ == "__main__":
