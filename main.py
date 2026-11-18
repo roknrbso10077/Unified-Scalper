@@ -1282,7 +1282,8 @@ def _apply_loaded_environment_config() -> None:
     _shadow_alerts = _env_first("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE")
     if _shadow_alerts is not None:
         CONFIG["V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE"] = _shadow_alerts.strip().lower() in {"1", "true", "yes", "on"}
-    for _flag_key in ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", "V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE"):
+    for _flag_key in ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", "V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE",
+                      "V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", "V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE"):
         _raw_flag = _env_first(_flag_key)
         if _raw_flag is not None:
             CONFIG[_flag_key] = _raw_flag.strip().lower() in {"1", "true", "yes", "on"}
@@ -1291,11 +1292,16 @@ def _apply_loaded_environment_config() -> None:
                                ("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", "V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC"),
                                ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH", "V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH"),
                                ("V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR", "V702_INTRADAY_SHADOW_DAILY_REPORT_HOUR"),
-                               ("V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE", "V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE")):
+                               ("V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE", "V702_INTRADAY_SHADOW_DAILY_REPORT_MINUTE"),
+                               ("V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT", "V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT"),
+                               ("V702_INTRADAY_MICRO_ALERT_MIN_NET_R", "V702_INTRADAY_MICRO_ALERT_MIN_NET_R"),
+                               ("V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT", "V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT"),
+                               ("V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT", "V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT"),
+                               ("V702_INTRADAY_MICRO_MTF_MIN_CANDLES", "V702_INTRADAY_MICRO_MTF_MIN_CANDLES")):
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
-                CONFIG[_cfg_key] = float(_raw) if "AGE" in _env_key or "COOLDOWN" in _env_key else int(_raw)
+                CONFIG[_cfg_key] = float(_raw) if any(token in _env_key for token in ("AGE", "COOLDOWN", "MIN_NET_PROFIT_PCT", "MIN_NET_R", "COST_PCT", "RS_15M_PCT")) else int(_raw)
             except (TypeError, ValueError):
                 # Invalid optional tuning never changes any live safety gate.
                 pass
@@ -27506,6 +27512,14 @@ async def run_bot(universe: List[str]):
                                 _economic = str(_payload.get("economic_status", "TECHNICAL_ONLY_COST_GATE_NOT_MET"))
                                 _economic_label = ("ECONOMICALLY VIABLE under modeled costs" if _economic == "VIABLE_AFTER_MODELED_COSTS"
                                                    else "TECHNICAL PATTERN ONLY — cost gate not met")
+                                _gate_evidence = _payload.get("micro_alert_gate_evidence", {}) if isinstance(_payload.get("micro_alert_gate_evidence"), dict) else {}
+                                _mtf_evidence = _gate_evidence.get("mtf_confirmation", {}) if isinstance(_gate_evidence.get("mtf_confirmation"), dict) else {}
+                                _rs_diff = _mtf_evidence.get("relative_strength_diff_pct")
+                                _mtf_line = (f"MTF: closed 5m/15m trend confirmed; RS vs BTC {float(_rs_diff):+.3f}%" if _rs_diff is not None
+                                             else "MTF: closed 5m/15m trend and BTC-relative strength confirmed")
+                                _spread_used = _payload.get("spread_pct_used")
+                                _spread_line = (f"Spread evidence: observed BBO {_spread_used:.3f}%" if isinstance(_spread_used, (int, float))
+                                                else "Spread evidence: observed BBO")
                                 _msg = (
                                     "🟣 <b>MICRO SHADOW 1M — MONITOR ONLY</b>\n"
                                     f"<b>{_safe_tg_text(_alert.get('symbol'))}</b> | {_safe_tg_text(_alert.get('strategy_mode'))}\n"
@@ -27514,6 +27528,8 @@ async def run_bot(universe: List[str]):
                                     f"Target reference: {_price_text(_payload.get('target'))}\n"
                                     f"Estimated round-trip cost: {_price_text(_payload.get('cost_pct')) if _payload.get('cost_pct') is None else f'{float(_payload.get('cost_pct')):.3f}%'}\n"
                                     f"Modeled net at target: {float(_payload.get('target_net_pct_after_costs', 0.0) or 0.0):.3f}% / {float(_payload.get('target_net_r_after_costs', 0.0) or 0.0):.3f}R\n"
+                                    f"{_spread_line}\n"
+                                    f"{_mtf_line}\n"
                                     f"Economic assessment: {_economic_label}\n"
                                     f"{_lsa_line}\n"
                                     f"Signal ID: <code>{_safe_tg_text(str(_alert.get('sample_id') or '')[:12])}</code>\n"
@@ -90547,6 +90563,14 @@ CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", 3)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", 180.0)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC", 180.0)
+# A78: only send strong Micro alerts; continue recording all research samples/outcomes.
+CONFIG.setdefault("V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", True)
+CONFIG.setdefault("V702_INTRADAY_MICRO_MTF_MIN_CANDLES", 25)
+CONFIG.setdefault("V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT", 0.15)
+CONFIG.setdefault("V702_INTRADAY_MICRO_ALERT_MIN_NET_R", 0.75)
+CONFIG.setdefault("V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT", 0.50)
+CONFIG.setdefault("V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT", 0.0)
+CONFIG.setdefault("V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE", False)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_ALERT_MAX_ROWS", 10000)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_MAX_PER_BATCH", 5)

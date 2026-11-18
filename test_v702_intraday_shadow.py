@@ -66,9 +66,26 @@ class IntradayShadowTests(unittest.TestCase):
         return frame
 
     def snapshot(self, symbol="DOT/USDT"):
-        return {"symbol":symbol,"quote_vol_24h":2_000_000,"tier":"MICRO","spread_pct":None,
-                "df_5m":None,"df_15m":None,"df_btc_5m":None,"df_btc_15m":None,
+        asset5 = [100.0 + i * 0.035 for i in range(60)]
+        asset15 = [100.0 + i * 0.060 for i in range(60)]
+        btc5 = [100.0 + i * 0.020 for i in range(60)]
+        btc15 = [100.0 + i * 0.030 for i in range(60)]
+        df5 = self._ohlcv_frame("5min", asset5)
+        btc5_frame = self._ohlcv_frame("5min", btc5)
+        # Align the latest closed 5m bars to the latest closed 15m bars.
+        for frame in (df5, btc5_frame):
+            frame.index = frame.index + pd.Timedelta(hours=10)
+            frame.attrs["as_of_ms"] = int(frame.index[-1].timestamp() * 1000) + 300_000 + 1001
+        return {"symbol":symbol,"quote_vol_24h":2_000_000,"tier":"MICRO","spread_pct":0.05,
+                "df_5m":df5,
+                "df_15m":self._ohlcv_frame("15min", asset15),
+                "df_btc_5m":btc5_frame,
+                "df_btc_15m":self._ohlcv_frame("15min", btc15),
                 "macro_regime":"NEUTRAL"}
+
+    def enable_test_micro_alerts(self):
+        # Relax only the synthetic fixture's net-R floor; production defaults remain 0.75R.
+        self.cfg["V702_INTRADAY_MICRO_ALERT_MIN_NET_R"] = 0.25
 
     def test_schema_selftest_and_shadow_only(self):
         result = self.study.self_test()
@@ -94,6 +111,7 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertIn('"higher_timeframe_bullish_required":false', row[6])
 
     def test_micro_shadow_alert_is_persisted_without_live_order_authority(self):
+        self.enable_test_micro_alerts()
         result = self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         self.assertGreaterEqual(result["signals"], 1)
         alerts = self.study.pending_micro_alerts(limit=5, max_age_sec=180)
@@ -106,6 +124,7 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertFalse(self.cfg["V702_INTRADAY_SHADOW_LIVE_ENABLE"])
 
     def test_micro_alert_outbox_expires_stale_rows_and_deduplicates_same_candle(self):
+        self.enable_test_micro_alerts()
         self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         first = self.study.pending_micro_alerts(limit=5, max_age_sec=180)
         self.assertTrue(first)
@@ -120,6 +139,74 @@ class IntradayShadowTests(unittest.TestCase):
         with self.connect() as conn:
             state = conn.execute("SELECT state FROM v702_intraday_shadow_alerts WHERE sample_id=?", (first[0]["sample_id"],)).fetchone()[0]
         self.assertEqual(state, "EXPIRED")
+
+    def test_zero_spread_is_not_treated_as_zero_cost_evidence(self):
+        snapshot = self.snapshot()
+        snapshot["spread_pct"] = 0.0
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), snapshot)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT cost_pct,features_json FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'"
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertGreaterEqual(row[0], 0.45)  # fallback spread + round-trip fees + two-sided slippage
+        self.assertIn('"spread_source":"FALLBACK_MISSING_OR_NONPOSITIVE_BBO"', row[1])
+        self.assertEqual(self.study.pending_micro_alerts(limit=5, max_age_sec=180), [])
+
+    def test_technical_only_or_low_net_rr_sample_is_never_alerted(self):
+        self.cfg["V702_INTRADAY_MICRO_ALERT_MIN_NET_R"] = 99.0
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT features_json FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'"
+            ).fetchone()
+        self.assertIsNotNone(row)  # research ledger still records the setup
+        self.assertIn('"micro_alert_eligible":false', row[0])
+        self.assertIn('"micro_alert_block_reason":"micro_net_rr_below_alert_floor"', row[0])
+        self.assertEqual(self.study.pending_micro_alerts(limit=5, max_age_sec=180), [])
+
+    def test_micro_alert_fails_closed_without_closed_5m_15m_confirmation(self):
+        snapshot = self.snapshot()
+        snapshot["df_15m"] = None
+        self.enable_test_micro_alerts()
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), snapshot)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT features_json FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'"
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertIn('"micro_alert_block_reason":"micro_mtf_history_insufficient"', row[0])
+        self.assertEqual(self.study.pending_micro_alerts(limit=5, max_age_sec=180), [])
+
+    def test_micro_alert_rejects_recent_mtf_candle_gaps(self):
+        snapshot = self.snapshot()
+        snapshot["df_15m"].attrs.pop("as_of_ms", None)
+        # Introduce a real missing 15m timestamp; the recent-bar quality gate must fail closed.
+        frame = snapshot["df_15m"].drop(snapshot["df_15m"].index[-3])
+        frame.attrs["as_of_ms"] = int(frame.index[-1].timestamp() * 1000) + 900_000 + 1001
+        snapshot["df_15m"] = frame
+        details = self.study._micro_alert_confirmation(snapshot)
+        self.assertFalse(details[0])
+        self.assertEqual(details[1], "micro_mtf_recent_candle_gap")
+
+    def test_micro_pullback_alerts_are_paused_while_research_samples_continue(self):
+        snapshot = self.snapshot()
+        cost = self.study._cost_model_details(snapshot)
+        allowed, reason, _ = self.study._micro_alert_gate(
+            "MICRO_PULLBACK_RECLAIM_1M", cost, 0.50, 1.0, True, snapshot
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "micro_pullback_alerts_paused_pending_validation")
+
+    def test_report_exposes_micro_alert_quality_policy_and_suppression(self):
+        self.cfg["V702_INTRADAY_MICRO_ALERT_MIN_NET_R"] = 99.0
+        self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
+        report = self.study.report()
+        self.assertTrue(report["micro_alerts"]["quality_policy"]["require_closed_5m_15m_confirmation"])
+        self.assertEqual(report["micro_alerts"]["quality_policy"]["minimum_net_r"], 99.0)
+        strat = report["strategies"]["MICRO_MOMENTUM_1M"]
+        self.assertEqual(strat["micro_alert_suppressed_samples"], 1)
+        self.assertEqual(strat["micro_alert_suppression_reasons"]["micro_net_rr_below_alert_floor"], 1)
 
     def test_lsa_contract_qualifies_only_with_complete_fresh_cross_market_evidence(self):
         now_ms = int(time.time() * 1000)
@@ -176,6 +263,7 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertGreaterEqual(cost_pct, 0.35)
 
     def test_following_closed_bar_resolves_virtual_tp(self):
+        self.enable_test_micro_alerts()
         self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         with self.connect() as conn:
             row = conn.execute("SELECT target FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'").fetchone()
@@ -206,6 +294,7 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertEqual(self.study.pending_micro_outcomes(limit=5), [])
 
     def test_micro_sl_outcome_creates_single_retryable_telegram_event(self):
+        self.enable_test_micro_alerts()
         self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         with self.connect() as conn:
             sample = conn.execute("SELECT sample_id,entry,stop,target,signal_ts_ms FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'").fetchone()
@@ -234,6 +323,7 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertFalse(self.study.mark_micro_outcome_queued(sid))
 
     def test_ambiguous_data_gap_is_not_scored_as_win_or_loss_and_is_notified(self):
+        self.enable_test_micro_alerts()
         self.study.process_symbol("DOT/USDT", self.make_1m(True), self.snapshot())
         with self.connect() as conn:
             sid = conn.execute("SELECT sample_id FROM v702_intraday_shadow_samples WHERE strategy_mode='MICRO_MOMENTUM_1M'").fetchone()[0]

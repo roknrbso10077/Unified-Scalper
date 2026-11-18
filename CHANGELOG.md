@@ -2557,3 +2557,14 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Added A75 regression tests in the existing test module. Kept historical engine and file inventory; no live gates relaxed.
 - Residual gates: transactional Telegram Outbox/rate-limit durability, application-wide SQLite writer and backup/restore, broader modularization/static audit, per-strategy data contract, full dependency hash lock, Python 3.12/Docker/target memory soak, and MEXC/Telegram live integration remain unverified.
 - Decision remains `NO_GO_UNATTENDED_LIVE` / `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## A78 — Micro quality-first alert admission (2026-11-18)
+
+- Fixed Micro alert outbox behavior: a detected pattern remains in the research ledger, but only an economically viable and quality-confirmed sample can create an initial Telegram alert.
+- Fixed optimistic zero-spread cost estimation: missing/zero/non-positive BBO spread uses the configured fallback spread and is tagged as fallback evidence.
+- Added strict initial-alert thresholds: observed BBO required, all-in round-trip cost <=0.50%, net target >=0.15%, and net target reward >=0.75R.
+- Added closed 5m/15m trend confirmation, 15m relative-strength confirmation versus BTC, minimum history, timestamp alignment and recent-candle-gap checks.
+- Paused initial Telegram alerts for `MICRO_PULLBACK_RECLAIM_1M` by default due to materially weaker results in the supplied log. Its Shadow research/outcome evaluation remains active.
+- Added per-strategy alert suppression counters/reasons and effective quality-policy fields to the report; added spread and MTF evidence to qualified Telegram messages.
+- No database schema change, new package files, strategy deletion, live order authority, leverage, futures, or relaxation of canonical entry/risk controls.
+- Focused Micro/cost test suite: 36 passed after the final alignment/gap tests. Full-suite and clean-archive validation are recorded in the release manifest after completion.

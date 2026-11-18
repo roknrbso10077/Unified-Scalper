@@ -460,20 +460,132 @@ class V702IntradayShadow:
         # Don't require bullish higher timeframe: only pause during hard downside shock.
         return False, ""
 
-    def _cost_pct(self, entry: float, snapshot: Dict[str, Any]) -> float:
+    def _cost_model_details(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Return conservative all-in cost and explain whether spread was observed.
+
+        A zero spread from an incomplete ticker (missing bid/ask represented as 0)
+        is not executable evidence. Treat non-positive values as unavailable and
+        use the configured fallback instead of granting a zero-spread discount.
+        """
         cfg = self._cfg()
         local_cfg = dict(cfg)
-        local_cfg["V702_SMALL_NET_SPREAD_FALLBACK_PCT"] = _num(
-            cfg.get("V702_INTRADAY_SPREAD_FALLBACK_PCT"), 0.15
+        fallback_spread = max(0.0, _num(cfg.get("V702_INTRADAY_SPREAD_FALLBACK_PCT"), 0.15) or 0.0)
+        local_cfg["V702_SMALL_NET_SPREAD_FALLBACK_PCT"] = fallback_spread
+        local_cfg["V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT"] = max(
+            0.0, _num(cfg.get("V702_INTRADAY_SLIPPAGE_PER_SIDE_PCT"), 0.05) or 0.0
         )
-        local_cfg["V702_SMALL_NET_SLIPPAGE_PER_SIDE_PCT"] = _num(
-            cfg.get("V702_INTRADAY_SLIPPAGE_PER_SIDE_PCT"), 0.05
-        )
-        model = unified_round_trip_cost_model(
-            local_cfg,
-            spread_pct=snapshot.get("spread_pct"),
-        )
-        return max(0.0, float(model.get("round_trip_cost_pct", 0.0)))
+        observed_spread = _num(snapshot.get("spread_pct"), None)
+        if observed_spread is None or observed_spread <= 0.0:
+            spread_for_model = None
+            spread_source = "FALLBACK_MISSING_OR_NONPOSITIVE_BBO"
+        else:
+            spread_for_model = observed_spread
+            spread_source = "OBSERVED_BBO"
+        model = unified_round_trip_cost_model(local_cfg, spread_pct=spread_for_model)
+        return {
+            "round_trip_cost_pct": max(0.0, float(model.get("round_trip_cost_pct", 0.0))),
+            "spread_pct_used": float(model.get("spread_pct_used", fallback_spread)),
+            "spread_source": spread_source,
+            "observed_spread_pct": observed_spread,
+            "slippage_per_side_pct": float(model.get("slippage_per_side_pct", 0.0)),
+            "round_trip_fee_pct": float(model.get("round_trip_fee_pct", 0.0)),
+        }
+
+    def _cost_pct(self, entry: float, snapshot: Dict[str, Any]) -> float:
+        # ``entry`` remains in the signature for call-site compatibility.
+        return float(self._cost_model_details(snapshot)["round_trip_cost_pct"])
+
+    def _micro_alert_confirmation(self, snapshot: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        """Require closed 5m/15m structure and positive relative strength for alerts.
+
+        The underlying 1m research samples are still recorded when confirmation
+        is absent. This is an alert-quality gate only; it does not create an entry
+        route or alter the canonical MSE selector/execution pipeline.
+        """
+        cfg = self._cfg()
+        rows5 = _closed_rows(snapshot.get("df_5m"), 300_000)
+        rows15 = _closed_rows(snapshot.get("df_15m"), 900_000)
+        btc15 = _closed_rows(snapshot.get("df_btc_15m"), 900_000)
+        min_bars = max(22, int(_num(cfg.get("V702_INTRADAY_MICRO_MTF_MIN_CANDLES"), 25) or 25))
+        evidence: Dict[str, Any] = {
+            "bars_5m": len(rows5), "bars_15m": len(rows15), "btc_bars_15m": len(btc15),
+        }
+        if not bool(cfg.get("V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", True)):
+            return True, "mtf_confirmation_optional", evidence
+        if min(len(rows5), len(rows15), len(btc15)) < min_bars:
+            return False, "micro_mtf_history_insufficient", evidence
+        # Reject data that is technically closed but stale, misaligned, or has
+        # a recent missing interval; an EMA must not bridge an unknown price gap.
+        if (abs(float(rows15[-1]["close_ts"]) - float(btc15[-1]["close_ts"])) > 900_000
+                or abs(float(rows5[-1]["close_ts"]) - float(rows15[-1]["close_ts"])) > 900_000):
+            return False, "micro_mtf_latest_candles_not_time_aligned", evidence
+        recent_rows = list(rows5[-5:]) + list(rows15[-5:]) + list(btc15[-5:])
+        if any(bool(row.get("gap_before")) for row in recent_rows):
+            return False, "micro_mtf_recent_candle_gap", evidence
+        evidence["latest_5m_close_ts_ms"] = int(rows5[-1]["close_ts"])
+        evidence["latest_15m_close_ts_ms"] = int(rows15[-1]["close_ts"])
+        evidence["latest_btc_15m_close_ts_ms"] = int(btc15[-1]["close_ts"])
+        close5 = [x["close"] for x in rows5]
+        close15 = [x["close"] for x in rows15]
+        btc_close15 = [x["close"] for x in btc15]
+        ema5 = _ema(close5, 20)
+        ema15 = _ema(close15, 20)
+        if len(ema5) < 5 or len(ema15) < 5:
+            return False, "micro_mtf_ema_warmup_insufficient", evidence
+        trend5 = close5[-1] > ema5[-1] and ema5[-1] > ema5[-4]
+        trend15 = close15[-1] > ema15[-1]
+        lookback = 4
+        asset_return = (close15[-1] / close15[-1-lookback] - 1.0) * 100.0
+        btc_return = (btc_close15[-1] / btc_close15[-1-lookback] - 1.0) * 100.0
+        rs_diff = asset_return - btc_return
+        min_rs = _num(cfg.get("V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT"), 0.0) or 0.0
+        evidence.update({
+            "close_5m": close5[-1], "ema20_5m": ema5[-1], "ema20_5m_3bars_ago": ema5[-4],
+            "close_15m": close15[-1], "ema20_15m": ema15[-1],
+            "asset_return_15m_4bars_pct": asset_return,
+            "btc_return_15m_4bars_pct": btc_return,
+            "relative_strength_diff_pct": rs_diff,
+            "minimum_relative_strength_diff_pct": min_rs,
+        })
+        if not trend5:
+            return False, "micro_mtf_5m_trend_not_confirmed", evidence
+        if not trend15:
+            return False, "micro_mtf_15m_trend_not_confirmed", evidence
+        if rs_diff < min_rs:
+            return False, "micro_relative_strength_vs_btc_not_confirmed", evidence
+        return True, "micro_mtf_5m_15m_and_btc_rs_confirmed", evidence
+
+    def _micro_alert_gate(self, mode: str, cost_details: Dict[str, Any],
+                          target_net_pct: float, target_net_r: float,
+                          post_cost_viable: bool, snapshot: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        """Strict monitor-alert admission; research recording remains independent."""
+        cfg = self._cfg()
+        evidence: Dict[str, Any] = dict(cost_details or {})
+        if mode == "MICRO_PULLBACK_RECLAIM_1M" and not bool(cfg.get("V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE", False)):
+            return False, "micro_pullback_alerts_paused_pending_validation", evidence
+        if not post_cost_viable:
+            return False, "micro_post_cost_target_not_viable", evidence
+        min_net_pct = max(0.0, _num(cfg.get("V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT"), 0.15) or 0.0)
+        min_net_r = max(0.0, _num(cfg.get("V702_INTRADAY_MICRO_ALERT_MIN_NET_R"), 0.75) or 0.0)
+        max_cost = max(0.0, _num(cfg.get("V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT"), 0.50) or 0.0)
+        evidence.update({"target_net_pct_after_costs": float(target_net_pct),
+                         "target_net_r_after_costs": float(target_net_r),
+                         "minimum_alert_net_pct": min_net_pct,
+                         "minimum_alert_net_r": min_net_r,
+                         "maximum_alert_round_trip_cost_pct": max_cost})
+        if cost_details.get("spread_source") != "OBSERVED_BBO":
+            return False, "micro_observed_spread_required", evidence
+        if float(cost_details.get("round_trip_cost_pct", 0.0) or 0.0) > max_cost + 1e-9:
+            return False, "micro_round_trip_cost_above_alert_ceiling", evidence
+        if target_net_pct + 1e-9 < min_net_pct:
+            return False, "micro_net_profit_below_alert_floor", evidence
+        if target_net_r + 1e-9 < min_net_r:
+            return False, "micro_net_rr_below_alert_floor", evidence
+        confirmed, reason, mtf_evidence = self._micro_alert_confirmation(snapshot)
+        evidence["mtf_confirmation"] = mtf_evidence
+        if not confirmed:
+            return False, reason, evidence
+        return True, "micro_alert_quality_gates_passed", evidence
 
     def _make_signals_1m(self, rows: Sequence[Dict[str, float]], diagnostics: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
         """Generate the three 1m patterns and report one deterministic reason per engine.
@@ -1012,8 +1124,20 @@ class V702IntradayShadow:
         qv = _num(snapshot.get("quote_vol_24h"), None)
         tier = str(snapshot.get("tier") or "")[:24]
         features = dict(signal.get("features") or {})
+        is_micro = mode in {"MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M"}
+        cost_details = self._cost_model_details(snapshot)
+        alert_eligible, alert_block_reason, alert_gate_evidence = (True, "not_applicable", {})
+        if is_micro:
+            alert_eligible, alert_block_reason, alert_gate_evidence = self._micro_alert_gate(
+                mode, cost_details, target_net_pct, target_net_r, post_cost_viable, snapshot
+            )
         features.update({
             "entry":entry,"stop":stop,"target":target,"risk_pct":risk_pct,"cost_pct":cost_pct,
+            "spread_pct_used": cost_details.get("spread_pct_used"),
+            "spread_source": cost_details.get("spread_source"),
+            "micro_alert_eligible": bool(alert_eligible) if is_micro else None,
+            "micro_alert_block_reason": str(alert_block_reason) if is_micro else None,
+            "micro_alert_gate_evidence": alert_gate_evidence if is_micro else {},
             "target_rr":target_rr,"required_target_rr_before_cap":required_rr,
             "target_rr_capped_for_research":bool(not adaptive and required_rr + target_buffer_rr > target_rr_cap),
             "minimum_net_profit_pct_target":desired_net_pct,
@@ -1035,7 +1159,7 @@ class V702IntradayShadow:
                      signal_close_ms - 60_000,0,"PENDING",cost_pct,qv,tier,_json(features),
                      "virtual_entry_at_closed_signal_bar;adaptive_partial_exit" if adaptive else "virtual_entry_at_closed_signal_bar"))
                 inserted = cur.rowcount > 0
-                if inserted and mode in {"MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M"} and bool(cfg.get("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)):
+                if inserted and is_micro and alert_eligible and bool(cfg.get("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)):
                     now_alert = time.time()
                     cooldown = max(30.0, min(900.0, _num(cfg.get("V702_INTRADAY_SHADOW_ALERT_COOLDOWN_SEC"), 180.0) or 180.0))
                     recent = conn.execute("SELECT 1 FROM v702_intraday_shadow_alerts WHERE symbol=? AND created_ts>=? AND state IN ('PENDING','QUEUED') LIMIT 1", (symbol, now_alert-cooldown)).fetchone()
@@ -1045,6 +1169,10 @@ class V702IntradayShadow:
                             "entry": entry, "stop": stop, "target": target, "risk_pct": risk_pct,
                             "cost_pct": cost_pct, "target_net_pct_after_costs": target_net_pct,
                             "target_net_r_after_costs": target_net_r, "post_cost_target_viable": post_cost_viable,
+                            "spread_pct_used": cost_details.get("spread_pct_used"),
+                            "spread_source": cost_details.get("spread_source"),
+                            "micro_alert_quality_gate": alert_block_reason,
+                            "micro_alert_gate_evidence": alert_gate_evidence,
                             "quote_volume_24h": qv, "tier": tier,
                             "liquidation_spot_absorption": features.get("liquidation_spot_absorption", {"status":"UNAVAILABLE","reason":"provider_not_configured"}),
                             "economic_status": "VIABLE_AFTER_MODELED_COSTS" if post_cost_viable else "TECHNICAL_ONLY_COST_GATE_NOT_MET",
@@ -1404,6 +1532,22 @@ class V702IntradayShadow:
                 capped_signals = sum(1 for ev in evaluations if ev[1] == "SIGNAL" and ev[4] == 0)
                 known_costs = [float(ev[3]) for ev in evaluations if ev[1] == "SIGNAL" and ev[3] is not None]
                 sample_costs = [float(r[8]) for r in subset if r[8] is not None]
+                alert_suppression_reasons: Dict[str, int] = {}
+                micro_alert_eligible = micro_alert_suppressed = 0
+                if mode in {"MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M"}:
+                    for sample_row in subset:
+                        try:
+                            sample_features = json.loads(sample_row[9] or "{}")
+                        except Exception:
+                            sample_features = {}
+                        if "micro_alert_eligible" not in sample_features:
+                            continue  # historical A76/A77 sample; no retroactive inference
+                        if bool(sample_features.get("micro_alert_eligible")):
+                            micro_alert_eligible += 1
+                        else:
+                            micro_alert_suppressed += 1
+                            reason = str(sample_features.get("micro_alert_block_reason") or "unspecified")[:120]
+                            alert_suppression_reasons[reason] = alert_suppression_reasons.get(reason, 0) + 1
                 eval_count = len(evaluations)
                 signal_count = sum(1 for ev in evaluations if ev[1] == "SIGNAL")
                 reject_count = sum(1 for ev in evaluations if ev[1] in {"REJECT","BLOCKED"})
@@ -1425,6 +1569,9 @@ class V702IntradayShadow:
                     "outcomes":{"TP1":sum(r[1]=="TP1" for r in subset),"SL":sum(r[1]=="SL" for r in subset),"TIMEOUT":sum(r[1]=="TIMEOUT" for r in subset),"TRAILING_EXIT":sum(r[1]=="TRAILING_EXIT" for r in subset),"AMBIGUOUS_DATA_GAP":sum(r[1]=="AMBIGUOUS_DATA_GAP" for r in subset),"partial_tp1_hits":sum(1 for r in subset if bool(r[10]))},
                     "sample_quality":"TOO_SMALL" if len(nets)<30 else ("PRELIMINARY" if len(nets)<100 else "NEEDS_OUT_OF_SAMPLE_VALIDATION"),
                     "scored_outcomes":len(nets),
+                    "micro_alert_eligible_samples": micro_alert_eligible,
+                    "micro_alert_suppressed_samples": micro_alert_suppressed,
+                    "micro_alert_suppression_reasons": dict(sorted(alert_suppression_reasons.items(), key=lambda kv:(-kv[1],kv[0]))[:10]),
                 }
             report["totals"]={"samples":total,"pending":pending,"resolved":sum(v["resolved"] for v in report["strategies"].values()),
                               "evaluations":all_eval_count,"signals":all_eval_signals,"rejections":all_eval_rejects,"skipped_evaluations":all_eval_skips}
@@ -1433,6 +1580,14 @@ class V702IntradayShadow:
                 "states": alert_states, "pending": int(alert_states.get("PENDING", 0)),
                 "queued": int(alert_states.get("QUEUED", 0)), "expired": int(alert_states.get("EXPIRED", 0)),
                 "max_per_batch": int(max(1, min(10, _num(self._cfg().get("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH"), 3) or 3))),
+                "quality_policy": {
+                    "require_closed_5m_15m_confirmation": bool(self._cfg().get("V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", True)),
+                    "minimum_net_profit_pct": max(0.0, _num(self._cfg().get("V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT"), 0.15) or 0.0),
+                    "minimum_net_r": max(0.0, _num(self._cfg().get("V702_INTRADAY_MICRO_ALERT_MIN_NET_R"), 0.75) or 0.0),
+                    "maximum_round_trip_cost_pct": max(0.0, _num(self._cfg().get("V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT"), 0.50) or 0.0),
+                    "minimum_15m_relative_strength_pct": _num(self._cfg().get("V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT"), 0.0) or 0.0,
+                    "pullback_alerts_enabled": bool(self._cfg().get("V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE", False)),
+                },
             }
             report["micro_outcome_notifications"] = {
                 "enabled": bool(self._cfg().get("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", True)),

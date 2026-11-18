@@ -344,3 +344,22 @@ New closed-candle 1m micro samples can create a separate persistent Telegram Sha
 `LSA_V1` is an optional evidence schema for future liquidation-to-Spot absorption research. It requires timestamped/source-labelled liquidation, OI, funding, Spot buy/sell-volume and reclaim evidence. A75/A76 does not ship a Futures or Spot-CVD provider, therefore this dimension remains `UNAVAILABLE` unless a real provider is connected. It is informative only and cannot authorize orders. The existing `LIQUIDITY_ACCEPTANCE_RECLAIM` strategy is retained; there is no duplicate LTR strategy. Narrative/Smart-Money, event/Parrondo and cash-secured Put remain outside the Spot scalper.
 
 A76 does not relax the bearish macro family policy, spread ceiling, post-cost profitability filter or any execution/protection gate. The core `MICRO_TREND_CONTINUATION` may still be rejected in bearish BTC macro conditions by design. The new Telegram lane is only for the independent A9 1m research patterns and remains `SHADOW_ONLY_NO_ORDERS`.
+
+## A78 — Micro quality-first alert admission (2026-11-18)
+
+The A78 Micro correction keeps all three 1m strategies in the read-only research ledger, but separates **sample creation** from **Telegram alert admission**. A technically valid 1m pattern is no longer sent merely because the detector fired.
+
+An initial Micro Telegram alert now requires all of the following by default:
+
+- A positive, observed bid/ask spread. Missing, zero, or non-positive spread is treated as unavailable and priced with the configured conservative fallback; it is never interpreted as a zero-cost book.
+- The modeled all-in round trip is at most 0.50 percentage points, with estimated net target return at least 0.15% and estimated net target reward at least 0.75R.
+- Closed 5m and 15m candles confirm asset trend (5m close above a rising EMA20; 15m close above EMA20), and the asset's 15m return over four bars is not weaker than BTC by the configured minimum.
+- Recent 5m/15m/BTC 15m history is sufficiently long, timestamp-aligned, and free of recent candle gaps.
+
+`MICRO_PULLBACK_RECLAIM_1M` remains fully detected and evaluated in Shadow, but its initial Telegram alerts are paused by default pending a larger, independent validation sample. TP/SL/timeout outcome notices are still generated for samples that received a qualified initial alert. This is not a live execution gate, does not select candidates for the canonical MSE, and cannot create orders.
+
+New `.env` controls are documented in `.env.example`: `V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION`, `V702_INTRADAY_MICRO_MTF_MIN_CANDLES`, `V702_INTRADAY_MICRO_ALERT_MIN_NET_PROFIT_PCT`, `V702_INTRADAY_MICRO_ALERT_MIN_NET_R`, `V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT`, `V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT`, and `V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE`. The runtime defaults are the conservative values described above.
+
+The research report now exposes per-strategy `micro_alert_eligible_samples`, `micro_alert_suppressed_samples`, and suppression reasons, as well as the effective alert-quality policy. Alert messages show the observed spread and closed-timeframe/BTC-relative confirmation evidence. Historical records are not retroactively reclassified.
+
+All A78 changes are monitor-only. `V702_INTRADAY_SHADOW_LIVE_ENABLE` remains hard-false and the canonical entry policy remains `MONITOR_ONLY_NO_NEW_BUYS`. The new gates are intended to reduce weak alerts and improve the quality of opportunities watched; they do not prove a higher realized win rate. Continue paper/Shadow validation and do not enable unattended live trading based on these changes.
