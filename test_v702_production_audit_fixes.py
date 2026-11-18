@@ -1814,3 +1814,80 @@ def test_a75_monitor_only_telegram_listener_allows_reads_but_blocks_mutations(mo
         asyncio.run(bot.TelegramCommandController._handle(None, {"text": "/ping", "chat": {"id": 1}}))
     assert calls == [(None, "/ping")]
     assert replies and "MONITOR_ONLY" in replies[0]
+
+
+def test_a79_supplemental_pool_excludes_scanned_stable_and_forbidden_symbols():
+    tickers = {
+        "AAA/USDT": {"quoteVolume": 9_000_000, "last": 1.0, "percentage": 3.0},
+        "BBB/USDT": {"quoteVolume": 8_000_000, "last": 2.0, "percentage": 1.0},
+        "CCC/USDT": {"quoteVolume": 1_000_000, "last": 3.0, "percentage": 2.0},
+        "USDC/USDT": {"quoteVolume": 90_000_000, "last": 1.0, "percentage": 0.0},
+        "BAD/USDT": {"quoteVolume": 7_000_000, "last": 1.0, "percentage": 2.0},
+    }
+    rows = bot._v702_a79_supplement_pool(
+        list(tickers), tickers, already_scanned={"AAA/USDT"},
+        min_quote_volume=2_000_000, forbidden_fn=lambda symbol: symbol == "BAD/USDT",
+    )
+    assert [row["symbol"] for row in rows] == ["BBB/USDT"]
+
+
+def test_a79_supplement_selection_rotates_fairly_and_prioritizes_active_swing_followup():
+    tickers = {
+        f"S{i}/USDT": {"quoteVolume": 10_000_000 - i * 100_000, "last": 1.0, "percentage": float(i)}
+        for i in range(1, 8)
+    }
+    first = bot._v702_a79_select_supplemental_symbols(
+        list(tickers), tickers, max_symbols=2, offset=0, forbidden_fn=lambda _: False,
+    )
+    second = bot._v702_a79_select_supplemental_symbols(
+        list(tickers), tickers, max_symbols=2, offset=2, forbidden_fn=lambda _: False,
+    )
+    assert len(first) == len(second) == 2
+    assert set(first).isdisjoint(second)
+    priority = bot._v702_a79_select_supplemental_symbols(
+        list(tickers), tickers, max_symbols=2, offset=4,
+        priority_symbols=["S7/USDT"], forbidden_fn=lambda _: False,
+    )
+    assert priority[0] == "S7/USDT"
+    assert len(priority) == 2
+
+
+def test_a79_swing_geometry_and_hourly_metadata_are_explicit_and_bounded():
+    item = bot._v702_a79_stamp_swing({"timeframe": "5m", "evidence": {}})
+    assert item["timeframe"] == "1H+4H"
+    assert item["evidence"]["strategy_style"] == "SWING"
+    assert item["evidence"]["outcome_interval_sec"] == 3600
+    stop = bot._v702_a79_structural_stop(100.0, 99.8, 99.0, 1.0)
+    assert stop is not None and stop < 100.0
+    risk_pct = (100.0 - stop) / 100.0 * 100.0
+    assert 0.35 - 1e-8 <= risk_pct <= 4.0 + 1e-8
+    assert bot._v702_a79_structural_stop(100.0, 90.0, 91.0, 1.0) is None
+
+
+def test_a79_release_contract_is_read_only_and_self_test_passes():
+    report = bot.STATS.get("v702_a79_self_test", {})
+    assert report.get("pass") is True, report.get("failed")
+    assert bot.OpportunityHunter.execution_authority is False
+    assert bot.FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+    assert bot.FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+    assert bot.FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+    assert bot.FINAL_CANONICAL_RUNTIME.get("all_five_a9_engines_share_supplemental_mtf_snapshots") is True
+
+
+def test_a79_bearish_btc_demotes_base_swing_confirmation_to_watch_without_local_rs(monkeypatch):
+    now = time.time()
+    md = {
+        "df_1h": _a74_trending_frame(now, 3600, breakout=True),
+        "df_4h": _a74_trending_frame(now, 14400, breakout=True),
+        "quote_vol_24h": 35_000_000.0,
+        "spread_pct": 0.02,
+        # No closed BTC-relative series: long confirmation must not be inferred.
+    }
+    monkeypatch.setitem(bot.STATS, "v702_btc_macro_context_last_regime", "BEARISH")
+    rows = bot.OpportunityHunter._evaluate_snapshot("AAA/USDT", md, now=now)
+    swing = [row for row in rows if str(row.get("pattern") or "").startswith("SWING_")]
+    assert swing
+    assert all(str(row.get("status") or "").upper() != "CONFIRMED" for row in swing)
+    assert any(str(row.get("status") or "").upper() == "WATCH" for row in swing)
+    assert all(row.get("timeframe") == "1H+4H" for row in swing)
+    assert all(row.get("evidence", {}).get("outcome_interval_sec") == 3600 for row in swing)

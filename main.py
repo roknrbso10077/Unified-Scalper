@@ -1283,7 +1283,8 @@ def _apply_loaded_environment_config() -> None:
     if _shadow_alerts is not None:
         CONFIG["V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE"] = _shadow_alerts.strip().lower() in {"1", "true", "yes", "on"}
     for _flag_key in ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", "V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE",
-                      "V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", "V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE"):
+                      "V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", "V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE",
+                      "V702_A79_SUPPLEMENT_ENABLE", "V702_A79_SWING_EARLY_WATCH_ENABLE"):
         _raw_flag = _env_first(_flag_key)
         if _raw_flag is not None:
             CONFIG[_flag_key] = _raw_flag.strip().lower() in {"1", "true", "yes", "on"}
@@ -1297,11 +1298,25 @@ def _apply_loaded_environment_config() -> None:
                                ("V702_INTRADAY_MICRO_ALERT_MIN_NET_R", "V702_INTRADAY_MICRO_ALERT_MIN_NET_R"),
                                ("V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT", "V702_INTRADAY_MICRO_ALERT_MAX_ROUND_TRIP_COST_PCT"),
                                ("V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT", "V702_INTRADAY_MICRO_ALERT_MIN_RS_15M_PCT"),
-                               ("V702_INTRADAY_MICRO_MTF_MIN_CANDLES", "V702_INTRADAY_MICRO_MTF_MIN_CANDLES")):
+                               ("V702_INTRADAY_MICRO_MTF_MIN_CANDLES", "V702_INTRADAY_MICRO_MTF_MIN_CANDLES"),
+                               ("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", "V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE"),
+                               ("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", "V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT"),
+                               ("V702_A79_SUPPLEMENT_CONCURRENCY", "V702_A79_SUPPLEMENT_CONCURRENCY"),
+                               ("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", "V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC"),
+                               ("V702_A79_OHLCV_LIMIT", "V702_A79_OHLCV_LIMIT"),
+                               ("V702_A79_MIN_SWING_CANDLES", "V702_A79_MIN_SWING_CANDLES"),
+                               ("V702_A79_MIN_MTF_CANDLES", "V702_A79_MIN_MTF_CANDLES"),
+                               ("V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR", "V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR"),
+                               ("V702_A79_SWING_RSI_CONFIRM_MAX", "V702_A79_SWING_RSI_CONFIRM_MAX"),
+                               ("V702_A79_SWING_RSI_WATCH_MAX", "V702_A79_SWING_RSI_WATCH_MAX"),
+                               ("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", "V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO"),
+                               ("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", "V702_A79_SWING_RETEST_MIN_VOLUME_RATIO"),
+                               ("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", "V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT"),
+                               ("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", "V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT")):
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
-                CONFIG[_cfg_key] = float(_raw) if any(token in _env_key for token in ("AGE", "COOLDOWN", "MIN_NET_PROFIT_PCT", "MIN_NET_R", "COST_PCT", "RS_15M_PCT")) else int(_raw)
+                CONFIG[_cfg_key] = float(_raw) if any(token in _env_key for token in ("AGE", "COOLDOWN", "MIN_NET_PROFIT_PCT", "MIN_NET_R", "COST_PCT", "RS_15M_PCT", "BUDGET_SEC", "CHASE_ATR", "RSI_", "VOLUME_RATIO", "RETURN_PCT", "DIFF_PCT")) else int(_raw)
             except (TypeError, ValueError):
                 # Invalid optional tuning never changes any live safety gate.
                 pass
@@ -27359,6 +27374,82 @@ async def run_bot(universe: List[str]):
                 logger.warning(f"[V703-MTF-D1] independent lane failed closed: {_v703_mtf_lane_exc}")
 
             # =================================================================
+            # A79 — FAIR-ROTATED SUPPLEMENTAL RESEARCH COVERAGE
+            # The canonical MSE map is intentionally immutable here: this lane
+            # retries a tiny rotating cohort for READ-ONLY Hunter/A9 research
+            # only. It cannot add candidates to GlobalOpportunityBrain, Builder,
+            # PreSend or an order route.
+            # =================================================================
+            _a79_research_market_data_map = dict(market_data_map) if isinstance(market_data_map, dict) else {}
+            _a79_supplement_summary = {
+                "universe": int(len(scan_universe)), "base_snapshots": int(len(market_data_map)),
+                "eligible": 0, "attempted": 0, "ok": 0, "failed": 0, "symbols": [],
+                "cycle": int(STATS.get("v681_runtime_cycle_id", STATS.get("v516_cycle_id", 0)) or 0),
+            }
+            try:
+                if (bool(CONFIG.get("V702_A79_SUPPLEMENT_ENABLE", True))
+                        and not bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
+                        and isinstance(scan_universe, (list, tuple)) and scan_universe):
+                    _a79_tickers = _v679_ticker_snapshot if isinstance(_v679_ticker_snapshot, dict) else {}
+                    if len(_a79_tickers) < len(scan_universe):
+                        try:
+                            _a79_tickers = await _v679_get_ticker_snapshot(exchange, list(scan_universe), force=False) or _a79_tickers
+                        except Exception:
+                            pass
+                    _a79_active_rows = await asyncio.to_thread(
+                        OpportunityHunter._active_rows,
+                        max(100, min(3000, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200))))
+                    )
+                    _a79_active_priority = [
+                        str(_r.get("symbol") or "").upper() for _r in (_a79_active_rows or [])
+                        if str((_r.get("evidence") or {}).get("strategy_style") or "").upper() == "SWING"
+                        and str(_r.get("status") or "").upper() in {"WATCH", "CONFIRMED", "TRADEABLE"}
+                    ]
+                    _a79_offset = int(getattr(run_bot, "_v702_a79_supplement_offset", 0) or 0)
+                    _a79_selected = _v702_a79_select_supplemental_symbols(
+                        list(scan_universe), _a79_tickers, set(market_data_map),
+                        max_symbols=max(0, min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8)))),
+                        min_quote_volume=max(2_000_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0))),
+                        offset=_a79_offset, priority_symbols=_a79_active_priority,
+                        forbidden_fn=globals().get("_v587_is_forbidden_coin"),
+                    )
+                    _a79_pool_count = _v702_a79_supplement_pool_size(
+                        list(scan_universe), _a79_tickers, set(market_data_map),
+                        min_quote_volume=max(2_000_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0))),
+                        forbidden_fn=globals().get("_v587_is_forbidden_coin"),
+                    )
+                    if _a79_pool_count:
+                        setattr(run_bot, "_v702_a79_supplement_offset", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
+                    _a79_supplement_summary.update({"eligible": int(_a79_pool_count), "attempted": int(len(_a79_selected)), "symbols": list(_a79_selected)})
+                    if _a79_selected:
+                        _a79_extra, _a79_fetch_diag = await _v702_a79_fetch_supplemental_snapshots(
+                            exchange, _a79_selected, _a79_tickers,
+                            btc_frames={"df_btc_5m": shared_btc_5m, "df_btc_15m": shared_btc_15m,
+                                        "df_btc_1h": shared_btc_1h, "df_btc_4h": shared_btc_4h},
+                            concurrency=max(1, min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_CONCURRENCY", 8)))),
+                            cycle_budget_sec=max(3.0, min(11.0, float(CONFIG.get("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 11.0)))),
+                            read_timeout_sec=4.0,
+                        )
+                        _a79_research_market_data_map.update(_a79_extra)
+                        _a79_supplement_summary.update(_a79_fetch_diag)
+                        _a79_supplement_summary["ok"] = int(len(_a79_extra))
+                        _a79_supplement_summary["failed"] = max(0, int(len(_a79_selected)) - len(_a79_extra))
+                        logger.info(
+                            "[A79-RESEARCH-COVERAGE] universe=%d base=%d eligible=%d attempted=%d ok=%d failed=%d offset=%d symbols=%s canonical_map_unchanged=1",
+                            int(len(scan_universe)), int(len(market_data_map)), int(_a79_pool_count), int(len(_a79_selected)),
+                            int(len(_a79_extra)), max(0, int(len(_a79_selected)) - len(_a79_extra)), int(_a79_offset),
+                            ",".join(_a79_selected[:8]),
+                        )
+                STATS["v702_a79_supplement_last"] = dict(_a79_supplement_summary)
+                STATS["v702_a79_research_snapshot_count"] = int(len(_a79_research_market_data_map))
+            except Exception as _a79_supplement_exc:
+                STATS["v702_a79_supplement_errors"] = int(STATS.get("v702_a79_supplement_errors", 0) or 0) + 1
+                _a79_supplement_summary["error"] = f"{type(_a79_supplement_exc).__name__}:{str(_a79_supplement_exc)[:140]}"
+                STATS["v702_a79_supplement_last"] = dict(_a79_supplement_summary)
+                logger.warning("[A79-RESEARCH-COVERAGE] supplement failed closed; canonical map unchanged: %s:%s",
+                               type(_a79_supplement_exc).__name__, str(_a79_supplement_exc)[:140])
+
+            # =================================================================
             # V702 A9 — BOUNDED INTRADAY STRATEGY RESEARCH LANE (SHADOW ONLY)
             # =================================================================
             # Adds three 1m micro-scalp patterns plus 5m UTC-session VWAP reclaim
@@ -27377,7 +27468,7 @@ async def run_bot(universe: List[str]):
                     _shadow_pool_core = []
                     _shadow_pool_micro = []
                     _shadow_forbidden_fn = globals().get("_v587_is_forbidden_coin")
-                    for _shadow_sym, _shadow_snap in market_data_map.items():
+                    for _shadow_sym, _shadow_snap in _a79_research_market_data_map.items():
                         try:
                             _shadow_qv = float((_shadow_snap or {}).get("quote_vol_24h", 0.0) or 0.0)
                             if not math.isfinite(_shadow_qv) or _shadow_qv < _shadow_min_qv:
@@ -27403,7 +27494,7 @@ async def run_bot(universe: List[str]):
                     # into core slots so they cannot displace the micro-liquidity cohort.
                     try:
                         _shadow_rs_leaders = _intraday_shadow.rank_relative_strength(
-                            market_data_map,
+                            _a79_research_market_data_map,
                             top_n=max(5, min(10, int(CONFIG.get("V702_ADAPTIVE_RS_TOP_N", 10)))),
                         )
                     except Exception:
@@ -27775,7 +27866,7 @@ async def run_bot(universe: List[str]):
                         # pipeline does not await market-data research and therefore cannot be stalled by it.
                         _shadow_snapshots = {}
                         for sym in _shadow_selected:
-                            _snap = dict(market_data_map.get(sym) or {})
+                            _snap = dict(_a79_research_market_data_map.get(sym) or {})
                             _snap["adaptive_rs_rank"] = dict(_shadow_rs_leaders.get(sym) or {})
                             _shadow_snapshots[sym] = _snap
                         _shadow_task = asyncio.create_task(_v702_intraday_process_batch(list(_shadow_selected), _shadow_snapshots))
@@ -27922,11 +28013,16 @@ async def run_bot(universe: List[str]):
                     except Exception:
                         _v647_record_suppressed_exception()
 
-            # A67 read-only Opportunity Hunter: inspect the same bounded market
-            # snapshots used by this cycle. It is independent of BUY permission,
-            # performs no new exchange reads, and never invokes an order route.
+            # A67/A79 read-only Opportunity Hunter: inspect the canonical
+            # snapshots plus the separate bounded research supplement. Only
+            # the research map is widened; GlobalOpportunityBrain has already
+            # completed from the untouched canonical map above.
+            STATS["v702_a79_swing_cycle"] = {
+                "symbols_with_closed_data": 0, "watch": 0, "confirmed": 0,
+                "rejected": 0, "data_missing": 0, "patterns": {}, "top_reasons": {},
+            }
             try:
-                _v702_hunter_summary = await OpportunityHunter.scan_market_map(market_data_map)
+                _v702_hunter_summary = await OpportunityHunter.scan_market_map(_a79_research_market_data_map)
                 STATS["v702_opportunity_hunter_last_scan_summary"] = dict(_v702_hunter_summary or {})
             except Exception as _v702_hunter_scan_exc:
                 STATS["v702_opportunity_hunter_scan_errors"] = int(STATS.get("v702_opportunity_hunter_scan_errors", 0) or 0) + 1
@@ -103970,10 +104066,17 @@ def _v702_a74_market_quality(cls, item, md, *, h1=None, h4=None):
         if chase_source is None:
             chase_source = -cls._safe_float(evidence.get("breakout_chase_atr"), 0.0)
         chase = max(0.0, -float(cls._safe_float(chase_source, 999.0) or 999.0))
-        min_breakout_vol = 1.25 if "SWING_BREAKOUT" in pattern else 1.20
-        signal_quality_ok = signal_quality_ok and volr is not None and volr >= min_breakout_vol and chase <= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65))
+        if "SWING_BREAKOUT_RETEST" in pattern:
+            min_breakout_vol = float(CONFIG.get("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", 1.10))
+        elif "SWING_BREAKOUT" in pattern:
+            min_breakout_vol = float(CONFIG.get("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", 1.15))
+        else:
+            min_breakout_vol = 1.20
+        _chase_limit = (float(CONFIG.get("V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR", 0.85))
+                        if "SWING_" in pattern else float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65)))
+        signal_quality_ok = signal_quality_ok and volr is not None and volr >= min_breakout_vol and chase <= _chase_limit
         evidence["breakout_chase_atr"] = round(chase, 4)
-        if chase > float(CONFIG.get("V702_OPPORTUNITY_HUNTER_BREAKOUT_MAX_CHASE_ATR", 0.65)):
+        if chase > _chase_limit:
             missing.append("WAIT_FOR_RESISTANCE_RETEST_NO_CHASE")
             technical_score -= min(18.0, chase * 8.0)
     elif pattern.startswith("PULLBACK") or "SWING_PULLBACK" in pattern:
@@ -104955,7 +105058,7 @@ def _v702_a75_digest_postprocess(cls, base):
     d1_fail = int(STATS.get("v703_mtf_d1_fetches_failed", 0) or 0)
     d1_symbols = STATS.get("v703_mtf_d1_lane_symbols") or []
     policy = STATS.get("v702_candidate_policy_regime_context") or {}
-    policy_line = (f"BTC macro={STATS.get('v702_btc_macro_last_regime', 'n/a')} | "
+    policy_line = (f"BTC macro={STATS.get('v702_btc_macro_context_last_regime', 'UNKNOWN')} | "
                    f"candidate_policy={policy.get('regime', MarketRegime._last_regime)} "
                    f"src={policy.get('source', 'BTC_4H_EMA200_CLOSED_CANDLE')} "
                    f"confirm={policy.get('confirmations', MarketRegime._pending_bars)}")
@@ -104965,7 +105068,25 @@ def _v702_a75_digest_postprocess(cls, base):
                    f"{int(STATS.get('v702_a75_closed_frame_gaps', 0) or 0)}/{int(STATS.get('v702_a75_closed_frame_stale', 0) or 0)}")
     d1_line = f"MTF_D1 attempted/ok/failed/covered={d1_attempt}/{d1_ok}/{d1_fail}/{len(d1_symbols)}"
     cohort_line = "Hunter cohorts=observed/confirmed/delivered/simulated-entry; READ_ONLY"
-    section = "\n".join(("HTF/SWING", policy_line, hunter_line, d1_line, cohort_line))
+    _a79_cov = STATS.get("v702_a79_supplement_last") if isinstance(STATS.get("v702_a79_supplement_last"), dict) else {}
+    _a79_cov_line = (f"A79_RESEARCH universe/base/eligible/attempted/ok/failed="
+                     f"{int(_a79_cov.get('universe', 0) or 0)}/{int(_a79_cov.get('base_snapshots', 0) or 0)}/"
+                     f"{int(_a79_cov.get('eligible', 0) or 0)}/{int(_a79_cov.get('attempted', 0) or 0)}/"
+                     f"{int(_a79_cov.get('ok', 0) or 0)}/{int(_a79_cov.get('failed', 0) or 0)}")
+    _a79_sw = STATS.get("v702_a79_swing_cycle") if isinstance(STATS.get("v702_a79_swing_cycle"), dict) else {}
+    _a79_reasons = _a79_sw.get("top_reasons") if isinstance(_a79_sw.get("top_reasons"), dict) else {}
+    _a79_top = ",".join(f"{str(k)[:28]}x{int(v or 0)}" for k, v in sorted(_a79_reasons.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:3]) or "none"
+    _a79_swing_line = (f"SWING funnel=data={int(_a79_sw.get('symbols_with_closed_data', 0) or 0)} "
+                       f"WATCH={int(_a79_sw.get('watch', 0) or 0)} CONFIRMED={int(_a79_sw.get('confirmed', 0) or 0)} "
+                       f"rejected={int(_a79_sw.get('rejected', 0) or 0)} missing={int(_a79_sw.get('data_missing', 0) or 0)} top={_a79_top}")
+    _a79_engine_parts = []
+    for _code, _label in (("micro_momentum_1m", "MOM1m"), ("micro_sweep_reclaim_1m", "SWEEP1m"),
+                          ("micro_pullback_reclaim_1m", "PULL1m"), ("vwap_reclaim_rs_5m", "VWAP5m"),
+                          ("adaptive_rs_pullback_15m", "ADAPTRS15m")):
+        _em = STATS.get("v702_a9_engine_" + _code) if isinstance(STATS.get("v702_a9_engine_" + _code), dict) else {}
+        _a79_engine_parts.append(f"{_label}={int(_em.get('evaluations', 0) or 0)}/{int(_em.get('signals', 0) or 0)}/{int(_em.get('rejections', 0) or 0)}")
+    _a79_engine_line = "A9 eval/signal/reject " + " ".join(_a79_engine_parts)
+    section = "\n".join(("HTF/SWING", policy_line, hunter_line, _a79_cov_line, _a79_swing_line, d1_line, _a79_engine_line, cohort_line))
     try:
         limit = max(800, int(CONFIG.get("V702_R28_TELEGRAM_DIGEST_MAX_CHARS", 4200)))
     except Exception:
@@ -104984,7 +105105,7 @@ def _v702_a75_digest_postprocess(cls, base):
         elif "FUNDING_LATCH" in up or "OPS_LATCH" in up or "ACTION_REQUIRED" in up: score = 1
         elif "HEARTBEAT" in up or "HEARTBEAT=" in up: score = 2
         elif "STARVATION" in up: score = 3
-        elif "REJECTION" in up or "TOP_REASON" in up: score = 4
+        elif "REJECTION" in up or "TOP_REASON" in up or "A51_POLICY_PREFILTER" in up: score = 4
         elif "PIPELINE" in up or "SUMMARY=" in up or "EDGE=" in up: score = 5
         # Preserve stage-specific rejection headings and their immediately
         # following evidence rows under tight Telegram digest budgets. Without
@@ -106201,6 +106322,593 @@ if _V699_VALIDATE_ONLY_REQUEST:
         pass
     raise SystemExit(0 if _ok else 1)
 
+
+
+# =============================================================================
+# V702 A79 — FAIR SWING COVERAGE + SHARED ALL-STRATEGY RESEARCH SNAPSHOTS
+# Read-only supplement and closed-candle setup discovery. No order authority.
+# =============================================================================
+V702_A79_REVISION = "A79-FAIR-ROTATED-SWING-COVERAGE-AND-SHARED-ALL-STRATEGY-RESEARCH-2026-11-18"
+CONFIG.setdefault("V702_A79_SUPPLEMENT_ENABLE", True)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_CONCURRENCY", 8)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 11.0)
+CONFIG.setdefault("V702_A79_OHLCV_LIMIT", 100)
+CONFIG.setdefault("V702_A79_MIN_SWING_CANDLES", 56)
+CONFIG.setdefault("V702_A79_MIN_MTF_CANDLES", 25)
+CONFIG.setdefault("V702_A79_SWING_EARLY_WATCH_ENABLE", True)
+CONFIG.setdefault("V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR", 0.85)
+CONFIG.setdefault("V702_A79_SWING_RSI_CONFIRM_MAX", 82.0)
+CONFIG.setdefault("V702_A79_SWING_RSI_WATCH_MAX", 86.0)
+CONFIG.setdefault("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", 1.15)
+CONFIG.setdefault("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", 1.10)
+CONFIG.setdefault("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", 0.20)
+CONFIG.setdefault("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", 0.75)
+
+
+def _v702_a79_supplement_pool(universe, ticker_snapshot, already_scanned=(), *, min_quote_volume=2_000_000.0, forbidden_fn=None):
+    """Return validated, fair-rotation-eligible supplemental symbols without mutating any scan map."""
+    existing = {str(x).upper() for x in (already_scanned or ())}
+    rows = []
+    seen = set()
+    if not isinstance(ticker_snapshot, dict):
+        return rows
+    for raw_symbol in universe or ():
+        symbol = str(raw_symbol or "").upper().strip()
+        if not symbol or symbol in seen or symbol in existing or not symbol.endswith("/USDT"):
+            continue
+        seen.add(symbol)
+        try:
+            if callable(globals().get("_v702_a74_is_stable_symbol")) and _v702_a74_is_stable_symbol(symbol):
+                continue
+            if callable(forbidden_fn):
+                denied = forbidden_fn(symbol)
+                if bool(denied[0] if isinstance(denied, tuple) else denied):
+                    continue
+            ticker = ticker_snapshot.get(symbol)
+            if not isinstance(ticker, dict):
+                continue
+            quote_volume = float(ticker.get("quoteVolume") or 0.0)
+            last = float(ticker.get("last") or 0.0)
+            change = float(ticker.get("percentage") or 0.0)
+            if not all(math.isfinite(x) for x in (quote_volume, last, change)):
+                continue
+            if quote_volume < max(2_000_000.0, float(min_quote_volume)) or last <= 0:
+                continue
+            rows.append({"symbol": symbol, "quote_volume": quote_volume, "abs_change": abs(change),
+                         "change_pct": change})
+        except Exception:
+            # Missing/failed blacklist or ticker facts fail closed for this research lane.
+            continue
+    rows.sort(key=lambda r: (r["quote_volume"], r["abs_change"]), reverse=True)
+    return rows
+
+
+def _v702_a79_supplement_pool_size(universe, ticker_snapshot, already_scanned=(), *, min_quote_volume=2_000_000.0, forbidden_fn=None):
+    return len(_v702_a79_supplement_pool(universe, ticker_snapshot, already_scanned,
+                                         min_quote_volume=min_quote_volume, forbidden_fn=forbidden_fn))
+
+
+def _v702_a79_select_supplemental_symbols(universe, ticker_snapshot, already_scanned=(), *, max_symbols=8,
+                                           min_quote_volume=2_000_000.0, offset=0, priority_symbols=(), forbidden_fn=None):
+    """Deterministic round-robin across eligible liquid symbols; active Swing ideas receive first preference."""
+    rows = _v702_a79_supplement_pool(universe, ticker_snapshot, already_scanned,
+                                     min_quote_volume=min_quote_volume, forbidden_fn=forbidden_fn)
+    if not rows or int(max_symbols or 0) <= 0:
+        return []
+    priority = {str(x).upper() for x in priority_symbols or ()}
+    rows.sort(key=lambda r: (r["quote_volume"], r["abs_change"]), reverse=True)
+    limit = min(8, max(0, int(max_symbols)))
+    # Existing active Swing ideas need continued outcome coverage before new
+    # discovery. They occupy only the number of slots they actually require;
+    # the remaining slots continue fair round-robin over the rest of the pool.
+    priority_rows = [r for r in rows if r["symbol"] in priority]
+    normal_rows = [r for r in rows if r["symbol"] not in priority]
+    chosen_priority = priority_rows[:limit]
+    remaining = max(0, limit - len(chosen_priority))
+    if not normal_rows or remaining <= 0:
+        return [r["symbol"] for r in chosen_priority]
+    start = int(offset or 0) % len(normal_rows)
+    rotated = normal_rows[start:] + normal_rows[:start]
+    return [r["symbol"] for r in chosen_priority + rotated[:remaining]]
+
+
+async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snapshot, *, btc_frames=None,
+                                                  concurrency=8, cycle_budget_sec=11.0, read_timeout_sec=4.0):
+    """Fetch only a small, fair-rotated 1H/4H+5m/15m supplement for READ-ONLY research."""
+    if not symbols:
+        return {}, {"attempted": 0, "ok": 0, "failed": 0, "symbols_ok": []}
+    if _V699_VALIDATE_ONLY_REQUEST or not _v702_monitor_only_scan_enabled():
+        return {}, {"attempted": len(symbols), "ok": 0, "failed": len(symbols), "symbols_ok": [], "disabled_reason": "monitor_scan_disabled"}
+    concurrency = max(1, min(8, int(concurrency)))
+    sem = asyncio.Semaphore(concurrency)
+    now = float(WALL_NOW())
+    ohlcv_limit = max(80, min(120, int(CONFIG.get("V702_A79_OHLCV_LIMIT", 100))))
+    min_swing = max(56, int(CONFIG.get("V702_A79_MIN_SWING_CANDLES", 56)))
+    min_mtf = max(25, int(CONFIG.get("V702_A79_MIN_MTF_CANDLES", 25)))
+    intervals = {"df_4h": ("4h", 14400, min_swing), "df_1h": ("1h", 3600, min_swing),
+                 "df_15m": ("15m", 900, min_mtf), "df_5m": ("5m", 300, min_mtf)}
+    cols = ["ts", "open", "high", "low", "close", "volume"]
+
+    async def _fetch_one(symbol, key, timeframe):
+        async with sem:
+            return await asyncio.wait_for(
+                safe_api_call(f"ohlcv_a79_{timeframe}_{symbol}",
+                              lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=ohlcv_limit),
+                              retry_safe=True),
+                timeout=max(1.0, min(5.0, float(read_timeout_sec))),
+            )
+
+    async def _fetch_symbol(symbol):
+        result = await asyncio.gather(
+            *[_fetch_one(symbol, key, tf) for key, (tf, _, _) in intervals.items()],
+            return_exceptions=True,
+        )
+        frames = {}
+        for (key, (tf, interval_sec, minimum)), raw in zip(intervals.items(), result):
+            if isinstance(raw, BaseException) or not raw:
+                return symbol, None, f"{key}_fetch_failed"
+            try:
+                frame = pd.DataFrame(raw, columns=cols)
+                frame["ts"] = pd.to_datetime(frame["ts"], unit="ms", utc=True)
+                frame.set_index("ts", inplace=True)
+                frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+                closed, _closed_ts = OpportunityHunter._closed_frame(frame, interval_sec, now=now)
+                if closed is None or len(closed) < minimum:
+                    return symbol, None, f"{key}_short_or_stale"
+                required_cols = ("open", "high", "low", "close", "volume")
+                if any(c not in closed.columns for c in required_cols):
+                    return symbol, None, f"{key}_missing_columns"
+                numeric = closed[list(required_cols)].apply(pd.to_numeric, errors="coerce")
+                if numeric.tail(minimum).isna().any().any() or (numeric.tail(minimum)[["open", "high", "low", "close"]] <= 0).any().any():
+                    return symbol, None, f"{key}_invalid_values"
+                frames[key] = closed
+            except Exception as exc:
+                return symbol, None, f"{key}_{type(exc).__name__}"
+        ticker = ticker_snapshot.get(symbol) if isinstance(ticker_snapshot, dict) else None
+        if not isinstance(ticker, dict):
+            return symbol, None, "ticker_missing"
+        try:
+            qv = float(ticker.get("quoteVolume") or 0.0)
+            bid = float(ticker.get("bid") or 0.0)
+            ask = float(ticker.get("ask") or 0.0)
+            spread = None
+            if bid > 0 and ask > bid and math.isfinite(bid) and math.isfinite(ask):
+                spread = 100.0 * (ask - bid) / ((ask + bid) / 2.0)
+            payload = {
+                **frames, "df_btc_5m": (btc_frames or {}).get("df_btc_5m"),
+                "df_btc_15m": (btc_frames or {}).get("df_btc_15m"),
+                "df_btc_1h": (btc_frames or {}).get("df_btc_1h"),
+                "df_btc_4h": (btc_frames or {}).get("df_btc_4h"),
+                "quote_vol_24h": qv, "spread_pct": spread,
+                "ticker": {"bid": bid if bid > 0 else None, "ask": ask if ask > 0 else None},
+                "tier": str(LiquidityTier.classify(qv)), "symbol": symbol,
+                "v702_a79_research_recall_lane": True,
+                "v702_a79_canonical_mse_eligible": False,
+                "macro_regime": str(STATS.get("v702_btc_macro_context_last_regime", "UNKNOWN")),
+            }
+            return symbol, payload, "ok"
+        except Exception as exc:
+            return symbol, None, f"ticker_or_payload_{type(exc).__name__}"
+
+    tasks = [asyncio.create_task(_fetch_symbol(str(sym).upper())) for sym in list(symbols)[:8]]
+    budget = max(3.0, min(11.0, float(cycle_budget_sec)))
+    done, pending = await asyncio.wait(tasks, timeout=budget) if tasks else (set(), set())
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    snapshots, ok_symbols, errors = {}, [], {}
+    for task in tasks:
+        if task not in done:
+            continue
+        try:
+            symbol, payload, reason = task.result()
+            if payload is not None:
+                snapshots[symbol] = payload
+                ok_symbols.append(symbol)
+            else:
+                errors[reason] = int(errors.get(reason, 0) or 0) + 1
+        except Exception as exc:
+            errors[type(exc).__name__] = int(errors.get(type(exc).__name__, 0) or 0) + 1
+    timed_out = len(pending)
+    return snapshots, {"attempted": len(tasks), "ok": len(snapshots), "failed": len(tasks) - len(snapshots),
+                       "symbols_ok": ok_symbols, "timed_out": timed_out, "reject_reasons": errors,
+                       "concurrency": concurrency, "cycle_budget_sec": budget,
+                       "canonical_map_mutated": False}
+
+
+_A79_BASE_SWING_ITEMS = _v702_a74_swing_items
+_A79_BASE_MARKET_QUALITY = _v702_a74_market_quality
+_A79_BASE_COST_TARGETS = _v702_a74_cost_aware_targets
+
+
+def _v702_a79_note_swing_metric(key, amount=1, reason=None):
+    try:
+        stats = STATS.setdefault("v702_a79_swing_cycle", {})
+        stats[key] = int(stats.get(key, 0) or 0) + int(amount)
+        if reason:
+            reasons = stats.setdefault("top_reasons", {})
+            token = str(reason)[:100]
+            reasons[token] = int(reasons.get(token, 0) or 0) + int(amount)
+    except Exception:
+        pass
+
+
+def _v702_a79_stamp_swing(item):
+    if not isinstance(item, dict):
+        return item
+    item["timeframe"] = "1H+4H"
+    ev = dict(item.get("evidence") or {})
+    ev.update({"strategy_style": "SWING", "outcome_interval_sec": 3600,
+               "timeframe_profile": "CLOSED_1H_SETUP_WITH_CLOSED_4H_CONTEXT"})
+    item["evidence"] = ev
+    return item
+
+
+def _v702_a79_structural_stop(entry, structural_low, ema50, atr):
+    """Build a structural long invalidation reference bounded to 0.35%-4.0% risk."""
+    try:
+        entry = float(entry); structural_low = float(structural_low); ema50 = float(ema50); atr = float(atr)
+        if not all(math.isfinite(x) and x > 0 for x in (entry, structural_low, ema50, atr)):
+            return None
+        stop = min(structural_low - 0.12 * atr, ema50 - 0.15 * atr, entry * (1.0 - 0.0035))
+        if stop <= 0 or stop >= entry:
+            return None
+        risk_pct = (entry - stop) / entry * 100.0
+        if risk_pct < 0.35:
+            stop = entry * (1.0 - 0.0035)
+            risk_pct = 0.35
+        if risk_pct > 4.0:
+            return None
+        return stop
+    except Exception:
+        return None
+
+
+def _v702_a79_swing_items(cls, symbol, md, now=None):
+    """Five-family closed-hour Swing detection; incomplete structures remain WATCH."""
+    if not bool(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_ENABLE", True)) or not isinstance(md, dict):
+        _v702_a79_note_swing_metric("rejected", reason="swing_disabled_or_bad_snapshot")
+        return []
+    if _v702_a74_is_stable_symbol(symbol):
+        _v702_a79_note_swing_metric("rejected", reason="stable_or_forbidden_base")
+        return []
+    f1, ts1 = cls._closed_frame(md.get("df_1h"), 3600, now=now)
+    f4, ts4 = cls._closed_frame(md.get("df_4h"), 14400, now=now)
+    if f1 is None or f4 is None or len(f1) < max(56, int(CONFIG.get("V702_A79_MIN_SWING_CANDLES", 56))) or len(f4) < max(56, int(CONFIG.get("V702_A79_MIN_SWING_CANDLES", 56))):
+        _v702_a79_note_swing_metric("data_missing", reason="closed_1h_4h_history_short_or_stale")
+        return []
+    _v702_a79_note_swing_metric("symbols_with_closed_data")
+    try:
+        i1 = cls._indicators(f1); i4 = cls._indicators(f4)
+        c1 = float(f1["close"].iloc[-1]); o1 = float(f1["open"].iloc[-1])
+        h1 = float(f1["high"].iloc[-1]); low1 = float(f1["low"].iloc[-1])
+        prev_high = float(f1["high"].iloc[-2])
+        atr1 = max(float(i1["atr"]), c1 * 0.001)
+        if not all(math.isfinite(x) and x > 0 for x in (c1, o1, h1, low1, atr1)):
+            _v702_a79_note_swing_metric("rejected", reason="invalid_1h_price_geometry")
+            return []
+        ema20_1 = f1["close"].astype(float).ewm(span=20, adjust=False).mean()
+        ema50_1 = f1["close"].astype(float).ewm(span=50, adjust=False).mean()
+        ema20_4 = f4["close"].astype(float).ewm(span=20, adjust=False).mean()
+        ema50_4 = f4["close"].astype(float).ewm(span=50, adjust=False).mean()
+        c4 = float(f4["close"].iloc[-1])
+        trend1 = bool(i1["ema20"] > i1["ema50"] and c1 >= i1["ema20"])
+        trend4 = bool(i4["ema20"] > i4["ema50"] and c4 >= i4["ema20"])
+        slope1 = bool(float(ema20_1.iloc[-1]) > float(ema20_1.iloc[-4]))
+        slope4 = bool(float(ema20_4.iloc[-1]) > float(ema20_4.iloc[-4]))
+        recover1 = bool(c1 >= i1["ema20"] and slope1)
+        recover4 = bool(c4 >= i4["ema20"] and slope4)
+        volr = max(0.0, min(10.0, float(i1["volume_ratio"])))
+        rsi = float(i1["rsi14"])
+        max_rsi_confirm = float(CONFIG.get("V702_A79_SWING_RSI_CONFIRM_MAX", 82.0))
+        max_rsi_watch = float(CONFIG.get("V702_A79_SWING_RSI_WATCH_MAX", 86.0))
+        max_chase = float(CONFIG.get("V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR", 0.85))
+        qv = cls._safe_float(md.get("quote_vol_24h"), 0.0) or 0.0
+        spread = cls._safe_float(md.get("spread_pct"))
+        resistance = float(f1["high"].iloc[-21:-1].max())
+        dist_atr = (resistance - c1) / atr1
+        chase_atr = max(0.0, -dist_atr)
+        if not all(math.isfinite(x) and x > 0 for x in (resistance,)):
+            _v702_a79_note_swing_metric("rejected", reason="invalid_1h_resistance")
+            return []
+        swing_low = float(f1["low"].iloc[-11:].min())
+        stop = _v702_a79_structural_stop(c1, swing_low, i1["ema50"], atr1)
+        if stop is None:
+            _v702_a79_note_swing_metric("rejected", reason="structural_risk_outside_0_35_4pct")
+            return []
+        risk = c1 - stop
+        ttl = float(CONFIG.get("V702_OPPORTUNITY_HUNTER_SWING_TTL_SEC", 604800.0))
+        out = list(_A79_BASE_SWING_ITEMS(cls, symbol, md, now=now) or [])
+        existing_patterns = {str(x.get("pattern") or "").upper() for x in out}
+        btc, btc_ts = cls._closed_frame(md.get("df_btc_1h"), 3600, now=now)
+        abs_ret = rs_diff = btc_ret = None
+        if btc is not None and len(f1) >= 7 and len(btc) >= 7:
+            base = float(f1["close"].iloc[-7]); btc_base = float(btc["close"].iloc[-7]); btc_now = float(btc["close"].iloc[-1])
+            if base > 0 and btc_base > 0 and btc_now > 0:
+                abs_ret = (c1 / base - 1.0) * 100.0
+                btc_ret = (btc_now / btc_base - 1.0) * 100.0
+                rs_diff = abs_ret - btc_ret
+        macro = str(STATS.get("v702_btc_macro_context_last_regime", "UNKNOWN")).upper()
+        bearish_context = macro == "BEARISH"
+        min_recovery_abs = float(CONFIG.get("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", 0.20))
+        min_recovery_rs = float(CONFIG.get("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", 0.75))
+        # In a bearish BTC regime, Swing ideas may still be discovered, but a
+        # CONFIRMED long requires positive local trend and measurable leadership
+        # over BTC. Otherwise retain the setup as WATCH, never as a buy signal.
+        bearish_local_confirm = bool(not bearish_context or (
+            trend1 and trend4 and abs_ret is not None and rs_diff is not None
+            and abs_ret >= min_recovery_abs and rs_diff >= min_recovery_rs
+        ))
+        if bearish_context and not bearish_local_confirm:
+            # A74's pre-existing Swing breakouts/pullbacks were trend-confirmed
+            # but not all carried the minimum BTC-relative evidence. Preserve
+            # them as WATCH rather than allowing an older detector to bypass
+            # A79's stricter bearish-market confirmation contract.
+            for _base_item in out:
+                if str(_base_item.get("status") or "").upper() == "CONFIRMED":
+                    _base_ev = dict(_base_item.get("evidence") or {})
+                    _base_item["status"] = "WATCH"
+                    _base_item["confirmation_type"] = "WATCH_BEARISH_BTC_RELATIVE_STRENGTH_REQUIRED"
+                    _base_item["reason"] = str(_base_item.get("reason") or "") + " BTC هابط؛ يلزم إثبات القوة النسبية قبل التأكيد."
+                    _base_item["missing_conditions"] = list(dict.fromkeys(list(_base_item.get("missing_conditions") or []) + [
+                        "BTC_BEARISH_CONFIRM_REQUIRES_LOCAL_1H_4H_TREND_AND_RS"
+                    ]))
+                    _base_ev.update({"bearish_btc_recovery": True, "bearish_local_confirm": False,
+                                     "symbol_return_1h_6bars_pct": round(abs_ret, 3) if abs_ret is not None else None,
+                                     "relative_strength_diff_pct": round(rs_diff, 3) if rs_diff is not None else None})
+                    _base_item["evidence"] = _base_ev
+        out = [_v702_a79_stamp_swing(x) for x in out]
+
+        # 1) Breakout continuation: closed hourly close beyond prior 20-bar resistance.
+        breakout_setup = (trend1 and trend4 and c1 > resistance * 1.0005 and c1 > o1
+                          and volr >= float(CONFIG.get("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", 1.15))
+                          and chase_atr <= max_chase and rsi <= max_rsi_confirm)
+        breakout = bool(breakout_setup and bearish_local_confirm)
+        breakout_watch = bool(bool(CONFIG.get("V702_A79_SWING_EARLY_WATCH_ENABLE", True))
+                              and breakout_setup and not breakout)
+        if (breakout or breakout_watch) and "SWING_BREAKOUT_CONTINUATION" not in existing_patterns:
+            item = cls._setup_item(symbol, "SWING_BREAKOUT_CONTINUATION", "SWING_BREAKOUT", c1, stop,
+                86.0 + min(8.0, max(0.0, volr - 1.15) * 5.0) if breakout else 77.0, max(ts1, ts4), "1H+4H",
+                ("اختراق مقاومة 20 شمعة على 1H بإغلاق مؤكد وحجم داعم واتجاه 4H صاعد دون مطاردة."
+                 if breakout else "اختراق فني أولي؛ ينتظر تأكيد القوة النسبية أمام BTC قبل اعتباره فرصة مؤكدة."),
+                (["ثبات فوق المقاومة", "الحجم النسبي 1.15 أو أكثر", "فحص السبريد والتكلفة وصافي Net RR"]
+                 if breakout else ["تأكيد التفوق على BTC", "استمرار اتجاه 1H و4H", "عدم تجاوز حد المطاردة"]),
+                {"distance_to_resistance_atr": round(dist_atr, 4), "volume_ratio_1h": round(volr, 3),
+                 "trend_1h": trend1, "trend_4h": trend4, "rsi14_1h": round(rsi, 2),
+                 "bearish_btc_recovery": bearish_context, "bearish_local_confirm": bearish_local_confirm,
+                 "symbol_return_1h_6bars_pct": round(abs_ret, 3) if abs_ret is not None else None,
+                 "relative_strength_diff_pct": round(rs_diff, 3) if rs_diff is not None else None,
+                 "spread_pct": spread, "quote_vol_24h": qv, "swing_structure_low": swing_low,
+                 "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "CLOSED_BAR_SWING_BREAKOUT_A79" if breakout else "WATCH_SWING_BREAKOUT_PENDING_BTC_RS",
+                "CONFIRMED" if breakout else "WATCH", ttl)
+            out.append(_v702_a79_stamp_swing(item))
+
+        # 2) Breakout retest: resistance tested from above, then reclaimed by a closed 1H bar.
+        retest_touch = (low1 <= resistance + 0.20 * atr1 and low1 >= resistance - 0.45 * atr1)
+        retest_hold = retest_touch and c1 >= resistance * 0.9990 and c1 > o1
+        retest_confirm = (retest_hold and trend1 and trend4 and volr >= float(CONFIG.get("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", 1.10))
+                          and chase_atr <= max_chase and rsi <= max_rsi_confirm and bearish_local_confirm)
+        retest_watch = (retest_hold and (not retest_confirm) and recover4 and rsi <= max_rsi_watch)
+        if (retest_confirm or retest_watch) and "SWING_BREAKOUT_RETEST" not in existing_patterns:
+            item = cls._setup_item(symbol, "SWING_BREAKOUT_RETEST", "SWING_BREAKOUT_RETEST", c1, stop,
+                85.0 if retest_confirm else 75.0, max(ts1, ts4), "1H+4H",
+                "إعادة اختبار مستوى مقاومة سابق؛ الإغلاق فوق المستوى يحولها إلى تأكيد، وإلا تبقى WATCH.",
+                (["حجم إعادة الاختبار ≥ 1.10", "استمرار اتجاه 4H", "صافي Net RR بعد التكلفة"] if retest_confirm
+                 else ["إغلاق ساعة فوق المقاومة بوضوح", "حجم إعادة اختبار داعم", "عدم فقد قاع الهيكل"]),
+                {"distance_to_resistance_atr": round(dist_atr, 4), "retest_touch": True,
+                 "volume_ratio_1h": round(volr, 3), "trend_4h": trend4, "recover_4h": recover4,
+                 "rsi14_1h": round(rsi, 2), "spread_pct": spread, "quote_vol_24h": qv,
+                 "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "CLOSED_BAR_SWING_BREAKOUT_RETEST" if retest_confirm else "WATCH_SWING_BREAKOUT_RETEST",
+                "CONFIRMED" if retest_confirm else "WATCH", ttl)
+            out.append(_v702_a79_stamp_swing(item))
+
+        # 3) Pre-breakout compression: WATCH only; no premature confirmation.
+        last6 = f1.iloc[-6:]
+        compression_width_atr = (float(last6["high"].max()) - float(last6["low"].min())) / atr1
+        compression_watch = (bool(CONFIG.get("V702_A79_SWING_EARLY_WATCH_ENABLE", True))
+                             and (0.0 <= dist_atr <= 0.85) and compression_width_atr <= 2.6
+                             and recover1 and (trend4 or recover4) and volr >= 0.70 and rsi <= max_rsi_watch)
+        if compression_watch and "SWING_PREBREAKOUT_COMPRESSION" not in existing_patterns:
+            item = cls._setup_item(symbol, "SWING_PREBREAKOUT_COMPRESSION", "SWING_BREAKOUT_PREPARATION", c1, stop,
+                78.0 + min(4.0, max(0.0, 2.6 - compression_width_atr)), max(ts1, ts4), "1H+4H",
+                "انضغاط سعري أسفل مقاومة 20 شمعة مع ميل EMA20 صاعد؛ مرحلة مراقبة وليست اختراقًا مؤكدًا.",
+                ["إغلاق 1H فوق المقاومة", "حجم اختراق ≥ 1.15", "مطاردة أقل من 0.85 ATR"],
+                {"distance_to_resistance_atr": round(dist_atr, 4), "compression_width_atr": round(compression_width_atr, 3),
+                 "volume_ratio_1h": round(volr, 3), "trend_4h": trend4, "recover_4h": recover4,
+                 "rsi14_1h": round(rsi, 2), "spread_pct": spread, "quote_vol_24h": qv,
+                 "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "WATCH_SWING_PREBREAKOUT_COMPRESSION", "WATCH", ttl)
+            out.append(_v702_a79_stamp_swing(item))
+
+        # 4) Pullback zone: record the approach; require closed reclaim to confirm.
+        prior_swing_low = float(f1["low"].iloc[-21:-5].min())
+        pullback_touch = (low1 <= i1["ema20"] + 0.35 * atr1
+                          and low1 >= prior_swing_low - 0.15 * atr1
+                          and c1 >= i1["ema20"] - 0.15 * atr1)
+        pullback_confirm = (pullback_touch and trend1 and trend4 and c1 > prev_high and c1 > o1
+                            and volr >= float(CONFIG.get("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", 1.10))
+                            and rsi <= max_rsi_confirm and bearish_local_confirm)
+        pullback_watch = (bool(CONFIG.get("V702_A79_SWING_EARLY_WATCH_ENABLE", True))
+                          and pullback_touch and (not pullback_confirm) and (trend4 or recover4)
+                          and volr >= 0.75 and rsi <= max_rsi_watch)
+        if (pullback_confirm or pullback_watch) and "SWING_PULLBACK_RECLAIM" not in existing_patterns:
+            item = cls._setup_item(symbol, "SWING_PULLBACK_RECLAIM", "SWING_PULLBACK", c1, stop,
+                86.0 if pullback_confirm else 77.0, max(ts1, ts4), "1H+4H",
+                "تصحيح إلى نطاق EMA20 مع حماية قاع الهيكل؛ التأكيد يتطلب استعادة قمة الساعة السابقة على شمعة مغلقة.",
+                (["إغلاق 1H فوق قمة الساعة السابقة", "حجم 1H ≥ 1.10", "توافق 4H وصافي عائد بعد التكلفة"]
+                 if pullback_confirm else ["استعادة EMA20 وقمة الساعة السابقة", "حجم 1H ≥ 1.10", "عدم كسر قاع الهيكل"]),
+                {"ema20_1h": i1["ema20"], "ema50_1h": i1["ema50"], "atr1h": atr1,
+                 "volume_ratio_1h": round(volr, 3), "trend_1h": trend1, "trend_4h": trend4,
+                 "recover_4h": recover4, "rsi14_1h": round(rsi, 2), "swing_structure_low": prior_swing_low,
+                 "spread_pct": spread, "quote_vol_24h": qv,
+                 "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "CLOSED_BAR_SWING_PULLBACK_RECLAIM_A79" if pullback_confirm else "WATCH_SWING_PULLBACK_ZONE",
+                "CONFIRMED" if pullback_confirm else "WATCH", ttl)
+            out.append(_v702_a79_stamp_swing(item))
+
+        # 5) Relative-strength leadership and controlled recovery under bearish BTC.
+        if abs_ret is not None and rs_diff is not None:
+            standard_rs = (abs_ret >= 0.35 and rs_diff >= 0.50 and trend1 and trend4
+                           and volr >= 1.10 and rsi <= max_rsi_confirm and c1 <= i1["ema20"] + 1.6 * atr1
+                           and bearish_local_confirm)
+            bearish_recovery = (bearish_context and abs_ret >= min_recovery_abs and rs_diff >= min_recovery_rs
+                                and trend1 and trend4 and recover4 and volr >= 1.10 and rsi <= max_rsi_confirm)
+            rs_confirm = standard_rs or bearish_recovery
+            rs_watch = (bool(CONFIG.get("V702_A79_SWING_EARLY_WATCH_ENABLE", True))
+                        and abs_ret >= 0.10 and rs_diff >= 0.35 and recover1 and rsi <= max_rsi_watch
+                        and (trend4 or recover4) and volr >= 0.75)
+            if (rs_confirm or rs_watch) and "SWING_RELATIVE_STRENGTH" not in existing_patterns:
+                item = cls._setup_item(symbol, "SWING_RELATIVE_STRENGTH", "SWING_RELATIVE_STRENGTH", c1, stop,
+                    87.0 if rs_confirm else 76.0, max(ts1, ts4, btc_ts), "1H+4H vs BTC",
+                    ("قوة نسبية مؤكدة على ساعة مع اتجاه محلي صاعد وتفوق على BTC."
+                     if rs_confirm else "عملة تظهر قوة/تعافيًا نسبيًا أمام BTC؛ تُحفظ WATCH حتى اكتمال التأكيد."),
+                    (["استمرار العائد المطلق الإيجابي", "تفوق BTC النسبي مستمر", "حجم ≥ 1.10 وصافي Net RR"]
+                     if rs_confirm else ["تأكيد اتجاه 1H و4H", "تفوق BTC ≥ 0.75 نقطة للتعافي الهابط", "حجم واستقرار EMA20"]),
+                    {"symbol_return_1h_6bars_pct": round(abs_ret, 3), "btc_return_1h_6bars_pct": round(btc_ret or 0.0, 3),
+                     "relative_strength_diff_pct": round(rs_diff, 3), "volume_ratio_1h": round(volr, 3),
+                     "trend_1h": trend1, "trend_4h": trend4, "recover_1h": recover1, "recover_4h": recover4,
+                     "bearish_btc_recovery": bearish_context, "rsi14_1h": round(rsi, 2), "spread_pct": spread,
+                     "quote_vol_24h": qv, "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                    "CLOSED_BAR_SWING_RELATIVE_STRENGTH_A79" if rs_confirm else "WATCH_SWING_RELATIVE_STRENGTH",
+                    "CONFIRMED" if rs_confirm else "WATCH", ttl)
+                out.append(_v702_a79_stamp_swing(item))
+
+        # Keep strongest confirmed setups first, but retain early WATCH ideas for /opportunities.
+        unique = {}
+        for item in out:
+            if not isinstance(item, dict):
+                continue
+            item = _v702_a79_stamp_swing(item)
+            pattern = str(item.get("pattern") or "").upper()
+            if pattern not in unique or str(item.get("status")).upper() == "CONFIRMED":
+                unique[pattern] = item
+        result = list(unique.values())
+        for item in result:
+            status = str(item.get("status") or "WATCH").upper()
+            if status == "CONFIRMED":
+                _v702_a79_note_swing_metric("confirmed")
+            else:
+                _v702_a79_note_swing_metric("watch")
+            patterns = STATS.setdefault("v702_a79_swing_cycle", {}).setdefault("patterns", {})
+            pn = str(item.get("pattern") or "UNKNOWN")[:64]
+            patterns[pn] = int(patterns.get(pn, 0) or 0) + 1
+        if bearish_context and not (trend1 and trend4):
+            _v702_a79_note_swing_metric("rejected", reason="bearish_btc_local_recovery_not_confirmed")
+        result.sort(key=lambda x: (str(x.get("status") or "").upper() == "CONFIRMED", float(x.get("score") or 0)), reverse=True)
+        return result[:5]
+    except Exception as exc:
+        _v702_a79_note_swing_metric("rejected", reason=f"swing_eval_{type(exc).__name__}")
+        STATS["v702_a79_swing_eval_errors"] = int(STATS.get("v702_a79_swing_eval_errors", 0) or 0) + 1
+        logger.debug("[A79-SWING] %s suppressed: %s:%s", symbol, type(exc).__name__, str(exc)[:120])
+        return []
+
+
+# A79 Swing risk geometry keeps 1.8R/2.8R/4.0R reference levels. A74's
+# independent market-quality/net-RR gate remains responsible for alert admission.
+def _v702_a79_cost_aware_targets(cls, item):
+    if str(item.get("source") or "") == "READ_ONLY_MARKET_PATTERN":
+        evidence = dict(item.get("evidence") or {})
+        style = str(evidence.get("strategy_style") or "").upper()
+        entry = cls._safe_float(item.get("entry_ref")); stop = cls._safe_float(item.get("sl_price"))
+        spread = cls._safe_float(evidence.get("spread_pct"))
+        fee = _v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_FEE_PCT", 0.10)
+        slip = _v702_a75_cost_input("V702_OPPORTUNITY_HUNTER_PAPER_SLIPPAGE_PER_SIDE_PCT", 0.05)
+        if style == "SWING" and entry and stop and entry > stop > 0:
+            risk = entry - stop
+            item["tp1"] = entry + risk * 1.8
+            item["tp2"] = entry + risk * 2.8
+            item["tp3"] = entry + risk * 4.0
+            if spread is not None and spread >= 0 and fee is not None and slip is not None:
+                cost = spread + 2.0 * fee + 2.0 * slip
+                risk_pct = risk / entry * 100.0
+                reward_pct = (float(item["tp1"]) - entry) / entry * 100.0
+                net_rr = (reward_pct - cost) / (risk_pct + cost) if (risk_pct + cost) > 0 else None
+                evidence.update({"target_rr_tp1": 1.8, "target_rr_tp2": 2.8, "target_rr_tp3": 4.0,
+                                 "required_target_rr_tp1": round(0.80 + 1.80 * cost / risk_pct, 4) if risk_pct > 0 else None,
+                                 "cost_target_feasible": bool(net_rr is not None and net_rr >= float(CONFIG.get("V702_OPPORTUNITY_HUNTER_MIN_NET_RR_TP1", 0.80))),
+                                 "target_method": "A79_STRUCTURAL_SWING_R_LADDER_AFTER_A74_NET_COST_CHECK"})
+            evidence["strategy_style"] = "SWING"
+            evidence["outcome_interval_sec"] = 3600
+            item["evidence"] = evidence
+            return item
+    return _A79_BASE_COST_TARGETS(cls, item)
+
+
+# Keep the existing A74 score components and hard quality gate. A79's only
+# change is the explicitly documented Swing-specific breakout/retest thresholds above.
+_v702_a74_swing_items = _v702_a79_swing_items
+_v702_a74_cost_aware_targets = _v702_a79_cost_aware_targets
+
+
+_A79_BASE_EVALUATE_SNAPSHOT = OpportunityHunter._evaluate_snapshot.__func__
+def _v702_a79_evaluate_snapshot(cls, symbol, md, now=None):
+    rows = list(_A79_BASE_EVALUATE_SNAPSHOT(cls, symbol, md, now=now) or [])
+    # Catch any residual style drift at the final Hunter boundary.
+    for row in rows:
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        if str(row.get("family") or "").upper().startswith("SWING") or str(row.get("pattern") or "").upper().startswith("SWING_"):
+            row["timeframe"] = "1H+4H"
+            evidence["strategy_style"] = "SWING"
+            evidence["outcome_interval_sec"] = 3600
+            row["evidence"] = evidence
+    return rows
+OpportunityHunter._evaluate_snapshot = classmethod(_v702_a79_evaluate_snapshot)
+
+
+# A79 macro digest uses the existing descriptive macro context field, not the
+# hysteretic candidate-policy regime. The latter remains separately displayed.
+
+
+def _v702_a79_self_test():
+    checks = {
+        "supplement_pool_fair_selection_callable": callable(_v702_a79_select_supplemental_symbols),
+        "supplement_fetch_bounded": callable(_v702_a79_fetch_supplemental_snapshots),
+        "swing_five_family_discovery_callable": callable(_v702_a79_swing_items),
+        "swing_metadata_stamped_hourly": (
+            _v702_a79_stamp_swing({"evidence": {}}).get("timeframe") == "1H+4H"
+            and _v702_a79_stamp_swing({"evidence": {}})["evidence"].get("outcome_interval_sec") == 3600
+        ),
+        "swing_confirmations_require_closed_1h_4h": (
+            'cls._closed_frame(md.get("df_1h"), 3600' in _v702_read_source_text()
+            and 'cls._closed_frame(md.get("df_4h"), 14400' in _v702_read_source_text()
+        ),
+        "no_bearish_family_policy_bypass": "family_regime_disallowed.macro" in _v702_read_source_text() and "effective_entry_policy" in FINAL_CANONICAL_RUNTIME,
+        "supplement_map_is_separate": (
+            "_a79_research_market_data_map = dict(market_data_map)" in _v702_read_source_text()
+            and '"canonical_map_mutated": False' in _v702_read_source_text()
+        ),
+        "btc_macro_digest_uses_descriptive_context": "v702_btc_macro_context_last_regime" in _v702_read_source_text(),
+        "read_only_authority_preserved": OpportunityHunter.execution_authority is False,
+        "monitor_only_entry_policy_preserved": str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")) == "MONITOR_ONLY_NO_NEW_BUYS",
+        "no_gate_bypass": FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False,
+    }
+    failed = [key for key, ok in checks.items() if not ok]
+    return {"pass": not failed, "revision": V702_A79_REVISION, "checks": checks,
+            "failed": failed, "execution_authority": False,
+            "entry_policy": "MONITOR_ONLY_NO_NEW_BUYS"}
+
+STATS["v702_a79_revision"] = V702_A79_REVISION
+STATS["v702_a79_self_test"] = _v702_a79_self_test()
+FINAL_CANONICAL_RUNTIME.update({
+    "active_swing_coverage_revision_current": V702_A79_REVISION,
+    "swing_research_supplement_enabled": bool(CONFIG.get("V702_A79_SUPPLEMENT_ENABLE", True)),
+    "swing_research_supplement_symbols_per_cycle": min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8))),
+    "swing_research_supplement_is_separate_from_canonical_mse_map": True,
+    "swing_setup_families": ["SWING_BREAKOUT_CONTINUATION", "SWING_BREAKOUT_RETEST", "SWING_PREBREAKOUT_COMPRESSION", "SWING_PULLBACK_RECLAIM", "SWING_RELATIVE_STRENGTH"],
+    "swing_bearish_btc_recovery_is_watch_first": True,
+    "swing_hourly_outcome_interval_sec": 3600,
+    "swing_confirmed_alert_a74_quality_gate_preserved": True,
+    "all_five_a9_engines_share_supplemental_mtf_snapshots": True,
+    "a79_execution_authority": False,
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
 
 
 

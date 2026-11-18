@@ -363,3 +363,13 @@ New `.env` controls are documented in `.env.example`: `V702_INTRADAY_MICRO_ALERT
 The research report now exposes per-strategy `micro_alert_eligible_samples`, `micro_alert_suppressed_samples`, and suppression reasons, as well as the effective alert-quality policy. Alert messages show the observed spread and closed-timeframe/BTC-relative confirmation evidence. Historical records are not retroactively reclassified.
 
 All A78 changes are monitor-only. `V702_INTRADAY_SHADOW_LIVE_ENABLE` remains hard-false and the canonical entry policy remains `MONITOR_ONLY_NO_NEW_BUYS`. The new gates are intended to reduce weak alerts and improve the quality of opportunities watched; they do not prove a higher realized win rate. Continue paper/Shadow validation and do not enable unattended live trading based on these changes.
+
+## A79 — broader read-only research coverage (2026-11-18)
+
+A79 improves discovery coverage without changing the canonical entry funnel. It rotates up to eight additional liquid, non-stablecoin USDT symbols per scan cycle and loads closed 1H/4H/5m/15m data with bounded timeouts. Existing Swing ideas are prioritized for follow-up; other eligible symbols receive fair rotation. The supplemental snapshots are held in a separate research map and are explicitly excluded from GlobalOpportunityBrain, PreQual, Builder, PreSend, and order routing.
+
+The same supplemental 5m/15m/1H/4H context is available to the five A9 Shadow engines. The 1m tape remains fetched only for the existing bounded rotating batch. Swing discovery covers breakout continuation, breakout retest, pre-breakout compression, pullback/reclaim, and relative strength. Forming patterns are stored as `WATCH`; they are not Telegram confirmed alerts. In a descriptive BTC `BEARISH` regime, local leaders may still be monitored, but a confirmed long setup requires closed local 1H/4H confirmation plus positive relative strength against BTC. The canonical regime/crash gates remain unchanged.
+
+Swing reference outcomes use closed 1H candles. Structural stop references are bounded by the configured 0.35%-4.0% geometry, and TP reference levels use 1.8R/2.8R/4.0R, subject to the existing A74 quality, spread, volume, and modeled net-cost checks. These are research references, not exchange orders or verified profitability.
+
+Tune the A79 settings in `.env.example` only after reviewing runtime coverage and API budgets. Default behavior remains `MONITOR_ONLY_NO_NEW_BUYS`; `WATCH` ideas are stored, and only the existing A74 strong-confirmation criteria can send initial opportunity alerts. A79 does not enable live orders.

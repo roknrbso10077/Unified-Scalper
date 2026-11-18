@@ -77,3 +77,44 @@ All changes remain `MONITOR_ONLY_NO_NEW_BUYS`; the Micro module still has no ord
 - **Compilation:** `python -m compileall -q .` passed.
 - **Entrypoint validation:** `python main.py --validate-only` passed with exit code 0, `bot_started=false`, and `live_threads=[]`. No exchange or Telegram credentials were present in the validation environment and no live order was submitted.
 - **Packaging:** the final archive is checked against the 99-path manifest, with unique paths and a clean ZIP CRC; it is then extracted separately and `--validate-only` is repeated from that clean extraction.
+
+## A79 — All-strategy research recall, Swing coverage and final safety audit (2026-11-18)
+
+### Supplied latest-log findings
+
+- BTC descriptive macro remained `BEARISH` (1H close 64,680.31 below EMA50 64,719.39; 4H close 64,878.96 below EMA50 68,021.34 and EMA200 75,202.58). The ordinary candidate policy remained separately reported as `NEUTRAL` in the supplied digest; these are distinct state models and must not be merged.
+- Universe was READY at 48 symbols, but the Hunter frequently scanned only 15 symbols and created zero new rows. MTF D1 fetch coverage of 15/15 proves that D1 requests completed for that limited cohort, not that the full 48-symbol universe received Swing setup evaluation.
+- The canonical 30-minute funnel showed DISC/RANK/PRE activity but PASS=0, with policy rejects dominating (`family_regime_disallowed.macro`, particularly `PULLBACK@BEARISH[allow=BULLISH+NEUTRAL]`). This is expected family-policy behavior under the supplied bearish context, not evidence that the canonical policy should be bypassed.
+- The supplied daily research report showed zero signals for each of the five A9 strategies in the reported window. This could reflect both market conditions and bounded symbol coverage; the log alone cannot prove that market-data coverage was the only cause.
+
+### Implemented changes
+
+1. **Fair-rotated supplement:** each scan cycle selects up to eight additional liquid USDT symbols not already in the canonical scan map, using quote-volume checks, stable/forbidden-asset exclusion, active-Swing follow-up priority and deterministic round-robin rotation. Reads are bounded by concurrency=8 and an 11-second cycle budget.
+2. **Separate data authority:** the new `_a79_research_market_data_map` is a copy of the canonical map plus supplemental snapshots. It is used only by the read-only Hunter and A9 research. GlobalOpportunityBrain continues to receive the original `market_data_map` unchanged; no supplement can become a canonical candidate or execution route by being scanned.
+3. **All five research engines:** supplemental 5m/15m/1H/4H contexts are shared across Micro Momentum, Sweep/Reclaim, Pullback/Reclaim, VWAP Reclaim RS and Adaptive RS Pullback. Existing 1m retrieval remains bounded to the A9 fair-rotating batch.
+4. **Five Swing families:** added closed-1H/4H breakout continuation, breakout retest, pre-breakout compression WATCH, pullback/reclaim and relative-strength/recovery. Incomplete patterns persist as WATCH; Telegram's existing confirmed-only and A74 strong-quality gate is retained.
+5. **Bearish BTC handling:** discovery of local recovery/relative-strength leaders remains enabled, but confirmed Swing longs under a descriptive bearish BTC regime require closed local 1H/4H uptrend plus minimum absolute return and BTC-relative outperformance. Otherwise the idea stays WATCH. No canonical family policy, crash severity, PreQual, score, risk, spread, cost or PreSend gate was bypassed.
+6. **Correct outcome timeframe:** every Swing read-only setup is explicitly stamped `strategy_style=SWING`, `timeframe=1H+4H`, `outcome_interval_sec=3600`; outcome checks therefore use closed 1H candles instead of default intraday 5m.
+7. **Risk references:** Swing structural invalidation uses a bounded 0.35%-4.0% reference risk geometry, and research target references are 1.8R/2.8R/4.0R. Existing A74 market-quality, spread, volume and net-cost checks remain responsible for strong-alert eligibility; these levels are not live orders.
+8. **Digest truth:** the descriptive BTC macro field now reads the stored macro-context regime, while candidate policy remains a separate field. `/digest` also exposes supplemental scan coverage, Swing WATCH/CONFIRMED funnel and per-engine A9 evaluation/signal/rejection counts.
+
+### Safety and limits
+
+- Entry policy remains `MONITOR_ONLY_NO_NEW_BUYS`; `OpportunityHunter.execution_authority` remains false.
+- Research snapshots are excluded from the canonical MSE map. A79 adds no order methods or route handoff.
+- `WATCH` does not mean a buy opportunity or Telegram confirmed alert. Strong confirmed alerts still depend on A74 quality checks and existing alert state rules.
+- The supplied logs do not prove live profitability. The new coverage can increase the number of evaluated symbols and visible WATCH setups; it cannot guarantee additional TP hits or a higher win rate. New outcomes must be assessed on a separate Shadow holdout with fees/spread/slippage modelled consistently.
+- Network/API behavior, exchange-specific rate limits, real MEXC fills and external Telegram delivery are not validated by offline unit tests.
+
+
+### A79 final verification (clean source tree)
+
+- **Regression suite:** 58 packaged test modules, run in eight non-overlapping groups; **585 passed, 1 skipped, 0 failed** (586 collected). Group pass counts were 53, 40, 61, 55, 109 (+1 skip), 53, 45 and 169. The single skip is `test_release_contracts.py:375`, which requires the historical A51 runtime log not included in this release.
+- **A79-specific regressions:** 5 passed, covering supplemental-pool exclusions, fair rotation and active Swing priority, structural-stop bounds, hourly outcome metadata, read-only invariants, and bearish-BTC Swing demotion to WATCH without measured local/relative-strength confirmation.
+- **Digest/A51 compatibility regression group:** 8 passed; the A51 policy-prefilter telemetry line remains visible under compacted Telegram digest budgets alongside the A79 coverage lines.
+- **Compilation:** `python -m compileall -q .` and explicit `py_compile` for `main.py` and `v702_intraday_shadow.py` passed; 73 Python source files are packaged.
+- **Validate-only:** `python main.py --validate-only` exited 0; the final log states `bot_started=false` and `live_threads=[]`. The command used an isolated temporary database; it did not start the bot or live exchange/Telegram workers.
+- **Release integrity:** rebuilt ZIP contains the exact 99 paths from the supplied A78 archive; no paths added or removed. The SHA-256 ledger contains 98 non-self entries (the ledger does not hash itself). ZIP CRC and manifest inventory are checked after creation.
+- **Execution safety:** `MONITOR_ONLY_NO_NEW_BUYS`; Hunter execution authority false; no family-regime, PreQual, score, risk, spread, cost, PreSend, builder or order-routing bypass was introduced.
+
+Offline tests and the supplied logs do not verify exchange fills, actual fee/slippage, external Telegram delivery, or profitable out-of-sample performance. A79 increases the research coverage and visibility of WATCH setups; a new holdout Shadow sample is required to determine whether the proportion and net value of TP outcomes improve.

@@ -2568,3 +2568,14 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Added per-strategy alert suppression counters/reasons and effective quality-policy fields to the report; added spread and MTF evidence to qualified Telegram messages.
 - No database schema change, new package files, strategy deletion, live order authority, leverage, futures, or relaxation of canonical entry/risk controls.
 - Focused Micro/cost test suite: 36 passed after the final alignment/gap tests. Full-suite and clean-archive validation are recorded in the release manifest after completion.
+
+## 2026-11-18 — A79 fair-rotated Swing coverage and shared all-strategy research snapshots
+
+- Added an isolated, fair-rotated supplement of up to eight eligible, liquid USDT symbols per scan cycle. It fetches closed 1H/4H/5m/15m bars under a bounded concurrency and time budget. Active Swing ideas receive follow-up priority; other symbols rotate fairly across cycles.
+- Kept the canonical `market_data_map` immutable. Supplemental snapshots are marked research-only and never enter GlobalOpportunityBrain, PreQual, Builder, PreSend, the canonical selector, or order routing.
+- Reused the supplemental 5m/15m/1H/4H context across all five A9 shadow strategies (`MICRO_MOMENTUM_1M`, `MICRO_SWEEP_RECLAIM_1M`, `MICRO_PULLBACK_RECLAIM_1M`, `VWAP_RECLAIM_RS_5M`, and `ADAPTIVE_RS_PULLBACK_15M`). Their 1m data remains separately bounded by the existing rotating micro batch.
+- Expanded Swing research into five closed-bar pattern families: breakout continuation, breakout retest, pre-breakout compression, pullback/reclaim and relative strength. Incomplete structures remain durable `WATCH`; only strong `CONFIRMED` states can enter the existing A74 quality/alert gate.
+- Under descriptive BTC `BEARISH`, local leaders can still be discovered as `WATCH`; a confirmed Swing long additionally requires local 1H/4H trend and measurable absolute/relative strength against BTC. Existing canonical family-regime and crash policies were not weakened.
+- Swing candidates carry `SWING` metadata and are followed using closed 1H candles. Structural invalidation is bounded to 0.35%-4.0% reference risk; research TP references use 1.8R/2.8R/4.0R and remain subject to the existing A74 net-cost quality gate.
+- Corrected the digest's descriptive BTC macro field to read the canonical `v702_btc_macro_context_last_regime`, separate from the hysteretic candidate-policy regime. Added research coverage, Swing funnel and per-engine A9 counters to `/digest`.
+- Added A79 environment controls and regressions for fair rotation, active Swing priority, stable/forbidden exclusion, structural stop bounds, hourly outcome metadata and monitor-only invariants. No live order authority or production admission gate was added.
