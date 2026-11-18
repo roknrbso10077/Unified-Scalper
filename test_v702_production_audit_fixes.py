@@ -1891,3 +1891,167 @@ def test_a79_bearish_btc_demotes_base_swing_confirmation_to_watch_without_local_
     assert any(str(row.get("status") or "").upper() == "WATCH" for row in swing)
     assert all(row.get("timeframe") == "1H+4H" for row in swing)
     assert all(row.get("evidence", {}).get("outcome_interval_sec") == 3600 for row in swing)
+
+
+def test_a80_read_only_status_command_returns_live_digest_in_monitor_only(monkeypatch):
+    replies = []
+    async def reply(cls, chat_id, text):
+        replies.append((chat_id, text))
+    class FakeDigest:
+        @classmethod
+        def build(cls):
+            return "FAKE-LIVE-DIGEST"
+    monkeypatch.setattr(bot.TelegramCommandController, "_authorized", classmethod(lambda cls, msg: True))
+    monkeypatch.setattr(bot.TelegramCommandController, "_reply", classmethod(reply))
+    monkeypatch.setattr(bot, "_V702R28TelegramDigest", FakeDigest)
+    with patch.dict(bot.FINAL_CANONICAL_RUNTIME, {
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+    }, clear=False):
+        asyncio.run(bot.TelegramCommandController._handle(None, {"text": "/status", "chat": {"id": 123}}))
+    assert len(replies) == 1
+    assert replies[0][0] == 123
+    assert "A80 READ-ONLY STATUS" in replies[0][1]
+    assert "FAKE-LIVE-DIGEST" in replies[0][1]
+    assert "MONITOR_ONLY_NO_NEW_BUYS" in replies[0][1]
+
+
+def test_a80_telegram_bootstrap_fails_closed_when_webhook_clear_fails(monkeypatch):
+    calls = []
+    async def fake_api(cls, method, payload):
+        calls.append(method)
+        if method == "getMe":
+            return {"ok": True, "result": {"id": 7, "username": "test_bot"}}
+        if method == "deleteWebhook":
+            return None
+        raise AssertionError(method)
+    async def fake_send(cls, text):
+        raise AssertionError("startup message must not send before webhook clear")
+    monkeypatch.setattr(bot.TelegramCommandController, "_call_api", classmethod(fake_api))
+    monkeypatch.setattr(bot.TelegramDispatcher, "_send_one", classmethod(fake_send))
+    monkeypatch.setitem(bot.ENV, "TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setitem(bot.ENV, "TELEGRAM_CHAT", "123")
+    monkeypatch.setattr(bot.TelegramCommandController, "_bootstrapped", False, raising=False)
+    result = asyncio.run(bot.TelegramCommandController.bootstrap())
+    assert result is False
+    assert calls == ["getMe", "deleteWebhook"]
+    assert bot.STATS.get("v649_telegram_bootstrap_state") == "WEBHOOK_CLEAR_FAILED_POLLING_BLOCKED"
+    assert bot.TelegramCommandController._bootstrapped is False
+
+
+def test_a80_telegram_bootstrap_keeps_inbound_polling_when_startup_send_fails(monkeypatch):
+    calls = []
+    async def fake_api(cls, method, payload):
+        calls.append(method)
+        return {"ok": True, "result": ({"id": 7, "username": "test_bot"} if method == "getMe" else True)}
+    async def fake_send(cls, text):
+        return False, False
+    monkeypatch.setattr(bot.TelegramCommandController, "_call_api", classmethod(fake_api))
+    monkeypatch.setattr(bot.TelegramDispatcher, "_send_one", classmethod(fake_send))
+    monkeypatch.setitem(bot.ENV, "TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setitem(bot.ENV, "TELEGRAM_CHAT", "123")
+    monkeypatch.setattr(bot.TelegramCommandController, "_bootstrapped", False, raising=False)
+    result = asyncio.run(bot.TelegramCommandController.bootstrap())
+    assert result is True
+    assert calls == ["getMe", "deleteWebhook"]
+    assert bot.STATS.get("v649_telegram_bootstrap_state") == "VERIFIED_READY_OUTBOUND_DEGRADED"
+    assert bot.STATS.get("v649_telegram_startup_send_ok") is False
+    assert bot.TelegramCommandController._bootstrapped is True
+
+
+def test_a80_wide_research_universe_uses_quote_volume_fallback_and_keeps_core_floor():
+    markets = {
+        "CORE/USDT": {"quote": "USDT", "spot": True, "active": True},
+        "MID/USDT": {"quote": "USDT", "spot": True, "active": True},
+        "LOW/USDT": {"quote": "USDT", "spot": True, "active": True},
+        "USDC/USDT": {"quote": "USDT", "spot": True, "active": True},
+        "PERP/USDT": {"quote": "USDT", "spot": False, "active": True},
+        "BAD/USDT": {"quote": "USDT", "spot": True, "active": True},
+    }
+    tickers = {
+        "CORE/USDT": {"quoteVolume": 4_000_000, "last": 1.0},
+        "MID/USDT": {"quoteVolume": 750_000, "last": 2.0},
+        "LOW/USDT": {"baseVolume": 100_000, "last": 3.0},
+        "USDC/USDT": {"quoteVolume": 80_000_000, "last": 1.0},
+        "PERP/USDT": {"quoteVolume": 30_000_000, "last": 1.0},
+        "BAD/USDT": {"quoteVolume": 900_000, "last": 1.0},
+    }
+    result = bot._v702_a80_build_research_universe(
+        ["CORE/USDT"], tickers, markets, max_symbols=500,
+        min_quote_volume=250_000, forbidden_fn=lambda symbol: symbol == "BAD/USDT",
+    )
+    assert "CORE/USDT" in result
+    assert "MID/USDT" in result
+    assert "LOW/USDT" in result  # baseVolume * last fallback = 300k
+    assert "USDC/USDT" not in result
+    assert "PERP/USDT" not in result
+    assert "BAD/USDT" not in result
+    assert float(bot.CONFIG["LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME"]) >= 3_000_000.0
+
+
+def test_a80_monitor_only_canonical_opportunity_alerts_are_not_suppressed_by_full_live_default():
+    with patch.dict(bot.CONFIG, {
+        "TELEGRAM_ENABLED": True,
+        "TELEGRAM_OPPORTUNITY_ALERTS_ENABLE": True,
+        "TELEGRAM_OPPORTUNITY_REQUIRE_FULL_LIVE": False,
+    }, clear=False):
+        assert bot.OpportunityTelegramNotifier._runtime_allowed() is True
+
+
+def test_a80_release_contract_passes_and_preserves_monitor_only():
+    result = bot.STATS.get("v702_a80_self_test", {})
+    assert result.get("pass") is True, result.get("failed")
+    assert bot.FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
+    assert bot.OpportunityHunter.execution_authority is False
+    assert bot.FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False
+    assert bot.FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False
+
+
+def test_a80_supplement_pool_uses_same_venue_quote_volume_fallback():
+    tickers = {
+        "VENUE/USDT": {"last": 2.0, "info": {"volValue": "650000"}},
+        "BASE/USDT": {"last": 3.0, "baseVolume": 100_000},
+    }
+    pool = bot._v702_a79_supplement_pool(
+        ["VENUE/USDT", "BASE/USDT"], tickers, already_scanned=(),
+        min_quote_volume=250_000, forbidden_fn=lambda symbol: False,
+    )
+    assert {row["symbol"] for row in pool} == {"VENUE/USDT", "BASE/USDT"}
+    assert {round(row["quote_volume"]) for row in pool} == {650_000, 300_000}
+
+
+def test_a80_supplement_selector_scales_to_32_symbols_without_bypassing_liquidity():
+    symbols = [f"C{i:03d}/USDT" for i in range(40)]
+    tickers = {symbol: {"quoteVolume": 400_000 + i, "last": 1.0, "percentage": 1.0}
+               for i, symbol in enumerate(symbols)}
+    selected = bot._v702_a79_select_supplemental_symbols(
+        symbols, tickers, already_scanned=(), max_symbols=32,
+        min_quote_volume=250_000, offset=0, forbidden_fn=lambda symbol: False,
+    )
+    assert len(selected) == 32
+    assert len(set(selected)) == 32
+    assert set(selected).issubset(set(symbols))
+
+
+
+def test_a80_status_keyboard_text_alias_is_read_only_in_monitor_only(monkeypatch):
+    replies = []
+    async def reply(cls, chat_id, text):
+        replies.append((chat_id, text))
+    class FakeDigest:
+        @classmethod
+        def build(cls):
+            return "FAKE-STATUS-ALIAS-DIGEST"
+    monkeypatch.setattr(bot.TelegramCommandController, "_authorized", classmethod(lambda cls, msg: True))
+    monkeypatch.setattr(bot.TelegramCommandController, "_reply", classmethod(reply))
+    monkeypatch.setattr(bot, "_V702R28TelegramDigest", FakeDigest)
+    with patch.dict(bot.FINAL_CANONICAL_RUNTIME, {
+        "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+        "production_decision": "NO_GO_UNATTENDED_LIVE",
+    }, clear=False):
+        asyncio.run(bot.TelegramCommandController._handle(None, {"text": "Status", "chat": {"id": 321}}))
+    assert len(replies) == 1
+    assert replies[0][0] == 321
+    assert "A80 READ-ONLY STATUS" in replies[0][1]
+    assert "FAKE-STATUS-ALIAS-DIGEST" in replies[0][1]
+

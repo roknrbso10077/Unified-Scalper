@@ -1013,7 +1013,7 @@ CONFIG: Dict[str, Any] = {
     "TELEGRAM_OPPORTUNITY_BLOCKED_ALERT_ENABLE": True,
     "TELEGRAM_OPPORTUNITY_BLOCKED_DEDUP_SEC": 300,
     "TELEGRAM_OPPORTUNITY_MAX_REASONS": 6,
-    "TELEGRAM_OPPORTUNITY_REQUIRE_FULL_LIVE": True,
+    "TELEGRAM_OPPORTUNITY_REQUIRE_FULL_LIVE": False,
     # Optional public/deep Telegram link included in each opportunity.
     # Priority: explicit URL -> public username -> @chat username -> bot deep-link.
     "TELEGRAM_OPPORTUNITY_PUBLIC_URL": os.environ.get("TELEGRAM_OPPORTUNITY_PUBLIC_URL", "").strip(),
@@ -1312,7 +1312,9 @@ def _apply_loaded_environment_config() -> None:
                                ("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", "V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO"),
                                ("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", "V702_A79_SWING_RETEST_MIN_VOLUME_RATIO"),
                                ("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", "V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT"),
-                               ("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", "V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT")):
+                               ("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", "V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT"),
+                               ("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", "V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS"),
+                               ("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", "V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT")):
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
@@ -12919,11 +12921,15 @@ class TelegramDispatcher:
 
     @classmethod
     async def _send_one(cls, msg: str) -> Tuple[bool, bool]:
-        """Return (ok, permanent_failure)."""
-        if not _AIOHTTP_OK:
+        """Return (ok, permanent_failure); persist truthful delivery diagnostics."""
+        if not _AIOHTTP_OK or not ENV.get("TELEGRAM_TOKEN") or not ENV.get("TELEGRAM_CHAT"):
+            STATS["telegram_last_send_ack"] = False
+            STATS["telegram_last_send_error"] = "AIOHTTP_UNAVAILABLE_OR_MISSING_CREDENTIALS"
             return False, False
         sess = await cls._ensure_session()
         if sess is None:
+            STATS["telegram_last_send_ack"] = False
+            STATS["telegram_last_send_error"] = "HTTP_SESSION_UNAVAILABLE"
             return False, False
         url = f"https://api.telegram.org/bot{ENV['TELEGRAM_TOKEN']}/sendMessage"
         payload = {"chat_id": ENV["TELEGRAM_CHAT"], "text": msg,
@@ -12939,6 +12945,9 @@ class TelegramDispatcher:
                     try:
                         api_obj = json.loads(body) if body else {}
                         if isinstance(api_obj, dict) and api_obj.get("ok") is False:
+                            STATS["telegram_last_send_ack"] = False
+                            STATS["telegram_last_send_error"] = str(api_obj.get("description") or "API_NOT_OK")[:180]
+                            STATS["telegram_last_send_ts"] = float(WALL_NOW())
                             logger.warning("[Telegram] HTTP 200 API-not-ok: %s", body[:240])
                             return False, True
                     except Exception:
@@ -12946,6 +12955,10 @@ class TelegramDispatcher:
                         # cannot be parsed. V696 performs the same defensive check
                         # with explicit delivery telemetry.
                         pass
+                    STATS["telegram_last_send_ack"] = True
+                    STATS["telegram_last_send_error"] = None
+                    STATS["telegram_last_send_ts"] = float(WALL_NOW())
+                    STATS["telegram_send_ack_count"] = int(STATS.get("telegram_send_ack_count", 0) or 0) + 1
                     return True, False
                 # 4xx are permanent for the current payload; do not loop forever.
                 if 400 <= r.status < 500:
@@ -12953,11 +12966,21 @@ class TelegramDispatcher:
                         body = await r.text()
                     except Exception:
                         body = ""
+                    STATS["telegram_last_send_ack"] = False
+                    STATS["telegram_last_send_error"] = f"HTTP_{int(r.status)}:{body[:160]}"
+                    STATS["telegram_last_send_ts"] = float(WALL_NOW())
                     logger.warning(f"[Telegram] permanent HTTP {r.status}: {body[:200]}")
                     return False, True
+                STATS["telegram_last_send_ack"] = False
+                STATS["telegram_last_send_error"] = f"HTTP_{int(r.status)}"
+                STATS["telegram_last_send_ts"] = float(WALL_NOW())
+                logger.warning("[Telegram] transient HTTP %s during sendMessage", r.status)
                 return False, False
         except Exception as e:
-            logger.debug(f"[Telegram] send suppressed: {e}")
+            STATS["telegram_last_send_ack"] = False
+            STATS["telegram_last_send_error"] = f"{type(e).__name__}:{str(e)[:160]}"
+            STATS["telegram_last_send_ts"] = float(WALL_NOW())
+            logger.warning("[Telegram] sendMessage network failure: %s: %s", type(e).__name__, str(e)[:180])
             return False, False
 
     @classmethod
@@ -13052,16 +13075,29 @@ class TelegramCommandController:
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=35),
             ) as r:
+                STATS["v561_telegram_last_api_method"] = str(method)
+                STATS["v561_telegram_last_api_http_status"] = int(r.status)
+                STATS["v561_telegram_last_api_ts"] = float(WALL_NOW())
                 if r.status != 200:
                     body = await r.text()
+                    STATS["v561_telegram_last_api_error"] = f"HTTP_{int(r.status)}:{body[:160]}"
                     logger.warning(
                         f"[V561-TG] API {method} HTTP {r.status}: {body[:200]}"
                     )
                     return None
                 data = await r.json(content_type=None)
-                return data if isinstance(data, dict) else None
+                if not isinstance(data, dict) or data.get("ok") is not True:
+                    STATS["v561_telegram_last_api_error"] = f"API_NOT_OK:{str((data or {}).get('description', 'invalid_response'))[:160]}"
+                    logger.warning("[V561-TG] API %s returned non-ok response", method)
+                    return None
+                STATS["v561_telegram_last_api_error"] = None
+                return data
         except Exception as exc:
-            logger.debug(f"[V561-TG] API {method} suppressed: {exc}")
+            STATS["v561_telegram_last_api_method"] = str(method)
+            STATS["v561_telegram_last_api_http_status"] = None
+            STATS["v561_telegram_last_api_error"] = f"{type(exc).__name__}:{str(exc)[:160]}"
+            STATS["v561_telegram_last_api_ts"] = float(WALL_NOW())
+            logger.warning("[V561-TG] API %s network/request failure: %s: %s", method, type(exc).__name__, str(exc)[:180])
             return None
 
     @classmethod
@@ -13259,6 +13295,9 @@ class TelegramCommandController:
                 "/cancel_all ENA — cancel ALL open orders for ENA/USDT (dangerous).\n"
                 "/orders [ENA] — show open orders.\n"
                 "/sl ENA — show active software/native SL state.\n"
+                "/status — read-only runtime status (same as /digest).\n"
+                "/digest — detailed scan and strategy funnel.\n"
+                "/opportunities — active read-only Hunter observations.\n"
                 "/ping — control channel test."
             )
             return
@@ -13342,45 +13381,109 @@ class TelegramCommandController:
     @classmethod
     async def run_forever(cls, exchange):
         if not bool(CONFIG.get("V561_TELEGRAM_COMMANDS_ENABLE", True)):
+            STATS["v561_telegram_poll_state"] = "DISABLED_BY_CONFIG"
             return
         if not ENV.get("TELEGRAM_TOKEN") or not ENV.get("TELEGRAM_CHAT"):
+            STATS["v561_telegram_poll_state"] = "DISABLED_MISSING_CREDENTIALS"
             logger.warning("[V561-TG] command control disabled: Telegram credentials missing")
+            return
+        if cls._running:
+            logger.warning("[V561-TG] duplicate in-process polling task refused")
+            STATS["v561_telegram_duplicate_poll_refused"] = int(STATS.get("v561_telegram_duplicate_poll_refused", 0) or 0) + 1
             return
 
         cls._running = True
-        logger.info("[V561-TG] authenticated Telegram command control ACTIVE")
-        while cls._running and (_SHUTDOWN is None or not _SHUTDOWN.is_set()):
-            try:
-                payload = {
-                    "timeout": 25,
-                    "offset": cls._offset,
-                    "allowed_updates": ["message"],
-                }
-                data = await cls._call_api("getUpdates", payload)
-                if not data or not data.get("ok"):
-                    await asyncio.sleep(float(CONFIG.get("V561_TELEGRAM_POLL_SEC", 1.0)))
-                    continue
-
-                updates = data.get("result") or []
-                for upd in updates:
+        active_announced = False
+        bootstrap_delay = 5.0
+        poll_delay = max(1.0, float(CONFIG.get("V561_TELEGRAM_POLL_SEC", 1.0)))
+        STATS["v561_telegram_poll_state"] = "STARTING"
+        try:
+            while cls._running and (_SHUTDOWN is None or not _SHUTDOWN.is_set()):
+                # Bootstrap is a hard prerequisite for polling. A failed getMe,
+                # deleteWebhook or startup send must never be labelled ACTIVE.
+                if not bool(getattr(cls, "_bootstrapped", False)):
+                    STATS["v561_telegram_poll_state"] = "WAITING_FOR_VERIFIED_BOOTSTRAP"
                     try:
-                        uid = int(upd.get("update_id"))
-                        cls._offset = uid + 1
-                        msg = upd.get("message") or {}
-                        if cls._authorized(msg):
-                            await cls._handle(exchange, msg)
+                        ready = await cls.bootstrap()
                     except Exception as exc:
-                        logger.error(f"[V561-TG] update handling error: {exc}")
-            except Exception as exc:
-                STATS["v561_telegram_command_errors"] = int(
-                    STATS.get("v561_telegram_command_errors", 0) or 0
-                ) + 1
-                logger.warning(f"[V561-TG] polling error: {exc}")
-                await asyncio.sleep(
-                    max(1.0, float(CONFIG.get("V561_TELEGRAM_POLL_SEC", 1.0)))
-                )
+                        ready = False
+                        logger.warning("[V561-TG] bootstrap retry exception: %s: %s", type(exc).__name__, str(exc)[:180])
+                    if not ready:
+                        STATS["v561_telegram_bootstrap_retry_count"] = int(STATS.get("v561_telegram_bootstrap_retry_count", 0) or 0) + 1
+                        STATS["v561_telegram_poll_state"] = "BOOTSTRAP_FAILED_RETRYING"
+                        await asyncio.sleep(bootstrap_delay)
+                        bootstrap_delay = min(60.0, bootstrap_delay * 2.0)
+                        continue
+                    bootstrap_delay = 5.0
+                    STATS["v561_telegram_poll_state"] = "BOOTSTRAP_VERIFIED_WAITING_FIRST_POLL"
+                    logger.info("[V561-TG] Telegram bootstrap verified; waiting for first getUpdates acknowledgement; startup_send_ack=%s",
+                                bool(STATS.get("v649_telegram_startup_send_ok", False)))
 
-        logger.info("[V561-TG] authenticated Telegram command control STOPPED")
+                try:
+                    payload = {
+                        "timeout": 25,
+                        "offset": cls._offset,
+                        "allowed_updates": ["message", "callback_query"],
+                    }
+                    data = await cls._call_api("getUpdates", payload)
+                    if not data or data.get("ok") is not True:
+                        http_status = STATS.get("v561_telegram_last_api_http_status")
+                        last_error = str(STATS.get("v561_telegram_last_api_error") or "poll_request_failed")
+                        if int(http_status or 0) == 409 or "409" in last_error:
+                            STATS["v561_telegram_poll_state"] = "CONFLICT_409_ANOTHER_WEBHOOK_OR_POLLER"
+                            STATS["v561_telegram_poll_conflicts"] = int(STATS.get("v561_telegram_poll_conflicts", 0) or 0) + 1
+                            logger.error("[V561-TG] getUpdates HTTP 409 conflict; ensure only one Railway poller and no active webhook. Polling suspended pending verified bootstrap.")
+                            cls._bootstrapped = False
+                            active_announced = False
+                            cls._running = False
+                            break
+                        STATS["v561_telegram_poll_state"] = "API_UNAVAILABLE_RETRYING"
+                        STATS["v561_telegram_poll_failures"] = int(STATS.get("v561_telegram_poll_failures", 0) or 0) + 1
+                        await asyncio.sleep(poll_delay)
+                        continue
+
+                    STATS["v561_telegram_poll_state"] = "POLLING_OK"
+                    STATS["v561_telegram_last_poll_ok_ts"] = float(WALL_NOW())
+                    STATS["v561_telegram_poll_success_count"] = int(STATS.get("v561_telegram_poll_success_count", 0) or 0) + 1
+                    if not active_announced:
+                        logger.info("[V561-TG] Telegram command control ACTIVE; getMe, webhook clear and first getUpdates response verified; startup_send_ack=%s",
+                                    bool(STATS.get("v649_telegram_startup_send_ok", False)))
+                        active_announced = True
+                    updates = data.get("result") or []
+                    for upd in updates:
+                        try:
+                            uid = int(upd.get("update_id"))
+                            cls._offset = uid + 1
+                            callback = upd.get("callback_query") if isinstance(upd, dict) else None
+                            if isinstance(callback, dict):
+                                callback_message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+                                msg = dict(callback_message)
+                                msg["from"] = callback.get("from") or {}
+                                msg["text"] = str(callback.get("data") or "")
+                                if cls._authorized(msg):
+                                    await cls._handle(exchange, msg)
+                                    if callback.get("id"):
+                                        await cls._call_api("answerCallbackQuery", {"callback_query_id": str(callback.get("id"))})
+                            else:
+                                msg = upd.get("message") or {}
+                                if cls._authorized(msg):
+                                    await cls._handle(exchange, msg)
+                        except Exception as exc:
+                            logger.error("[V561-TG] update handling error: %s: %s", type(exc).__name__, str(exc)[:180])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    STATS["v561_telegram_command_errors"] = int(STATS.get("v561_telegram_command_errors", 0) or 0) + 1
+                    STATS["v561_telegram_poll_state"] = "POLL_LOOP_ERROR_RETRYING"
+                    logger.warning("[V561-TG] polling error: %s: %s", type(exc).__name__, str(exc)[:180])
+                    await asyncio.sleep(poll_delay)
+        finally:
+            cls._running = False
+            if str(STATS.get("v561_telegram_poll_state", "")) != "CONFLICT_409_ANOTHER_WEBHOOK_OR_POLLER":
+                STATS["v561_telegram_poll_state"] = "STOPPED"
+                logger.info("[V561-TG] Telegram command polling STOPPED")
+            else:
+                logger.error("[V561-TG] polling remains suspended: resolve the duplicate poller/webhook conflict, then restart one replica")
 
 
 
@@ -23930,50 +24033,74 @@ async def _v649_tg_bootstrap(cls) -> bool:
     if bool(getattr(cls, "_bootstrapped", False)):
         return True
     if not bool(CONFIG.get("V649_TELEGRAM_BOOTSTRAP_ENABLE", True)):
+        STATS["v649_telegram_bootstrap_state"] = "DISABLED_BY_CONFIG"
         return False
     if not ENV.get("TELEGRAM_TOKEN") or not ENV.get("TELEGRAM_CHAT"):
         STATS["v649_telegram_bootstrap_failed"] = int(STATS.get("v649_telegram_bootstrap_failed", 0) or 0) + 1
+        STATS["v649_telegram_bootstrap_state"] = "MISSING_CREDENTIALS"
         logger.warning("[V649-TG] bootstrap skipped: Telegram credentials missing")
         return False
     try:
-        wh = await cls._call_api("deleteWebhook", {"drop_pending_updates": False})
-        if wh and bool(wh.get("ok")):
-            logger.info("[V649-TG] webhook cleared; polling safe")
-        else:
-            logger.warning("[V649-TG] webhook clear failed; polling may report HTTP 409")
+        STATS["v649_telegram_bootstrap_state"] = "CHECKING_GETME"
         me = await cls._call_api("getMe", {})
-        if not me or not isinstance(me.get("result"), dict):
+        if not me or me.get("ok") is not True or not isinstance(me.get("result"), dict):
             STATS["v649_telegram_bootstrap_failed"] = int(STATS.get("v649_telegram_bootstrap_failed", 0) or 0) + 1
-            logger.warning("[V649-TG] getMe failed; Telegram API unreachable")
+            STATS["v649_telegram_bootstrap_state"] = "GETME_FAILED"
+            logger.warning("[V649-TG] getMe verification failed; command polling will not start")
             return False
         bot = me.get("result") or {}
         _bot_username = str(bot.get("username") or "").strip().lstrip("@")
         if _bot_username and not str(CONFIG.get("TELEGRAM_BOT_USERNAME", "") or "").strip():
             CONFIG["TELEGRAM_BOT_USERNAME"] = _bot_username
             STATS["v657_telegram_bot_username_autocached"] = True
-        logger.info("[V649-TG] authenticated username=@%s id=%s", bot.get("username", "?"), bot.get("id", "?"))
+        STATS["v649_telegram_getme_ok"] = True
+        STATS["v649_telegram_bootstrap_state"] = "GETME_VERIFIED_CLEARING_WEBHOOK"
+        logger.info("[V649-TG] getMe verified username=@%s id=%s", bot.get("username", "?"), bot.get("id", "?"))
+
+        wh = await cls._call_api("deleteWebhook", {"drop_pending_updates": False})
+        if not wh or wh.get("ok") is not True:
+            STATS["v649_telegram_webhook_clear_ok"] = False
+            STATS["v649_telegram_bootstrap_failed"] = int(STATS.get("v649_telegram_bootstrap_failed", 0) or 0) + 1
+            STATS["v649_telegram_bootstrap_state"] = "WEBHOOK_CLEAR_FAILED_POLLING_BLOCKED"
+            logger.warning("[V649-TG] deleteWebhook failed; polling is blocked to avoid HTTP 409")
+            return False
+        STATS["v649_telegram_webhook_clear_ok"] = True
+        logger.info("[V649-TG] webhook cleared successfully; polling may start after send ACK")
+
         _post_audit_patch_revision = str(
             (globals().get("FINAL_CANONICAL_RUNTIME") or {}).get("active_post_audit_patch_revision_current")
             or (globals().get("FINAL_CANONICAL_RUNTIME") or {}).get("active_post_audit_patch_revision", "UNREPORTED")
         )
+        # Inbound command polling and outbound message delivery are separate
+        # capabilities. A failed startup send must not disable getUpdates; doing
+        # so made /status unreachable during transient sendMessage outages.
+        # We still record the startup ACK truthfully and let the durable dispatcher
+        # retry user-facing replies independently.
+        cls._bootstrapped = True
+        STATS["v649_telegram_bootstrap_state"] = "VERIFIED_READY"
+        STATS["v649_telegram_bootstrap_ok_ts"] = float(WALL_NOW())
         ok, _perm = await TelegramDispatcher._send_one(
             f"<b>Unified Scalper {SCRIPT_VERSION}</b>\n"
             f"Package: {V702_PACKAGE_AUDIT_REVISION}\n"
             f"Post-audit patch: {_post_audit_patch_revision}\n"
             f"Entry policy: {STATS.get('v702_runtime_entry_policy', 'MONITOR_ONLY_NO_NEW_BUYS')}\n"
-            "Telegram channel ONLINE — polling/control ready."
+            "Telegram command polling verified; startup outbound test follows separately."
         )
         STATS["v649_telegram_startup_send_ok"] = bool(ok)
         if not ok:
-            STATS["v649_telegram_bootstrap_failed"] = int(STATS.get("v649_telegram_bootstrap_failed", 0) or 0) + 1
-            logger.warning("[V649-TG] startup probe send failed")
-            return False
-        cls._bootstrapped = True
+            STATS["v649_telegram_bootstrap_state"] = "VERIFIED_READY_OUTBOUND_DEGRADED"
+            STATS["v649_telegram_outbound_degraded"] = True
+            logger.warning("[V649-TG] inbound bootstrap verified; startup send failed, outbound delivery remains degraded/retrying")
+        else:
+            STATS["v649_telegram_outbound_degraded"] = False
+            logger.info("[V649-TG] startup outbound send ACK verified")
         return True
     except Exception as exc:
         STATS["v649_telegram_bootstrap_exception"] = int(STATS.get("v649_telegram_bootstrap_exception", 0) or 0) + 1
-        logger.error("[V649-TG] bootstrap exception: %s: %s", type(exc).__name__, exc)
+        STATS["v649_telegram_bootstrap_state"] = f"EXCEPTION:{type(exc).__name__}"
+        logger.error("[V649-TG] bootstrap exception: %s: %s", type(exc).__name__, str(exc)[:180])
         return False
+
 
 TelegramCommandController.bootstrap = classmethod(_v649_tg_bootstrap)
 
@@ -27391,11 +27518,23 @@ async def run_bot(universe: List[str]):
                         and not bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
                         and isinstance(scan_universe, (list, tuple)) and scan_universe):
                     _a79_tickers = _v679_ticker_snapshot if isinstance(_v679_ticker_snapshot, dict) else {}
-                    if len(_a79_tickers) < len(scan_universe):
-                        try:
+                    try:
+                        # Force the research lane to look beyond the >=3M core universe.
+                        # The shared helper returns individually fresh ticker rows; the
+                        # canonical scan and its admission thresholds remain untouched.
+                        _a80_all_tickers = await _v679_get_ticker_snapshot(exchange, None, force=False)
+                        if isinstance(_a80_all_tickers, dict) and _a80_all_tickers:
+                            _a79_tickers = _a80_all_tickers
+                        elif len(_a79_tickers) < len(scan_universe):
                             _a79_tickers = await _v679_get_ticker_snapshot(exchange, list(scan_universe), force=False) or _a79_tickers
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
+                    _a80_research_universe = _v702_a80_build_research_universe(
+                        list(scan_universe), _a79_tickers, getattr(exchange, "markets", {}) or {},
+                        max_symbols=max(1, min(500, int(CONFIG.get("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", 500)))),
+                        min_quote_volume=max(100_000.0, float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", 250_000.0))),
+                        forbidden_fn=globals().get("_v587_is_forbidden_coin"),
+                    )
                     _a79_active_rows = await asyncio.to_thread(
                         OpportunityHunter._active_rows,
                         max(100, min(3000, int(CONFIG.get("V702_OPPORTUNITY_HUNTER_MAX_ACTIVE", 1200))))
@@ -27407,36 +27546,38 @@ async def run_bot(universe: List[str]):
                     ]
                     _a79_offset = int(getattr(run_bot, "_v702_a79_supplement_offset", 0) or 0)
                     _a79_selected = _v702_a79_select_supplemental_symbols(
-                        list(scan_universe), _a79_tickers, set(market_data_map),
-                        max_symbols=max(0, min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8)))),
-                        min_quote_volume=max(2_000_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0))),
+                        list(_a80_research_universe), _a79_tickers, set(market_data_map),
+                        max_symbols=max(16, min(32, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)))),
+                        min_quote_volume=250_000.0,
                         offset=_a79_offset, priority_symbols=_a79_active_priority,
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
                     _a79_pool_count = _v702_a79_supplement_pool_size(
-                        list(scan_universe), _a79_tickers, set(market_data_map),
-                        min_quote_volume=max(2_000_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0))),
+                        list(_a80_research_universe), _a79_tickers, set(market_data_map),
+                        min_quote_volume=250_000.0,
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
                     if _a79_pool_count:
                         setattr(run_bot, "_v702_a79_supplement_offset", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
-                    _a79_supplement_summary.update({"eligible": int(_a79_pool_count), "attempted": int(len(_a79_selected)), "symbols": list(_a79_selected)})
+                    _a79_supplement_summary.update({"universe": int(len(_a80_research_universe)), "core_universe": int(len(scan_universe)),
+                                                     "eligible": int(_a79_pool_count), "attempted": int(len(_a79_selected)),
+                                                     "symbols": list(_a79_selected)})
                     if _a79_selected:
                         _a79_extra, _a79_fetch_diag = await _v702_a79_fetch_supplemental_snapshots(
                             exchange, _a79_selected, _a79_tickers,
                             btc_frames={"df_btc_5m": shared_btc_5m, "df_btc_15m": shared_btc_15m,
                                         "df_btc_1h": shared_btc_1h, "df_btc_4h": shared_btc_4h},
-                            concurrency=max(1, min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_CONCURRENCY", 8)))),
-                            cycle_budget_sec=max(3.0, min(11.0, float(CONFIG.get("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 11.0)))),
-                            read_timeout_sec=4.0,
+                            concurrency=16,
+                            cycle_budget_sec=30.0,
+                            read_timeout_sec=5.0,
                         )
                         _a79_research_market_data_map.update(_a79_extra)
                         _a79_supplement_summary.update(_a79_fetch_diag)
                         _a79_supplement_summary["ok"] = int(len(_a79_extra))
                         _a79_supplement_summary["failed"] = max(0, int(len(_a79_selected)) - len(_a79_extra))
                         logger.info(
-                            "[A79-RESEARCH-COVERAGE] universe=%d base=%d eligible=%d attempted=%d ok=%d failed=%d offset=%d symbols=%s canonical_map_unchanged=1",
-                            int(len(scan_universe)), int(len(market_data_map)), int(_a79_pool_count), int(len(_a79_selected)),
+                            "[A80-RESEARCH-COVERAGE] research_universe=%d core_universe=%d base=%d eligible=%d attempted=%d ok=%d failed=%d offset=%d symbols=%s canonical_map_unchanged=1",
+                            int(len(_a80_research_universe)), int(len(scan_universe)), int(len(market_data_map)), int(_a79_pool_count), int(len(_a79_selected)),
                             int(len(_a79_extra)), max(0, int(len(_a79_selected)) - len(_a79_extra)), int(_a79_offset),
                             ",".join(_a79_selected[:8]),
                         )
@@ -27463,7 +27604,7 @@ async def run_bot(universe: List[str]):
                         and bool(CONFIG.get("V702_INTRADAY_SHADOW_ENABLE", True))
                         and not bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
                         and isinstance(market_data_map, dict) and market_data_map):
-                    _shadow_min_qv = max(0.0, float(CONFIG.get("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 1_000_000.0)))
+                    _shadow_min_qv = max(250_000.0, float(CONFIG.get("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 500_000.0)))
                     _shadow_core_floor = max(_shadow_min_qv, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
                     _shadow_pool_core = []
                     _shadow_pool_micro = []
@@ -27489,7 +27630,7 @@ async def run_bot(universe: List[str]):
                             continue
                     _shadow_pool_core.sort(key=lambda x: x[1], reverse=True)
                     _shadow_pool_micro.sort(key=lambda x: x[1], reverse=True)
-                    _shadow_batch = max(2, min(40, int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 24))))
+                    _shadow_batch = max(2, min(40, int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 32))))
                     # Compute RS leaders first; the fair selector admits them only
                     # into core slots so they cannot displace the micro-liquidity cohort.
                     try:
@@ -90653,8 +90794,8 @@ CONFIG.setdefault("V702_CF_SHADOW_HTF_REJECT_OBSERVE_ENABLE", True)
 # are observational only; the new strategies are not registered in the live MSE.
 CONFIG.setdefault("V702_INTRADAY_SHADOW_ENABLE", True)
 CONFIG["V702_INTRADAY_SHADOW_LIVE_ENABLE"] = False  # hard invariant: this module cannot enable live orders
-CONFIG.setdefault("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 1_000_000.0)
-CONFIG.setdefault("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 24)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 500_000.0)
+CONFIG.setdefault("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 32)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE", True)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_PER_BATCH", 3)
 CONFIG.setdefault("V702_INTRADAY_SHADOW_TELEGRAM_MAX_AGE_SEC", 180.0)
@@ -105017,10 +105158,11 @@ async def _v702_a75_tg_handle(cls, exchange, message):
         return await _A75_PREV_TG_HANDLE(cls, exchange, message)
     parts = str((message or {}).get("text") or "").strip().split()
     command = parts[0].split("@", 1)[0].lower() if parts else ""
-    readonly = {"/help", "/commands", "/ping", "/digest", "/opportunities"}
+    command_key = command.lstrip("/")
+    readonly = {"/help", "/commands", "/ping", "/status", "/digest", "/opportunities", "status", "help", "commands", "ping", "digest", "opportunities"}
     _monitor_only_cmd = (str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy", CONFIG.get("LIVE_ENTRY_POLICY", ""))).upper() == "MONITOR_ONLY_NO_NEW_BUYS"
                          or str(FINAL_CANONICAL_RUNTIME.get("production_decision", "")).upper() == "NO_GO_UNATTENDED_LIVE")
-    if (_monitor_only_cmd or exchange is None) and command not in readonly:
+    if (_monitor_only_cmd or exchange is None) and command not in readonly and command_key not in readonly:
         chat_id = ((message or {}).get("chat") or {}).get("id")
         await cls._reply(chat_id, "MONITOR_ONLY: this command requires a verified private account client. Read-only commands: /help, /ping, /digest, /opportunities.")
         STATS["v702_a75_private_commands_blocked"] = int(STATS.get("v702_a75_private_commands_blocked", 0) or 0) + 1
@@ -105046,6 +105188,40 @@ async def _v702_a75_tg_handle(cls, exchange, message):
         return
     await _A75_PREV_TG_HANDLE(cls, exchange, message)
 TelegramCommandController._handle = classmethod(_v702_a75_tg_handle)
+
+# A80: /status is a safe read-only alias for the operator digest in MONITOR_ONLY.
+_A80_PREV_TG_HANDLE = TelegramCommandController._handle.__func__
+async def _v702_a80_tg_handle(cls, exchange, message):
+    if not cls._authorized(message):
+        return await _A80_PREV_TG_HANDLE(cls, exchange, message)
+    raw_text = str((message or {}).get("text") or "").strip()
+    parts = raw_text.split()
+    command = parts[0].split("@", 1)[0].lower() if parts else ""
+    normalized_text = " ".join(raw_text.casefold().split())
+    status_aliases = {"/status", "status", "📊 status", "📊status", "الحالة", "الحاله"}
+    if command == "/status" or command == "status" or normalized_text in status_aliases:
+        chat_id = ((message or {}).get("chat") or {}).get("id")
+        tg_state = str(STATS.get("v561_telegram_poll_state", "UNKNOWN"))
+        boot_state = str(STATS.get("v649_telegram_bootstrap_state", "UNKNOWN"))
+        last_api_error = str(STATS.get("v561_telegram_last_api_error") or "none")[:120]
+        send_state = "ACK" if STATS.get("v649_telegram_startup_send_ok") else "NOT_ACKED_OR_NOT_TESTED"
+        last_poll = STATS.get("v561_telegram_last_poll_ok_ts")
+        header = ("<b>A80 READ-ONLY STATUS</b>\n"
+                  f"Telegram poll={tg_state} bootstrap={boot_state} startup_send={send_state}\n"
+                  f"Last API method={STATS.get('v561_telegram_last_api_method', 'none')} HTTP={STATS.get('v561_telegram_last_api_http_status', 'n/a')}\n"
+                  f"Last successful poll ts={last_poll or 'not_yet'}\n"
+                  f"Last Telegram API error={last_api_error}\n"
+                  f"Last send ACK={STATS.get('telegram_last_send_ack', 'unknown')} error={str(STATS.get('telegram_last_send_error') or 'none')[:100]}\n"
+                  f"Entry policy={FINAL_CANONICAL_RUNTIME.get('effective_entry_policy', 'MONITOR_ONLY_NO_NEW_BUYS')}\n")
+        try:
+            digest = _V702R28TelegramDigest.build() if "_V702R28TelegramDigest" in globals() else "Digest unavailable; use /ping to test the control channel."
+        except Exception as exc:
+            digest = f"Digest unavailable: {type(exc).__name__}"
+        await cls._reply(chat_id, header + str(digest)[:3100])
+        STATS["v702_a80_status_command_count"] = int(STATS.get("v702_a80_status_command_count", 0) or 0) + 1
+        return
+    await _A80_PREV_TG_HANDLE(cls, exchange, message)
+TelegramCommandController._handle = classmethod(_v702_a80_tg_handle)
 
 # Digest includes the independent Hunter funnel and daily timeframe lane coverage.
 # The existing A44 wrapper remains the canonical build callable; A75 post-processes
@@ -106018,8 +106194,8 @@ if _V699_VALIDATE_ONLY_REQUEST:
             "live_execution": False,
             "mode": "SHADOW_ONLY_NO_ORDERS",
             "strategies": ["MICRO_MOMENTUM_1M", "MICRO_SWEEP_RECLAIM_1M", "MICRO_PULLBACK_RECLAIM_1M", "VWAP_RECLAIM_RS_5M"],
-            "symbols_per_cycle_cap": int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 24)),
-            "minimum_quote_volume_usdt": float(CONFIG.get("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 1000000.0)),
+            "symbols_per_cycle_cap": int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 32)),
+            "minimum_quote_volume_usdt": float(CONFIG.get("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 500000.0)),
             "higher_timeframe_bullish_required": False,
             "btc_crash_guard_enabled": True,
             "live_gates_changed": False,
@@ -106330,11 +106506,13 @@ if _V699_VALIDATE_ONLY_REQUEST:
 # =============================================================================
 V702_A79_REVISION = "A79-FAIR-ROTATED-SWING-COVERAGE-AND-SHARED-ALL-STRATEGY-RESEARCH-2026-11-18"
 CONFIG.setdefault("V702_A79_SUPPLEMENT_ENABLE", True)
-CONFIG.setdefault("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8)
-CONFIG.setdefault("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 2_000_000.0)
-CONFIG.setdefault("V702_A79_SUPPLEMENT_CONCURRENCY", 8)
-CONFIG.setdefault("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 11.0)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 250_000.0)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_CONCURRENCY", 16)
+CONFIG.setdefault("V702_A79_SUPPLEMENT_CYCLE_BUDGET_SEC", 30.0)
 CONFIG.setdefault("V702_A79_OHLCV_LIMIT", 100)
+CONFIG.setdefault("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", 500)
+CONFIG.setdefault("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", 250_000.0)
 CONFIG.setdefault("V702_A79_MIN_SWING_CANDLES", 56)
 CONFIG.setdefault("V702_A79_MIN_MTF_CANDLES", 25)
 CONFIG.setdefault("V702_A79_SWING_EARLY_WATCH_ENABLE", True)
@@ -106346,6 +106524,67 @@ CONFIG.setdefault("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", 1.10)
 CONFIG.setdefault("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", 0.20)
 CONFIG.setdefault("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", 0.75)
 
+
+
+def _v702_a80_ticker_quote_volume(ticker):
+    """Robust 24h USDT turnover; quoteVolume, baseVolume*last, then venue info."""
+    if not isinstance(ticker, dict):
+        return 0.0
+    try:
+        qv = float(ticker.get("quoteVolume") or 0.0)
+        last = float(ticker.get("last") or 0.0)
+        if math.isfinite(qv) and qv > 0.0:
+            return qv
+        base = float(ticker.get("baseVolume") or 0.0)
+        if math.isfinite(base) and base > 0.0 and math.isfinite(last) and last > 0.0:
+            return base * last
+        info = ticker.get("info") if isinstance(ticker.get("info"), dict) else {}
+        for key in ("quoteVolume", "quote_volume", "turnover", "amount", "volValue"):
+            try:
+                value = float(info.get(key) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if math.isfinite(value) and value > 0.0:
+                return value
+    except Exception:
+        return 0.0
+    return 0.0
+
+def _v702_a80_build_research_universe(core_universe, ticker_snapshot, markets, *, max_symbols=500, min_quote_volume=250_000.0, forbidden_fn=None):
+    """Wide read-only SPOT/USDT research universe; it never changes the 3M core universe."""
+    rows = {}
+    for symbol in core_universe or ():
+        token = str(symbol or "").strip().upper()
+        if token.endswith("/USDT"):
+            rows[token] = 0.0
+    if not isinstance(ticker_snapshot, dict) or not isinstance(markets, dict):
+        return list(rows)[:max(1, min(500, int(max_symbols or 500)))]
+    floor = max(100_000.0, float(min_quote_volume or 250_000.0))
+    for raw_symbol, ticker in ticker_snapshot.items():
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol.endswith("/USDT") or not isinstance(ticker, dict):
+            continue
+        market = markets.get(raw_symbol) or markets.get(symbol)
+        if not isinstance(market, dict):
+            continue
+        if str(market.get("quote") or "").upper() != "USDT" or not bool(market.get("spot", False)) or market.get("active") is False:
+            continue
+        try:
+            if callable(globals().get("_v702_a74_is_stable_symbol")) and _v702_a74_is_stable_symbol(symbol):
+                continue
+            if callable(forbidden_fn):
+                denied = forbidden_fn(symbol)
+                if bool(denied[0] if isinstance(denied, tuple) else denied):
+                    continue
+        except Exception:
+            continue
+        qv = _v702_a80_ticker_quote_volume(ticker)
+        if qv < floor:
+            continue
+        rows[symbol] = max(float(rows.get(symbol, 0.0) or 0.0), qv)
+    ordered = sorted(rows.items(), key=lambda row: (row[1], row[0] in set(map(str.upper, core_universe or ()))), reverse=True)
+    cap = max(1, min(500, int(max_symbols or 500)))
+    return [symbol for symbol, _ in ordered[:cap]]
 
 def _v702_a79_supplement_pool(universe, ticker_snapshot, already_scanned=(), *, min_quote_volume=2_000_000.0, forbidden_fn=None):
     """Return validated, fair-rotation-eligible supplemental symbols without mutating any scan map."""
@@ -106369,12 +106608,16 @@ def _v702_a79_supplement_pool(universe, ticker_snapshot, already_scanned=(), *, 
             ticker = ticker_snapshot.get(symbol)
             if not isinstance(ticker, dict):
                 continue
-            quote_volume = float(ticker.get("quoteVolume") or 0.0)
             last = float(ticker.get("last") or 0.0)
+            # Use the same exchange-aware quote-turnover fallback as the wide
+            # research-universe builder. Older pool code ignored venue fields
+            # such as volValue and could report eligible=0 despite a populated
+            # 24h spot universe.
+            quote_volume = _v702_a80_ticker_quote_volume(ticker)
             change = float(ticker.get("percentage") or 0.0)
             if not all(math.isfinite(x) for x in (quote_volume, last, change)):
                 continue
-            if quote_volume < max(2_000_000.0, float(min_quote_volume)) or last <= 0:
+            if quote_volume < max(250_000.0, float(min_quote_volume)) or last <= 0:
                 continue
             rows.append({"symbol": symbol, "quote_volume": quote_volume, "abs_change": abs(change),
                          "change_pct": change})
@@ -106399,7 +106642,7 @@ def _v702_a79_select_supplemental_symbols(universe, ticker_snapshot, already_sca
         return []
     priority = {str(x).upper() for x in priority_symbols or ()}
     rows.sort(key=lambda r: (r["quote_volume"], r["abs_change"]), reverse=True)
-    limit = min(8, max(0, int(max_symbols)))
+    limit = min(32, max(0, int(max_symbols)))
     # Existing active Swing ideas need continued outcome coverage before new
     # discovery. They occupy only the number of slots they actually require;
     # the remaining slots continue fair round-robin over the rest of the pool.
@@ -106416,12 +106659,12 @@ def _v702_a79_select_supplemental_symbols(universe, ticker_snapshot, already_sca
 
 async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snapshot, *, btc_frames=None,
                                                   concurrency=8, cycle_budget_sec=11.0, read_timeout_sec=4.0):
-    """Fetch only a small, fair-rotated 1H/4H+5m/15m supplement for READ-ONLY research."""
+    """Fetch up to 32 fair-rotated 1H/4H+5m/15m snapshots for READ-ONLY research."""
     if not symbols:
         return {}, {"attempted": 0, "ok": 0, "failed": 0, "symbols_ok": []}
     if _V699_VALIDATE_ONLY_REQUEST or not _v702_monitor_only_scan_enabled():
         return {}, {"attempted": len(symbols), "ok": 0, "failed": len(symbols), "symbols_ok": [], "disabled_reason": "monitor_scan_disabled"}
-    concurrency = max(1, min(8, int(concurrency)))
+    concurrency = max(1, min(16, int(concurrency)))
     sem = asyncio.Semaphore(concurrency)
     now = float(WALL_NOW())
     ohlcv_limit = max(80, min(120, int(CONFIG.get("V702_A79_OHLCV_LIMIT", 100))))
@@ -106470,7 +106713,7 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
         if not isinstance(ticker, dict):
             return symbol, None, "ticker_missing"
         try:
-            qv = float(ticker.get("quoteVolume") or 0.0)
+            qv = _v702_a80_ticker_quote_volume(ticker)
             bid = float(ticker.get("bid") or 0.0)
             ask = float(ticker.get("ask") or 0.0)
             spread = None
@@ -106492,8 +106735,8 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
         except Exception as exc:
             return symbol, None, f"ticker_or_payload_{type(exc).__name__}"
 
-    tasks = [asyncio.create_task(_fetch_symbol(str(sym).upper())) for sym in list(symbols)[:8]]
-    budget = max(3.0, min(11.0, float(cycle_budget_sec)))
+    tasks = [asyncio.create_task(_fetch_symbol(str(sym).upper())) for sym in list(symbols)[:32]]
+    budget = max(3.0, min(30.0, float(cycle_budget_sec)))
     done, pending = await asyncio.wait(tasks, timeout=budget) if tasks else (set(), set())
     for task in pending:
         task.cancel()
@@ -106662,6 +106905,34 @@ def _v702_a79_swing_items(cls, symbol, md, now=None):
                     _base_item["evidence"] = _base_ev
         out = [_v702_a79_stamp_swing(x) for x in out]
 
+        # In a bearish BTC regime, retain measured local recoveries as WATCH
+        # even before the full 1H+4H/RS confirmation is complete. This branch
+        # cannot create CONFIRMED or TRADEABLE status.
+        local_recovery_watch = bool(
+            bearish_context and not bearish_local_confirm
+            and abs_ret is not None and rs_diff is not None
+            and abs_ret >= 0.00 and rs_diff >= 0.20
+            and (recover1 or recover4)
+            and c1 >= float(i1["ema20"]) - 0.35 * atr1
+            and volr >= 0.65 and rsi <= max_rsi_watch
+            and max(0.0, (c1 - float(i1["ema20"])) / atr1) <= 1.25
+        )
+        if local_recovery_watch and "SWING_BEARISH_LOCAL_RECOVERY_WATCH" not in existing_patterns:
+            item = cls._setup_item(
+                symbol, "SWING_BEARISH_LOCAL_RECOVERY_WATCH", "SWING_RELATIVE_STRENGTH_RECOVERY",
+                c1, stop, 74.0 + min(4.0, max(0.0, rs_diff - 0.20) * 4.0), max(ts1, ts4, btc_ts), "1H+4H vs BTC",
+                "تعافٍ محلي أولي رغم هبوط BTC؛ مراقبة فقط حتى يثبت الاتجاه على 1H/4H والقوة النسبية.",
+                ["تأكيد اتجاه 1H و4H", "عائد مطلق إيجابي متواصل", "تفوق نسبي ≥ 0.75 نقطة أمام BTC", "اجتياز جودة التنفيذ وصافي التكلفة"],
+                {"symbol_return_1h_6bars_pct": round(abs_ret, 3), "btc_return_1h_6bars_pct": round(btc_ret or 0.0, 3),
+                 "relative_strength_diff_pct": round(rs_diff, 3), "volume_ratio_1h": round(volr, 3),
+                 "trend_1h": trend1, "trend_4h": trend4, "recover_1h": recover1, "recover_4h": recover4,
+                 "bearish_btc_recovery": True, "bearish_local_confirm": False, "local_recovery_watch_only": True,
+                 "rsi14_1h": round(rsi, 2), "spread_pct": spread, "quote_vol_24h": qv,
+                 "strategy_style": "SWING", "outcome_interval_sec": 3600},
+                "WATCH_BEARISH_BTC_LOCAL_RECOVERY", "WATCH", ttl
+            )
+            out.append(_v702_a79_stamp_swing(item))
+
         # 1) Breakout continuation: closed hourly close beyond prior 20-bar resistance.
         breakout_setup = (trend1 and trend4 and c1 > resistance * 1.0005 and c1 > o1
                           and volr >= float(CONFIG.get("V702_A79_SWING_BREAKOUT_MIN_VOLUME_RATIO", 1.15))
@@ -106797,7 +107068,7 @@ def _v702_a79_swing_items(cls, symbol, md, now=None):
             patterns = STATS.setdefault("v702_a79_swing_cycle", {}).setdefault("patterns", {})
             pn = str(item.get("pattern") or "UNKNOWN")[:64]
             patterns[pn] = int(patterns.get(pn, 0) or 0) + 1
-        if bearish_context and not (trend1 and trend4):
+        if bearish_context and not (trend1 and trend4) and not any(str(x.get("status") or "").upper() == "WATCH" for x in result):
             _v702_a79_note_swing_metric("rejected", reason="bearish_btc_local_recovery_not_confirmed")
         result.sort(key=lambda x: (str(x.get("status") or "").upper() == "CONFIRMED", float(x.get("score") or 0)), reverse=True)
         return result[:5]
@@ -106897,7 +107168,7 @@ STATS["v702_a79_self_test"] = _v702_a79_self_test()
 FINAL_CANONICAL_RUNTIME.update({
     "active_swing_coverage_revision_current": V702_A79_REVISION,
     "swing_research_supplement_enabled": bool(CONFIG.get("V702_A79_SUPPLEMENT_ENABLE", True)),
-    "swing_research_supplement_symbols_per_cycle": min(8, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 8))),
+    "swing_research_supplement_symbols_per_cycle": min(32, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32))),
     "swing_research_supplement_is_separate_from_canonical_mse_map": True,
     "swing_setup_families": ["SWING_BREAKOUT_CONTINUATION", "SWING_BREAKOUT_RETEST", "SWING_PREBREAKOUT_COMPRESSION", "SWING_PULLBACK_RECLAIM", "SWING_RELATIVE_STRENGTH"],
     "swing_bearish_btc_recovery_is_watch_first": True,
@@ -106910,6 +107181,58 @@ FINAL_CANONICAL_RUNTIME.update({
     "live_gates_relaxed": False,
 })
 
+
+# =============================================================================
+# V702 A80 — Telegram truthfulness, read-only /status, wide research coverage
+# =============================================================================
+V702_A80_REVISION = "A80-TELEGRAM-STATUS-INBOUND-OUTBOUND-SEPARATION-AND-WIDE-SPOT-RESEARCH-2026-11-18"
+# A70 remains the canonical package-identity contract for historical readers.
+# A80 is a separately versioned active feature closure, exposed below, so
+# downstream A69/A70 validators and release tooling remain prefix-compatible.
+STATS["v702_a80_revision"] = V702_A80_REVISION
+STATS["v702_package_audit_revision"] = V702_PACKAGE_AUDIT_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "package_audit_revision": V702_PACKAGE_AUDIT_REVISION,
+    "package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_package_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "canonical_runtime_revision": V702_PACKAGE_AUDIT_REVISION,
+    "active_audit_revision_current": V702_PACKAGE_AUDIT_REVISION,
+    "active_a80_revision_current": V702_A80_REVISION,
+    "telegram_bootstrap_requires_getme_and_webhook_clear": True,
+    "telegram_startup_send_is_separate_outbound_diagnostic": True,
+    "telegram_status_command_read_only": True,
+    "telegram_poll_active_log_requires_first_getupdates_ack": True,
+    "telegram_canonical_opportunity_alerts_allow_monitor_only": True,
+    "research_universe_is_separate_from_canonical_core": True,
+    "research_universe_max_symbols": int(CONFIG.get("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", 500)),
+        "research_supplement_per_cycle": int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)),
+        "intraday_shadow_batch_max": int(CONFIG.get("V702_INTRADAY_SHADOW_MAX_SYMBOLS_PER_CYCLE", 32)),
+    "research_universe_min_quote_volume_usdt": float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", 250_000.0)),
+    "research_supplement_symbols_per_cycle": int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)),
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+def _v702_a80_self_test():
+    checks = {
+        "read_only_status_is_allowed": "/status" in _v702_read_source_text() and "status_aliases" in _v702_read_source_text() and "A80 READ-ONLY STATUS" in _v702_read_source_text(),
+        "telegram_bootstrap_is_fail_closed": "WEBHOOK_CLEAR_FAILED_POLLING_BLOCKED" in _v702_read_source_text() and "WAITING_FOR_VERIFIED_BOOTSTRAP" in _v702_read_source_text(),
+        "telegram_outbound_send_is_separate": "VERIFIED_READY_OUTBOUND_DEGRADED" in _v702_read_source_text(),
+        "telegram_no_false_active_before_poll_ack": "command control ACTIVE; getMe, webhook clear and first getUpdates response verified" in _v702_read_source_text(),
+        "wide_research_universe_builder": callable(_v702_a80_build_research_universe),
+        "research_qv_fallback": callable(_v702_a80_ticker_quote_volume),
+        "research_does_not_lower_canonical_floor": float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)) >= 3_000_000.0,
+        "swing_bearish_recovery_watch_only": "SWING_BEARISH_LOCAL_RECOVERY_WATCH" in _v702_read_source_text(),
+        "monitor_only_entry_policy_preserved": FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS",
+        "no_execution_authority": OpportunityHunter.execution_authority is False and FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    return {"pass": not failed, "revision": V702_A80_REVISION, "checks": checks, "failed": failed, "execution_authority": False}
+
+STATS["v702_a80_self_test"] = _v702_a80_self_test()
+FINAL_CANONICAL_RUNTIME["a80_self_test"] = STATS["v702_a80_self_test"]
 
 
 if __name__ == "__main__":
@@ -106930,6 +107253,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[V702-BOOT] fingerprint logging failed: {type(exc).__name__}: {exc}", flush=True)
     main()
-
-
-

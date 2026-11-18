@@ -118,3 +118,47 @@ All changes remain `MONITOR_ONLY_NO_NEW_BUYS`; the Micro module still has no ord
 - **Execution safety:** `MONITOR_ONLY_NO_NEW_BUYS`; Hunter execution authority false; no family-regime, PreQual, score, risk, spread, cost, PreSend, builder or order-routing bypass was introduced.
 
 Offline tests and the supplied logs do not verify exchange fills, actual fee/slippage, external Telegram delivery, or profitable out-of-sample performance. A79 increases the research coverage and visibility of WATCH setups; a new holdout Shadow sample is required to determine whether the proportion and net value of TP outcomes improve.
+
+
+# A80 — Telegram /status, verified polling and expanded Spot research coverage (2026-11-18)
+
+## New findings from the user's Railway and Telegram logs
+
+- The user-visible `/status` response came from the A75 command wrapper: in MONITOR_ONLY it only allowed `/help`, `/ping`, `/digest`, and `/opportunities`, while `/status` fell through to the private-account command gate. The credentials may be present; the response is a command allowlist behavior, not proof of missing Telegram variables.
+- Earlier Railway lines showed `webhook clear failed`, `getMe failed: Telegram API unreachable`, and `synchronous bootstrap_ready=False`, followed by an unconditional `command control ACTIVE` log. That ACTIVE log was premature and did not prove `getUpdates` had succeeded.
+- A79 digest showed `research_universe=46/47`, `base=13`, but `eligible=0`; the research universe builder had a broader quote-volume fallback than the supplement selector. The selector did not consume venue fields such as `volValue`, so its eligible pool could be empty despite populated turnover fields.
+- In the same logs, `SWING funnel ... WATCH=3 CONFIRMED=0` and A9 engine telemetry showed engines were evaluated, but most candidates were rejected by explicit closed-candle/macro/relative-strength/EMA/volume conditions. Those are not evidence that the engines were disabled.
+
+## Implemented A80 changes
+
+1. `/status` is now explicitly whitelisted in monitor-only and handled as a read-only digest/status response. It shows inbound poll state, bootstrap state, last API method/status/error, last successful poll timestamp, last send ACK/error and the current entry policy.
+2. Telegram inbound and outbound status are separated. Polling requires `getMe` plus successful `deleteWebhook`; startup `sendMessage` failure is recorded as outbound-degraded but does not block `getUpdates` or `/status`. `ACTIVE` is logged only after a successful `getUpdates` response. A 409 conflict suspends polling and leaves an explicit conflict state instead of retrying indefinitely.
+3. `TelegramDispatcher._send_one` records ACK, failure, HTTP code and timestamp, and logs network errors as warnings instead of hiding them at debug level.
+4. The supplement pool now uses `_v702_a80_ticker_quote_volume` consistently, including `volValue` and other venue turnover fields.
+5. The read-only Spot/USDT research universe is capped at 500 markets with a 250k USDT turnover floor. Up to 32 new symbols are fetched per cycle with 16-way concurrency and a 30-second bounded budget, fairly rotated with priority for active Swing follow-up. The canonical core liquidity floor (3M USDT) and canonical market-data map are preserved. The A9 rotating research sample is capped at 32 and its research-only turnover floor is 500k USDT.
+6. Opportunity alerts that have already passed existing canonical technical/quality/cost gates are no longer suppressed solely because the account entry policy is MONITOR_ONLY; alerts confer no order authority.
+
+## A80 verification
+
+- Focused A80 regressions: 14/14 passed; A80 in-process self-test: 10/10 passed.
+- Full repository regression validation: 594 passed, 1 skipped, 0 failed across 58 packaged test modules (595 collected). All test modules were completed in non-overlapping groups; the time-heavy A58 AST regression was run separately and passed. The only skip is `test_release_contracts.py:375`, which requires a historical A51 runtime log not shipped in the clean source release.
+- `python -m compileall -q .` and explicit `py_compile` for 73/73 Python sources passed.
+- `python main.py --validate-only` exited 0 with `bot_started=false` and `live_threads=[]`, using an isolated temporary database.
+
+## Scope and limits
+
+- The supplemental universe is research coverage only; it does not enter the canonical MSE, candidate selector, PreQual, Builder, PreSend, queue or exchange order paths.
+- The 500-market limit is a ceiling, not a per-cycle OHLCV fetch count. Up to 32 supplemental symbols are fetched per cycle with fair rotation to respect public API/rate limits. Coverage and failures are logged; not every listing is evaluated simultaneously.
+- No live MEXC authenticated account, real exchange order or continuous Telegram delivery/soak test was performed from this audit environment. The user subsequently supplied the actual Telegram `/status` response received in the Railway chat; that is evidence of at least one successful command-response round trip, but it does not establish long-term delivery reliability or successful opportunity-alert delivery.
+- The work expands scanning and improves command observability; it does not prove an increase in TP rate or positive out-of-sample PnL. All results remain Shadow/monitor-only.
+- `MONITOR_ONLY_NO_NEW_BUYS` remains active; `OpportunityHunter.execution_authority=False`; hard-gate bypass and live-gate relaxation remain false.
+
+
+## A80 final release verification
+
+- Final artifact: `FINAL_PRODUCTION_RELEASE_A80.zip`; exactly 99 unique file paths, matching the supplied A79 archive inventory with zero files added or removed. ZIP CRC validation passed after clean extraction.
+- SHA-256 ledger: 98/98 packaged non-self files verified; the ledger does not hash itself. `main.py` SHA-256: `dfa0f819f8dee801c56af0f65ddafc7e66f7b07223ad0c07d897e193c187d427`.
+- Test collection: 595 tests across 58 modules; grouped execution plus the separately executed A58 AST regression: **594 passed, 1 skipped, 0 failed**. The single skipped historical A51 fixture is absent from the clean release package.
+- A80-specific regression tests: 14/14 passed; A80 runtime self-test: 10/10 passed. Python compile checks: 73/73. Validate-only: exit 0, `bot_started=false`, `live_threads=[]`.
+- A user-supplied Telegram `/status` reply confirms at least one successful command-response round trip; continuous Telegram alert delivery, Railway network stability, authenticated MEXC calls, live orders/fills, and out-of-sample profitability were not tested in this offline audit. `MONITOR_ONLY_NO_NEW_BUYS` remains enforced; no live order authority was added.
+- Research scope is capped at 500 active Spot/USDT markets with at least 250,000 USDT quote turnover, up to 32 supplemental symbols per cycle, 16-way concurrency and a 30-second fetch budget. This is a rotating research ceiling, not a promise to fetch 500 markets each cycle. The canonical core 3M USDT liquidity requirement and canonical order-selection path remain unchanged.

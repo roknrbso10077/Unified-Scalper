@@ -2579,3 +2579,23 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Swing candidates carry `SWING` metadata and are followed using closed 1H candles. Structural invalidation is bounded to 0.35%-4.0% reference risk; research TP references use 1.8R/2.8R/4.0R and remain subject to the existing A74 net-cost quality gate.
 - Corrected the digest's descriptive BTC macro field to read the canonical `v702_btc_macro_context_last_regime`, separate from the hysteretic candidate-policy regime. Added research coverage, Swing funnel and per-engine A9 counters to `/digest`.
 - Added A79 environment controls and regressions for fair rotation, active Swing priority, stable/forbidden exclusion, structural stop bounds, hourly outcome metadata and monitor-only invariants. No live order authority or production admission gate was added.
+
+
+## 2026-11-18 — A80 Telegram command status, outbound diagnostics and wide Spot research
+
+- Added `/status` as a read-only alias for the operator digest in `MONITOR_ONLY_NO_NEW_BUYS`; it does not invoke private-account or order-mutating functions.
+- Corrected Telegram liveness semantics: `getMe` and successful `deleteWebhook` are required for inbound polling; `ACTIVE` is logged only after the first successful `getUpdates` response. Startup `sendMessage` ACK is tracked separately, so a transient outbound failure no longer blocks inbound `/status`.
+- Added outbound `sendMessage` ACK/error/timestamp telemetry. HTTP 409 now suspends the command poller instead of repeatedly retrying against another webhook/poller; operator action is required to leave one Railway replica and one poller.
+- Fixed research-pool eligibility to use the same shared quote-volume fallback (`quoteVolume`, `baseVolume × last`, venue-specific `turnover`/`volValue`) used by the wide universe builder.
+- Expanded the isolated research universe to up to 500 active Spot/USDT markets with a 250k USDT quote-turnover floor, up to 32 supplemental symbols per cycle, 16-way bounded concurrency, and a 30-second fetch budget. The canonical 3M core universe and canonical MSE/PreQual/Builder/PreSend/order map remain unchanged.
+- Raised the A9 rotating research batch to up to 32 symbols and lowered only its research-sampling minimum to 500k USDT; Micro alert quality/cost gates and live-entry gates remain unchanged.
+- Updated `/status`, scan-coverage and A80 regression tests. No real orders, no gate bypasses, and no claim of improved profitability are introduced.
+
+
+### A80 final release verification
+
+- 594 passed, 1 historical fixture skipped, 0 failures across 58 test modules; the long A58 AST test passed when isolated.
+- A80 focused tests 14/14; runtime self-test 10/10; compileall and explicit py_compile 73/73.
+- Validate-only exits 0 with `bot_started=false` and `live_threads=[]`.
+- Final A80 package is rebuilt from the exact 99-path source inventory; no files added or removed. SHA ledger verifies 98 non-self files and ZIP CRC passes.
+- Live Telegram/MEXC integrations and profitability are not validated offline; monitor-only and no-order authority remain in force.
