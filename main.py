@@ -1284,7 +1284,8 @@ def _apply_loaded_environment_config() -> None:
         CONFIG["V702_INTRADAY_SHADOW_TELEGRAM_ALERTS_ENABLE"] = _shadow_alerts.strip().lower() in {"1", "true", "yes", "on"}
     for _flag_key in ("V702_INTRADAY_SHADOW_OUTCOME_TELEGRAM_ENABLE", "V702_INTRADAY_SHADOW_DAILY_TELEGRAM_ENABLE",
                       "V702_INTRADAY_MICRO_ALERT_REQUIRE_MTF_CONFIRMATION", "V702_INTRADAY_MICRO_PULLBACK_ALERTS_ENABLE",
-                      "V702_A79_SUPPLEMENT_ENABLE", "V702_A79_SWING_EARLY_WATCH_ENABLE"):
+                      "V702_A79_SUPPLEMENT_ENABLE", "V702_A79_SWING_EARLY_WATCH_ENABLE",
+                      "V702_A82_SWING_HIGHER_LOW_ENABLE"):
         _raw_flag = _env_first(_flag_key)
         if _raw_flag is not None:
             CONFIG[_flag_key] = _raw_flag.strip().lower() in {"1", "true", "yes", "on"}
@@ -1313,6 +1314,7 @@ def _apply_loaded_environment_config() -> None:
                                ("V702_A79_SWING_RETEST_MIN_VOLUME_RATIO", "V702_A79_SWING_RETEST_MIN_VOLUME_RATIO"),
                                ("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", "V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT"),
                                ("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", "V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT"),
+                               ("V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR", "V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR"),
                                ("V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS", "V702_A80_RESEARCH_UNIVERSE_MAX_SYMBOLS"),
                                ("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", "V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT"),
                                ("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", "V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT"),
@@ -1320,7 +1322,7 @@ def _apply_loaded_environment_config() -> None:
         _raw = _env_first(_env_key)
         if _raw is not None:
             try:
-                CONFIG[_cfg_key] = float(_raw) if any(token in _env_key for token in ("AGE", "COOLDOWN", "MIN_NET_PROFIT_PCT", "MIN_NET_R", "COST_PCT", "RS_15M_PCT", "BUDGET_SEC", "CHASE_ATR", "RSI_", "VOLUME_RATIO", "RETURN_PCT", "DIFF_PCT")) else int(_raw)
+                CONFIG[_cfg_key] = float(_raw) if any(token in _env_key for token in ("AGE", "COOLDOWN", "MIN_NET_PROFIT_PCT", "MIN_NET_R", "COST_PCT", "RS_15M_PCT", "BUDGET_SEC", "CHASE_ATR", "RSI_", "VOLUME_RATIO", "RETURN_PCT", "DIFF_PCT", "PIVOT_DELTA_ATR")) else int(_raw)
             except (TypeError, ValueError):
                 # Invalid optional tuning never changes any live safety gate.
                 pass
@@ -27587,10 +27589,12 @@ async def run_bot(universe: List[str]):
                 STATS["v702_a79_research_snapshot_count"] = int(len(_a79_research_market_data_map))
             except Exception as _a79_supplement_exc:
                 STATS["v702_a79_supplement_errors"] = int(STATS.get("v702_a79_supplement_errors", 0) or 0) + 1
-                _a79_supplement_summary["error"] = f"{type(_a79_supplement_exc).__name__}:{str(_a79_supplement_exc)[:140]}"
+                _a79_supplement_summary = _v702_a79_supplement_failure_summary(
+                    _a79_supplement_summary, _a79_supplement_exc
+                )
                 STATS["v702_a79_supplement_last"] = dict(_a79_supplement_summary)
-                logger.warning("[A79-RESEARCH-COVERAGE] supplement failed closed; canonical map unchanged: %s:%s",
-                               type(_a79_supplement_exc).__name__, str(_a79_supplement_exc)[:140])
+                logger.warning("[A79-RESEARCH-COVERAGE] supplement failed closed; canonical map unchanged: %s",
+                               _a79_supplement_summary.get("error", type(_a79_supplement_exc).__name__))
 
             # =================================================================
             # V702 A9 — BOUNDED INTRADAY STRATEGY RESEARCH LANE (SHADOW ONLY)
@@ -105247,10 +105251,17 @@ def _v702_a75_digest_postprocess(cls, base):
     d1_line = f"MTF_D1 attempted/ok/failed/covered={d1_attempt}/{d1_ok}/{d1_fail}/{len(d1_symbols)}"
     cohort_line = "Hunter cohorts=observed/confirmed/delivered/simulated-entry; READ_ONLY"
     _a79_cov = STATS.get("v702_a79_supplement_last") if isinstance(STATS.get("v702_a79_supplement_last"), dict) else {}
+    _a79_err = str(_a79_cov.get("error") or "none")[:64]
+    _a79_rejects = _a79_cov.get("reject_reasons") if isinstance(_a79_cov.get("reject_reasons"), dict) else {}
+    _a79_reject_top = ",".join(
+        f"{str(k)[:22]}x{int(v or 0)}" for k, v in
+        sorted(_a79_rejects.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:2]
+    ) or "none"
     _a79_cov_line = (f"A79_RESEARCH universe/base/eligible/attempted/ok/failed="
                      f"{int(_a79_cov.get('universe', 0) or 0)}/{int(_a79_cov.get('base_snapshots', 0) or 0)}/"
                      f"{int(_a79_cov.get('eligible', 0) or 0)}/{int(_a79_cov.get('attempted', 0) or 0)}/"
-                     f"{int(_a79_cov.get('ok', 0) or 0)}/{int(_a79_cov.get('failed', 0) or 0)}")
+                     f"{int(_a79_cov.get('ok', 0) or 0)}/{int(_a79_cov.get('failed', 0) or 0)} "
+                     f"timeout={int(_a79_cov.get('timed_out', 0) or 0)} err={_a79_err} rejects={_a79_reject_top}")
     _a79_sw = STATS.get("v702_a79_swing_cycle") if isinstance(STATS.get("v702_a79_swing_cycle"), dict) else {}
     _a79_reasons = _a79_sw.get("top_reasons") if isinstance(_a79_sw.get("top_reasons"), dict) else {}
     _a79_top = ",".join(f"{str(k)[:28]}x{int(v or 0)}" for k, v in sorted(_a79_reasons.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:3]) or "none"
@@ -106518,6 +106529,8 @@ CONFIG.setdefault("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", 250_000.0)
 CONFIG.setdefault("V702_A79_MIN_SWING_CANDLES", 56)
 CONFIG.setdefault("V702_A79_MIN_MTF_CANDLES", 25)
 CONFIG.setdefault("V702_A79_SWING_EARLY_WATCH_ENABLE", True)
+CONFIG.setdefault("V702_A82_SWING_HIGHER_LOW_ENABLE", True)
+CONFIG.setdefault("V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR", 0.05)
 CONFIG.setdefault("V702_A79_SWING_MAX_BREAKOUT_CHASE_ATR", 0.85)
 CONFIG.setdefault("V702_A79_SWING_RSI_CONFIRM_MAX", 82.0)
 CONFIG.setdefault("V702_A79_SWING_RSI_WATCH_MAX", 86.0)
@@ -106769,6 +106782,29 @@ _A79_BASE_MARKET_QUALITY = _v702_a74_market_quality
 _A79_BASE_COST_TARGETS = _v702_a74_cost_aware_targets
 
 
+def _v702_a79_supplement_failure_summary(summary, exc):
+    """Make an outer supplement exception visible and reconcile attempted/failed counts."""
+    row = dict(summary) if isinstance(summary, dict) else {}
+    try:
+        attempted = max(0, int(row.get("attempted", 0) or 0))
+    except Exception:
+        attempted = 0
+    try:
+        ok = max(0, min(attempted, int(row.get("ok", 0) or 0)))
+    except Exception:
+        ok = 0
+    try:
+        previous_failed = max(0, int(row.get("failed", 0) or 0))
+    except Exception:
+        previous_failed = 0
+    row["attempted"] = attempted
+    row["ok"] = ok
+    row["failed"] = min(attempted, max(previous_failed, attempted - ok))
+    row["failure_stage"] = "supplement_exception"
+    row["error"] = _v703_route_orderbook_error_token(exc, max_detail_chars=72)
+    return row
+
+
 def _v702_a79_note_swing_metric(key, amount=1, reason=None):
     try:
         stats = STATS.setdefault("v702_a79_swing_cycle", {})
@@ -106887,6 +106923,37 @@ def _v702_a79_swing_items(cls, symbol, md, now=None):
             trend1 and trend4 and abs_ret is not None and rs_diff is not None
             and abs_ret >= min_recovery_abs and rs_diff >= min_recovery_rs
         ))
+
+        # A82: independent Higher-Low structure discovery. Pivots are derived
+        # from closed 1H bars only, with the R20 helper's right-side confirmation;
+        # the early setup is WATCH-only and does not bypass macro or execution gates.
+        hl_enabled = bool(CONFIG.get("V702_A82_SWING_HIGHER_LOW_ENABLE", True))
+        swing_highs, swing_lows = _v702_r20_swing_points(f1, upto_pos=len(f1) - 1) if hl_enabled else ([], [])
+        recent_highs = list(swing_highs[-2:]) if isinstance(swing_highs, (list, tuple)) else []
+        recent_lows = list(swing_lows[-2:]) if isinstance(swing_lows, (list, tuple)) else []
+        pivot_delta_atr = max(0.05, min(0.30, float(CONFIG.get("V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR", 0.05))))
+        pivot_tolerance = max(atr1 * pivot_delta_atr, c1 * 0.0005)
+        higher_low = bool(len(recent_lows) == 2 and
+                          float(recent_lows[-1][1]) > float(recent_lows[-2][1]) + pivot_tolerance)
+        higher_high = bool(len(recent_highs) == 2 and
+                           float(recent_highs[-1][1]) > float(recent_highs[-2][1]) + pivot_tolerance)
+        last_pivot_low = float(recent_lows[-1][1]) if recent_lows else None
+        last_pivot_high = float(recent_highs[-1][1]) if recent_highs else None
+        structure_reclaim = bool(last_pivot_high and c1 > last_pivot_high + 0.05 * atr1)
+        extension_from_ema20_atr = max(0.0, (c1 - float(i1["ema20"])) / atr1)
+        higher_low_watch = bool(
+            hl_enabled and bool(CONFIG.get("V702_A79_SWING_EARLY_WATCH_ENABLE", True))
+            and higher_low and last_pivot_low and (recover1 or recover4)
+            and c1 >= float(i1["ema20"]) - 0.35 * atr1
+            and volr >= 0.65 and rsi <= max_rsi_watch
+            and extension_from_ema20_atr <= 1.25
+            and c1 > last_pivot_low
+        )
+        higher_low_confirm = bool(
+            higher_low_watch and higher_high and structure_reclaim
+            and trend1 and trend4 and volr >= 1.10
+            and rsi <= max_rsi_confirm and bearish_local_confirm
+        )
         if bearish_context and not bearish_local_confirm:
             # A74's pre-existing Swing breakouts/pullbacks were trend-confirmed
             # but not all carried the minimum BTC-relative evidence. Preserve
@@ -106906,6 +106973,46 @@ def _v702_a79_swing_items(cls, symbol, md, now=None):
                                      "relative_strength_diff_pct": round(rs_diff, 3) if rs_diff is not None else None})
                     _base_item["evidence"] = _base_ev
         out = [_v702_a79_stamp_swing(x) for x in out]
+
+        # Higher-Low structure is a distinct discovery family, so it can
+        # surface before BTC-relative evidence exists. Confirmation still
+        # requires the full 1H/4H trend, HH reclaim, volume and macro contract.
+        if higher_low_watch and "SWING_HIGHER_LOW_RECLAIM" not in existing_patterns:
+            hl_stop = _v702_a79_structural_stop(c1, last_pivot_low, i1["ema50"], atr1)
+            if hl_stop is not None:
+                hl_status = "CONFIRMED" if higher_low_confirm else "WATCH"
+                hl_score = 89.0 if higher_low_confirm else 78.0
+                hl_evidence = {
+                    "higher_low": True, "higher_high": bool(higher_high),
+                    "confirmed_swing_lows": [round(float(x[1]), 10) for x in recent_lows],
+                    "confirmed_swing_highs": [round(float(x[1]), 10) for x in recent_highs],
+                    "last_confirmed_swing_low": round(float(last_pivot_low), 10),
+                    "last_confirmed_swing_high": round(float(last_pivot_high), 10) if last_pivot_high else None,
+                    "structure_reclaim": structure_reclaim,
+                    "trend_1h": trend1, "trend_4h": trend4,
+                    "recover_1h": recover1, "recover_4h": recover4,
+                    "volume_ratio_1h": round(volr, 3), "rsi14_1h": round(rsi, 2),
+                    "extension_from_ema20_atr": round(extension_from_ema20_atr, 3),
+                    "bearish_btc_recovery": bearish_context,
+                    "bearish_local_confirm": bearish_local_confirm,
+                    "symbol_return_1h_6bars_pct": round(abs_ret, 3) if abs_ret is not None else None,
+                    "relative_strength_diff_pct": round(rs_diff, 3) if rs_diff is not None else None,
+                    "spread_pct": spread, "quote_vol_24h": qv,
+                    "strategy_style": "SWING", "outcome_interval_sec": 3600,
+                }
+                hl_item = cls._setup_item(
+                    symbol, "SWING_HIGHER_LOW_RECLAIM", "SWING_STRUCTURE", c1, hl_stop,
+                    hl_score, max(ts1, ts4), "1H+4H",
+                    ("هيكل قاع أعلى مؤكد ثم استعادة قمة هيكلية مع توافق 1H/4H وحجم داعم."
+                     if higher_low_confirm else
+                     "تكوّن قاع أعلى على شموع 1H مغلقة؛ مراقبة مبكرة حتى استعادة القمة الهيكلية وتأكيد 4H."),
+                    (["اجتياز PreQual/Score/PreSend وصافي التكلفة"] if higher_low_confirm else
+                     ["استعادة آخر قمة هيكلية بإغلاق 1H", "تأكيد اتجاه 4H والحجم", "تأكيد القوة النسبية أمام BTC عند هبوطه"]),
+                    hl_evidence,
+                    "CLOSED_1H_HIGHER_LOW_HIGHER_HIGH_RECLAIM_A82" if higher_low_confirm else "WATCH_CLOSED_1H_HIGHER_LOW_A82",
+                    hl_status, ttl,
+                )
+                out.append(_v702_a79_stamp_swing(hl_item))
 
         # In a bearish BTC regime, retain measured local recoveries as WATCH
         # even before the full 1H+4H/RS confirmation is complete. This branch
@@ -107245,6 +107352,22 @@ FINAL_CANONICAL_RUNTIME.update({
     "active_a81_revision_current": V702_A81_REVISION,
     "research_tunables_are_env_backed": True,
     "canonical_core_min_quote_volume_usdt": float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)),
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+# A82 — closed-candle Higher-Low/Higher-High Swing discovery and truthful
+# supplemental-fetch failure attribution. This lane remains read-only.
+V702_A82_REVISION = "A82-CLOSED-CANDLE-HIGHER-LOW-SWING-AND-RESEARCH-ERROR-TRUTH-2026-11-18"
+STATS["v702_a82_revision"] = V702_A82_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "active_a82_revision_current": V702_A82_REVISION,
+    "swing_higher_low_discovery_enabled": bool(CONFIG.get("V702_A82_SWING_HIGHER_LOW_ENABLE", True)),
+    "swing_higher_low_uses_confirmed_closed_1h_pivots": True,
+    "swing_higher_low_early_status": "WATCH_ONLY",
+    "swing_confirm_requires_higher_high_reclaim_1h_4h_and_macro_contract": True,
+    "supplement_exception_failed_count_is_reconciled": True,
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "hard_gate_bypass": False,
     "live_gates_relaxed": False,

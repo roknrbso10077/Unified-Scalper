@@ -1893,6 +1893,86 @@ def test_a79_bearish_btc_demotes_base_swing_confirmation_to_watch_without_local_
     assert all(row.get("evidence", {}).get("outcome_interval_sec") == 3600 for row in swing)
 
 
+def test_a82_pivot_delta_configuration_is_read_from_environment(monkeypatch):
+    key = "V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR"
+    previous = bot.CONFIG.get(key, 0.05)
+    monkeypatch.setitem(bot.CONFIG, key, previous)
+    monkeypatch.setattr(bot, "_env_first", lambda *keys: "0.12" if key in keys else None)
+    bot._apply_loaded_environment_config()
+    assert bot.CONFIG[key] == 0.12
+
+
+def test_a82_supplement_outer_failure_reconciles_failed_and_redacts_diagnostics():
+    exc = RuntimeError("api_key=super-secret https://private.example/path rate limit")
+    row = bot._v702_a79_supplement_failure_summary(
+        {"attempted": 32, "ok": 0, "failed": 0, "timed_out": 0}, exc
+    )
+    assert row["attempted"] == 32
+    assert row["ok"] == 0
+    assert row["failed"] == 32
+    assert row["failure_stage"] == "supplement_exception"
+    assert "super-secret" not in row["error"]
+    assert "private.example" not in row["error"]
+
+
+def test_a82_higher_low_structure_is_discovered_as_watch_under_bearish_btc(monkeypatch):
+    now = time.time()
+    md = {
+        "df_1h": _a74_trending_frame(now, 3600, breakout=False),
+        "df_4h": _a74_trending_frame(now, 14400, breakout=False),
+        "quote_vol_24h": 35_000_000.0,
+        "spread_pct": 0.02,
+    }
+    def stable_indicators(cls, frame):
+        close = float(frame["close"].iloc[-1])
+        return {"atr": 0.60, "ema9": close - 0.05, "ema20": close - 0.10,
+                "ema50": close - 0.50, "rsi14": 65.0, "volume_ratio": 1.20}
+    monkeypatch.setattr(bot.OpportunityHunter, "_indicators", classmethod(stable_indicators))
+    monkeypatch.setattr(bot, "_v702_r20_swing_points", lambda df, upto_pos=None: (
+        [(70, 123.0), (100, 126.5)], [(74, 121.0), (104, 122.0)]
+    ))
+    monkeypatch.setitem(bot.STATS, "v702_btc_macro_context_last_regime", "BEARISH")
+    rows = bot.OpportunityHunter._evaluate_snapshot("AAA/USDT", md, now=now)
+    item = next(row for row in rows if row["pattern"] == "SWING_HIGHER_LOW_RECLAIM")
+    assert item["status"] == "WATCH"
+    assert item["evidence"]["higher_low"] is True
+    assert item["evidence"]["higher_high"] is True
+    assert item["evidence"]["bearish_local_confirm"] is False
+    assert item["timeframe"] == "1H+4H"
+    assert item["evidence"]["outcome_interval_sec"] == 3600
+    assert item["tp1"] > item["entry_ref"] > item["sl_price"]
+    assert bot.FINAL_CANONICAL_RUNTIME["active_a82_revision_current"].startswith("A82-")
+    assert bot.FINAL_CANONICAL_RUNTIME["effective_entry_policy"] == "MONITOR_ONLY_NO_NEW_BUYS"
+    assert bot.FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] is False
+
+
+def test_a82_higher_low_and_higher_high_reclaim_can_confirm_only_when_macro_contract_passes(monkeypatch):
+    now = time.time()
+    md = {
+        "df_1h": _a74_trending_frame(now, 3600, breakout=False),
+        "df_4h": _a74_trending_frame(now, 14400, breakout=False),
+        "quote_vol_24h": 35_000_000.0,
+        "spread_pct": 0.02,
+    }
+    def stable_indicators(cls, frame):
+        close = float(frame["close"].iloc[-1])
+        return {"atr": 0.60, "ema9": close - 0.05, "ema20": close - 0.10,
+                "ema50": close - 0.50, "rsi14": 65.0, "volume_ratio": 1.20}
+    monkeypatch.setattr(bot.OpportunityHunter, "_indicators", classmethod(stable_indicators))
+    # The latest confirmed swing high is below the final closed 1H close, so
+    # the detector has a genuine HH reclaim rather than an unconfirmed wick.
+    monkeypatch.setattr(bot, "_v702_r20_swing_points", lambda df, upto_pos=None: (
+        [(70, 123.0), (100, 125.0)], [(74, 121.0), (104, 122.0)]
+    ))
+    monkeypatch.setitem(bot.STATS, "v702_btc_macro_context_last_regime", "NEUTRAL")
+    rows = bot.OpportunityHunter._evaluate_snapshot("AAA/USDT", md, now=now)
+    item = next(row for row in rows if row["pattern"] == "SWING_HIGHER_LOW_RECLAIM")
+    assert item["status"] == "CONFIRMED"
+    assert item["evidence"]["higher_low"] is True
+    assert item["evidence"]["higher_high"] is True
+    assert item["evidence"]["structure_reclaim"] is True
+
+
 def test_a80_read_only_status_command_returns_live_digest_in_monitor_only(monkeypatch):
     replies = []
     async def reply(cls, chat_id, text):

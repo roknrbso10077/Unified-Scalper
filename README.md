@@ -1,7 +1,30 @@
-# UNIFIED SCALPER V702 — A77 MICRO SHADOW OUTCOME TELEGRAM CLOSURE
+# UNIFIED SCALPER V702 — A82 HIGHER-LOW SWING DISCOVERY + RESEARCH DIAGNOSTICS
 
-**Current feature revision:** `A77-MICRO-OUTCOME-TELEGRAM-DAILY-REPORT-2026-11-17` (historical A66 canonical distribution identity retained).
+**Current feature revision:** `A82-CLOSED-CANDLE-HIGHER-LOW-SWING-AND-RESEARCH-ERROR-TRUTH-2026-11-18` (historical A66 canonical distribution identity retained).
 **Canonical executable:** `main.py` · **Archive limit:** 99 files · **Mode:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`.
+
+## A82 — Swing structure coverage and research diagnostics
+
+- Adds a distinct `SWING_HIGHER_LOW_RECLAIM` detector using confirmed swing pivots from fully closed 1H candles. A rising pair of confirmed lows creates a `WATCH` setup when local recovery, volume, RSI and extension conditions are acceptable. It does not require BTC-relative data merely to preserve an early watchlist idea.
+- A setup can become `CONFIRMED` only after a confirmed higher high and closed-1H reclaim of the latest structural high, local 1H and 4H trend confirmation, volume/RSI constraints, and the existing bearish-BTC local strength contract. Existing PreQual, ranking, market-quality, cost, PreSend and execution gates remain authoritative.
+- Stop reference is calculated below the confirmed structural low with the existing 0.35%-4.0% risk bound. If this geometry is invalid or exceeds the bound, the new setup is not emitted. Swing outcome observation remains based on closed 1H candles and is virtual/read-only.
+- Repairs an A79 supplemental-fetch exception accounting hole: if an exception escapes the fetch helper, `failed` is reconciled to `attempted - ok`, the exception is reduced to a credential-redacted token, and the digest now exposes timeout, error and leading reject reasons.
+- Feature switch: `V702_A82_SWING_HIGHER_LOW_ENABLE=1`; pivot significance is controlled by `V702_A82_SWING_HIGHER_LOW_MIN_PIVOT_DELTA_ATR=0.05`. Disable or adjust only after reviewing the evidence; neither setting changes live entry authority.
+
+### Swing stop guidance
+
+For multi-day Swing ideas, use a structural invalidation below the confirmed 4H/1H swing low with an ATR buffer; a 15m close is generally too sensitive to ordinary pullbacks for that holding horizon. A 15m close/invalidation belongs to an intraday setup, not a multi-day Swing thesis. A close-only stop is not a substitute for a hard protective order during a fast gap or crash. This release is monitor-only and creates no exchange-side stop orders.
+
+### Google Colab
+
+1. Upload `FINAL_PRODUCTION_RELEASE.zip` to the Colab session and extract it:
+   `!unzip -q /content/FINAL_PRODUCTION_RELEASE.zip -d /content/unified_scalper`
+2. Install dependencies and enter the project directory:
+   `!pip install -r /content/unified_scalper/requirements.txt`
+   `%cd /content/unified_scalper`
+3. Run the safe validation first:
+   `!python main.py --validate-only`
+4. For a monitor-only run, copy `.env.example` to `.env`, keep `UNIFIED_LIVE_PILOT_ENABLE=0`, `UNIFIED_A55_LIVE_ARM=0`, and `UNIFIED_MONITOR_ONLY_SCAN_ENABLE=1`, then provide only the optional Telegram credentials needed for notices. Do not add MEXC trading credentials for this audit/paper workflow. Start with `!python main.py` only after confirming those switches and the Colab runtime storage policy. Colab ephemeral disks may be reset; use a persistent mounted drive path for SQLite only if you understand the access implications.
 
 ## A77 — Micro Telegram follow-up
 
@@ -13,7 +36,7 @@
 
 **Telegram link configuration:** each Micro alert/result reuses the shared link formatter. TradingView/MEXC links are generated from the symbol; a clickable Telegram channel/bot URL is included only when a public Telegram URL or username is configured (`TELEGRAM_OPPORTUNITY_PUBLIC_URL`, `TELEGRAM_PUBLIC_URL`/`TELEGRAM_CHANNEL_URL`, `TELEGRAM_PUBLIC_CHAT_USERNAME`, or public username aliases). A private numeric chat ID cannot be converted into a public message permalink.
 
-**Verification:** 58 test modules from the exact clean-extracted ZIP passed in twelve non-overlapping groups: 574 passed, 1 historical fixture skipped, 0 failed. Focused Micro/digest regressions: 25 passed. Compilation: 73/73 Python files. Clean-extract `--validate-only`: exit 0, `bot_started=false`, `live_threads=[]`. No real Telegram network delivery/ACK, live exchange order/fill, or profitability was tested. `TelegramDispatcher.enqueue` success means accepted into the application outbox, not confirmed delivered to the Telegram client. Micro TP/SL messages are virtual closed-candle outcomes, not exchange orders/fills or realized PnL. No live authority or strategy gate is relaxed.
+**Verification:** all 58 packaged test modules passed in twelve non-overlapping groups: **599 passed, 1 historical fixture skipped, 0 failed**. Compilation: `compileall` and explicit `py_compile` passed for all 73 Python files. `python main.py --validate-only`: exit 0, `bot_started=false`, `live_threads=[]`. ZIP: 99 unique files, CRC clean, exact manifest inventory. No real Telegram network delivery/ACK, live exchange order/fill, or profitability was tested. `TelegramDispatcher.enqueue` success means accepted into the application outbox, not confirmed delivered to the Telegram client. Micro TP/SL messages are virtual closed-candle outcomes, not exchange orders/fills or realized PnL. No live authority or strategy gate is relaxed.
 
 ---
 

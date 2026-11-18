@@ -213,3 +213,78 @@ Offline tests and the supplied logs do not verify exchange fills, actual fee/sli
 - `python main.py --validate-only`: exit **0**; `bot_started=false`; `live_threads=[]`; internal validation reported PASS. This mode did not start the persistent bot and made no live trading/API requests.
 - ZIP content inventory: exactly **99 files**, no additions/deletions relative to A80; archive CRC and manifest inventory verified after rebuild. SHA-256 ledger covers **98/98** other packaged files (the ledger does not hash itself).
 - Import-time environment caveat: the audit container does not have `ccxt` or `aiosqlite` installed, although package dependencies are declared. Therefore direct exchange/SQLite integration paths, Docker build, authenticated MEXC/Telegram access, runtime memory soak, live fills, and profitability remain unverified. Install the declared dependencies in the target deployment before starting the service.
+
+
+# A82 — Final production audit supplement (2026-11-18)
+
+## Package and scope
+
+- Source archive: the user-provided `FINAL_PRODUCTION_RELEASE.zip`. Original inventory: **99 files** (73 Python files, 58 test modules); final packaged top-level Python source total: **124,787 lines**. The source archive passed CRC validation before extraction.
+- Final inventory: **99 files**, with **0 files added** and **0 files removed**. Existing source paths are retained; temporary caches, bytecode, runtime databases and local `.env` secrets are excluded from the release.
+- This was a broad automated/static audit plus focused source review of the scan, research supplement, Swing Hunter, digest, candidate policy and execution-safety boundaries. The main source remains a large historical compatibility module; a wholesale decomposition was not attempted because it would risk changing the many pinned legacy interfaces and exceed the scope of a safe targeted closure. It is not represented as a manual line-by-line human review of every historical line.
+
+## Findings and applied repairs
+
+1. **Supplement exception under-reporting:** in the A79 outer exception handler, `attempted` could be populated before an exception, while `failed` remained the default zero. This made a state such as `attempted=32 / ok=0 / failed=0` ambiguous and could conceal a failed fetch cycle. The handler now reconciles `failed=max(previous_failed, attempted-ok)`, adds a failure stage, redacts credentials/URLs, and logs the safe diagnostic token.
+2. **Supplement digest observability gap:** the digest previously omitted the outer error, timeout count and top fetch rejection reasons. It now surfaces those bounded fields alongside universe/base/eligible/attempted/ok/failed counts.
+3. **Swing structure recall gap:** the A79 five-family Swing detector had no dedicated Higher-Low reclaim family. Added `SWING_HIGHER_LOW_RECLAIM` using confirmed closed-1H pivots. Early rising-low structures are WATCH-only; CONFIRMED needs higher-high reclaim, closed 1H/4H trend, volume/RSI checks and the existing bearish-BTC relative-strength rule. Structural stop risk remains bounded by the existing helper; invalid geometry suppresses this setup.
+
+The supplied operator digest showed 229 candidates entering PreQual in its 30-minute window and zero passing, with macro family-policy rejects dominating. The policy is strategy-specific (`PULLBACK` not allowed under that bearish candidate policy) and is intentionally **not** weakened. The A82 Swing research lane is independent and cannot route candidates into canonical execution. The supplied Swing sample had 12 data rows and zero WATCH/CONFIRMED; the new family addresses one missing technical structure type but requires subsequent live Shadow evidence to show actual recall improvement.
+
+### Defect count and exact source locations
+
+- **Three code defects found and repaired:** (1) outer supplemental-fetch exception accounting could leave `failed=0` despite non-zero attempts; (2) the compact digest hid the outer error/timeout/rejection cause; (3) the A82 numeric pivot-threshold setting was documented but not consumed by the environment parser. The related regression coverage is in `test_v702_production_audit_fixes.py:1896-1973`.
+- **One Swing discovery gap addressed:** no distinct Higher-Low / Higher-High reclaim family existed in the five-family A79 Hunter. The new structure logic is not labelled an old runtime exception; it is a deliberate research-coverage addition.
+- Source map: `main.py:1317-1328` (float setting parsing); `main.py:27590-27597` (exception path); `main.py:105254-105264` (digest diagnostics); `main.py:106785-106805` (failure reconciliation and redaction); `main.py:106927-107015` (confirmed-pivot Higher-Low detection and candidate construction); `main.py:107360-107374` (A82 runtime identity).
+
+**Counts:** 3 code defects detected / 3 repaired; 1 Swing structure coverage gap addressed; **9 existing files modified**, 0 deleted, 0 added. The 9 modified files are `main.py`, `test_v702_production_audit_fixes.py`, `.env.example`, `README.md`, `CHANGELOG.md`, `FINAL_AUDIT_REPORT.md`, `FINAL_MANIFEST.json`, `A66_RELEASE_MANIFEST.json`, and `A66_SHA256SUMS.txt`.
+
+## Files modified
+
+- `main.py` — Higher-Low structure family, supplemental failure reconciliation, bounded digest diagnostics, A82 runtime revision.
+- `test_v702_production_audit_fixes.py` — three A82 regressions.
+- `.env.example` — Higher-Low research switch and pivot threshold.
+- `README.md` — A82 behavior, risk interpretation, and Google Colab steps.
+- `CHANGELOG.md` — A82 change record.
+- `FINAL_AUDIT_REPORT.md` — this report supplement.
+- `FINAL_MANIFEST.json`, `A66_RELEASE_MANIFEST.json`, `A66_SHA256SUMS.txt` — canonical digest and release inventory metadata synchronization.
+
+No files were deleted. No essential project module was merged or discarded.
+
+## Verification
+
+- Archive integrity before changes: `zipfile.testzip()` returned `None`; 99 unique file entries.
+- Python compilation before the final A82 edits: 73/73 packaged Python files passed. A fresh full compile is required after this supplement and is included in the release verification record.
+- Focused A82/A79 Swing tests: **5 passed**.
+- Full `test_v702_production_audit_fixes.py`: **108 passed**.
+- Historical test modules are being executed in non-overlapping batches to avoid the full-session timeout observed in the initial single-process run. The one release-hash mismatch observed during that staged run was expected before synchronizing the source digest in the manifests; no functional test failed in that batch. Final per-batch totals and any skips/failures are recorded after checksum synchronization.
+- `python main.py --validate-only` passed on the source package before the A82 changes (exit 0, `bot_started=false`, `live_threads=[]`). It is re-run after the final source change.
+- No MEXC authenticated account, live order, exchange fill, Telegram delivery ACK or profitability result was tested. Execution remains `MONITOR_ONLY_NO_NEW_BUYS`; no live trading was enabled.
+
+## Swing invalidation: 4H versus 15m
+
+For a multi-day Swing setup, use a structural 4H/1H pivot-low invalidation plus an ATR buffer. A 15m close below the level is generally too sensitive and will often turn normal intraday noise into a premature exit. For intraday trades, 15m/5m structure can be appropriate. A close-based invalidation is only the thesis rule: it does not protect against a sudden gap or wick before the next candle closes. In a live deployment, that risk requires a verified hard protective order on the venue or an explicitly accepted exposure policy; this monitor-only package places no exchange-side stop order.
+
+## Google Colab quick start
+
+```python
+!unzip -q /content/FINAL_PRODUCTION_RELEASE.zip -d /content/unified_scalper
+%cd /content/unified_scalper
+!pip install -r requirements.txt
+!python main.py --validate-only
+```
+
+For monitoring only, copy `.env.example` to `.env`; keep `UNIFIED_LIVE_PILOT_ENABLE=0`, `UNIFIED_A55_LIVE_ARM=0`, and `UNIFIED_MONITOR_ONLY_SCAN_ENABLE=1`. Do not supply private MEXC trading credentials for this dry-run/research audit. Optional Telegram credentials are only for notifications. Colab storage may be ephemeral, so persistent SQLite storage needs an intentionally mounted path.
+
+## Final release artifact verification
+
+- Built `/mnt/data/FINAL_PRODUCTION_RELEASE.zip` using the exact 99-path inventory from the source archive and final manifest; no caches or runtime state were added.
+- Archive contains **99 unique files**; `ZipFile.testzip()` returned `None` (CRC pass); all 99 names match `FINAL_MANIFEST.json`; the final archive size is recorded in the delivery summary after packaging.
+- All **98** entries in `A66_SHA256SUMS.txt` match their packaged files (the checksum file does not hash itself). `main.py` SHA-256 matches both release manifest source-digest fields.
+- The release ZIP was extracted into a clean directory; the extracted inventory remained 99 files, `compileall` passed, and a clean-extract `python main.py --validate-only` exited 0 with `bot_started=false`, `live_threads=[]`, and no active environment aliases.
+
+## Limitations
+
+- Current sandbox did not have `ccxt` or `aiosqlite` installed at import-probe time; no dependency installation was assumed. The local `--validate-only` command is designed to remain runnable in validation mode. Full exchange integration and authenticated endpoint behavior remain unverified.
+- The complete pytest suite exceeded the single-run time budget around 60%; all modules then completed successfully in twelve isolated batches, providing the final test result above.
+- No historical OHLCV holdout/backtest was run for the new Higher-Low family. A82 increases pattern coverage, not proven expectancy. Do not promote WATCH alerts into trades based only on this implementation.

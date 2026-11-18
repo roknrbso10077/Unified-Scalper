@@ -2617,3 +2617,13 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - `python main.py --validate-only`: exit 0, `bot_started=false`, `live_threads=[]`.
 - Final ZIP rebuilt with 99 files; CRC and manifest inventory verified; SHA-256 ledger verifies 98 non-self files.
 - No live MEXC/Telegram request, live order, deployment soak, or profitability claim was made.
+
+
+# A82 — Closed-candle Higher-Low Swing coverage and truthful research-failure telemetry (2026-11-18)
+
+- Added `SWING_HIGHER_LOW_RECLAIM`, using confirmed 1H swing pivots (including right-side confirmation) to preserve a higher-low structure as `WATCH` before the full higher-high reclaim. `CONFIRMED` requires the latest structural-high reclaim on a closed 1H candle, 1H/4H trend, volume/RSI constraints, and the existing BTC-bearish relative-strength rule.
+- The new Swing path remains read-only and cannot enter the canonical candidate selector, bypass family policy, invoke the order builder, or submit a trade. Its invalidation reference uses the existing structural stop helper and bounded 0.35%-4.0% risk geometry.
+- Fixed A79 outer supplemental-fetch exception accounting: `failed` is now reconciled with `attempted - ok`; diagnostics redact credentials and URLs; `/digest` exposes fetch timeout, the safe exception token and the leading fetch rejection reasons.
+- Added regression tests for failed-count reconciliation/redaction, bearish-market Higher-Low WATCH behavior and neutral-market Higher-Low/Higher-High confirmation.
+- Preserved the 99-file inventory, the A66 distribution identity, `MONITOR_ONLY_NO_NEW_BUYS`, the 3M canonical liquidity floor, and all existing live risk/policy/execution gates. No file was added or removed.
+- No claim of profitability or increased realized win rate is made; forward Shadow outcomes are required.
