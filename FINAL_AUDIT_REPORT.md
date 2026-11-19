@@ -288,3 +288,33 @@ For monitoring only, copy `.env.example` to `.env`; keep `UNIFIED_LIVE_PILOT_ENA
 - Current sandbox did not have `ccxt` or `aiosqlite` installed at import-probe time; no dependency installation was assumed. The local `--validate-only` command is designed to remain runnable in validation mode. Full exchange integration and authenticated endpoint behavior remain unverified.
 - The complete pytest suite exceeded the single-run time budget around 60%; all modules then completed successfully in twelve isolated batches, providing the final test result above.
 - No historical OHLCV holdout/backtest was run for the new Higher-Low family. A82 increases pattern coverage, not proven expectancy. Do not promote WATCH alerts into trades based only on this implementation.
+
+# A83 — USDC/USDT Shadow spread-capture lifecycle (2026-11-19)
+
+## Implemented
+- A separate read-only MEXC Spot Shadow task for the sole whitelisted pair `USDC/USDT`. `STABLECOIN_MM_ENABLE=0` by default; the only supported mode is `SHADOW`. A `LIVE_ARM` environment value is telemetry-only and cannot enable execution.
+- Public CCXT order-book and trade-print polling, order-book integrity/depeg/spread/two-sided-depth/imbalance/flow filters, MEXC raw `isBuyerMaker` aggressor-side fallback when normalized `side` is unavailable, and bounded API timeout/error backoff.
+- Simulated `BUY_PENDING` → `BUY_PARTIALLY_FILLED` → `SELL_PENDING` → `SELL_PARTIALLY_FILLED` → `CLOSED` lifecycle, with `EXPIRED_NO_FILL` for quotes that do not fill. A quote is not deemed filled by a price touch; public trade-print volume must first consume the estimated queue ahead and then reach the virtual order.
+- SQLite persistence of active cycles and event history, restart recovery, daily aggregate queries and a date-idempotent daily-report marker.
+- Telegram Outbox messages for quote creation, simulated buy/sell fills, completed cycles, API circuit pause and daily Shadow summary.
+- Precision/minimum amount/minimum notional checks using market helpers before creating a virtual quote. One active cycle, virtual capital cap, reserve, daily completed-cycle cap, quote age and kill switch are enforced.
+- No A83 code path calls `create_order`, `create_limit_buy_order`, `create_limit_sell_order` or another order-submission endpoint. The bot-wide policy remains `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## Cost model and fill limitations
+- The default maker-fee assumption is the conservative configured fallback `0.001` (0.1%) per side. Public CCXT `market.maker` metadata is deliberately not used as proof of the account fee because it may be a generic exchange default. An explicit override (including zero) is only an operator-supplied assumption and requires independent verification of the exact account, pair and fee tier.
+- Shadow PnL is `net_pnl_estimate_usdt`, not realized exchange PnL. It subtracts estimated maker fees and configured slippage. It does not use private fills, wallet deltas or account-specific fee records.
+- Public L2 depth cannot reveal the matching engine's exact queue position, hidden liquidity, cancellations or priority changes. The queue-ahead multiplier is deliberately a conservative estimate, not proof of real fillability. Public prints at the limit or beyond are evidence for this simulator only.
+- With the default 0.1% maker-fee fallback, round-trip modeled fees are 20 bps before slippage, while the default spread ceiling is 12 bps. Therefore the fail-closed default will not open Shadow quotes until the operator supplies a verified lower maker-fee assumption (for example zero only when the exact account/pair is confirmed). This is intentional; it prevents a generic public fee field from manufacturing a false edge. The engine does not promise 100 cycles per day, positive expectancy or any minimum realized return.
+
+## Verification performed
+- A83 deterministic tests: **10 passed**. Coverage includes microprice/spread/imbalance, invalid books, net cost checks, public-print queue consumption, quote filters, SQLite persistence and daily report idempotence, a no-order API assertion, and a complete simulated buy→sell→close cycle with positive estimated net PnL after modeled costs.
+- `test_v702_production_audit_fixes.py`: **119 passed**.
+- All **58 test modules** completed in 12 non-overlapping pytest batches: **609 passed, 1 skipped, 0 failed**. The one skip is the historical `test_release_contracts.py:375` case because the immutable A51 validation log is not part of the clean release archive.
+- Python compilation: `compileall` passed; explicit `py_compile` passed **73/73** Python files.
+- `python main.py --validate-only`: exit **0**, internal validation PASS, `bot_started=false`, `live_threads=[]`, `active_env_aliases=[]`.
+- Original/final inventory comparison: **99 files**, **0 added**, **0 removed**. Nine existing files changed: `main.py`, `test_v702_production_audit_fixes.py`, `.env.example`, `README.md`, `CHANGELOG.md`, `FINAL_AUDIT_REPORT.md`, `FINAL_MANIFEST.json`, `A66_RELEASE_MANIFEST.json` and `A66_SHA256SUMS.txt`.
+
+## Not verified / release limitations
+- No authenticated MEXC account was used. No live MEXC market-data session, order, exchange fill, private fee query or Telegram delivery acknowledgement was performed from this environment.
+- No historical replay, forward Shadow soak, account-tier fee confirmation, profitability/expectancy validation, Docker build or target-host load/memory test was performed. The deterministic fake exchange verifies code behavior only; it does not establish current exchange availability or profitability.
+- Do not set `STABLECOIN_MM_ENABLE=1` until the operator has intentionally chosen to run the read-only Shadow monitor and configured persistent storage/Telegram as needed. This release does not authorize live stablecoin trading; any future live proposal requires a separate audited implementation and explicit release decision.

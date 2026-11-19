@@ -2627,3 +2627,12 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Added regression tests for failed-count reconciliation/redaction, bearish-market Higher-Low WATCH behavior and neutral-market Higher-Low/Higher-High confirmation.
 - Preserved the 99-file inventory, the A66 distribution identity, `MONITOR_ONLY_NO_NEW_BUYS`, the 3M canonical liquidity floor, and all existing live risk/policy/execution gates. No file was added or removed.
 - No claim of profitability or increased realized win rate is made; forward Shadow outcomes are required.
+
+# A83 — USDC/USDT Shadow spread-capture lifecycle (2026-11-19)
+- Replaced the initial analytical-only helper with an independent read-only MEXC Spot Shadow lane for the single whitelisted `USDC/USDT` market. It consumes the public CCXT order-book and public trade-print methods; only `SHADOW` mode is accepted. The A83 lane remains disabled by default.
+- Added conservative quote assessment: order-book integrity, bid/ask depth floors, spread and depeg ceilings, recent signed trade flow, conservative fallback or explicitly overridden maker-fee assumption, estimated slippage, and minimum net-bps / minimum-dollar-profit requirements.
+- Added a persistent SQLite lifecycle journal and event log. The simulator records passive quote state, public-print-based partial simulated fills, queue-ahead consumption, cost-aware exit quote, partial exit and closed-cycle net estimate; a price touch alone is never treated as a fill.
+- Added bounded cycle age, daily completed-cycle cap, API error circuit backoff, Telegram entry/fill/exit events through the existing durable Outbox, and one idempotent daily UTC summary.
+- A83 contains **no exchange create-order path**. `STABLECOIN_MM_LIVE_ARM` is ignored, `live_is_armed()` remains hard-false, and existing `MONITOR_ONLY_NO_NEW_BUYS` plus all canonical execution gates remain unchanged.
+- Fee caveat: public CCXT market maker metadata is not account-tier confirmation and is never silently treated as the account fee. The default is 0.1% per side; this exceeds the default 12 bps spread ceiling and therefore blocks quote creation until a verified lower account/pair fee assumption is supplied. An explicit fee override is supported only after independent verification of the exact account/pair fee schedule.
+- Tests use deterministic synthetic market data and SQLite; no claim is made about actual fills, personal zero fees, profitability, live exchange connectivity, or deployment soak.

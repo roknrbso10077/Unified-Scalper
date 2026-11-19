@@ -6,6 +6,7 @@ import json
 import math
 import time
 import os
+from datetime import datetime, timezone
 import subprocess
 import sys
 from collections import defaultdict, deque
@@ -2174,3 +2175,255 @@ def test_a80_status_keyboard_text_alias_is_read_only_in_monitor_only(monkeypatch
     assert "A80 READ-ONLY STATUS" in replies[0][1]
     assert "FAKE-STATUS-ALIAS-DIGEST" in replies[0][1]
 
+
+# A83 stablecoin analytical primitives; no exchange orders are exercised.
+def test_a83_stablecoin_microprice_imbalance_and_spread():
+    mm = bot.StablecoinMarketMaker
+    assert mm.microprice(.9998, 10, 1.0002, 20) == pytest.approx(.9999333333333333)
+    assert mm.imbalance(60, 40) == pytest.approx(.2)
+    assert mm.spread_bps(.9998, 1.0002) == pytest.approx(4.0)
+
+
+def test_a83_stablecoin_net_profit_and_fail_closed_buy_edge():
+    mm = bot.StablecoinMarketMaker
+    result = mm.net_profit(100, 100.05, .01, .01)
+    assert result["net_pnl_estimate_usdt"] == pytest.approx(.03)
+    assert mm.buy_edge(1, .9998, .5, 1, .2, 1, 0, 10)[0] is True
+    assert mm.buy_edge(1, .9998, 3, 1, .2, 1, 12, 10)[0] is False
+    assert mm.live_is_armed() is False
+
+
+def test_a83_stablecoin_invalid_book_rejected():
+    with pytest.raises(ValueError):
+        bot.StablecoinMarketMaker.microprice(1, 0, 1.001, 1)
+
+
+def test_a83_shadow_trade_prints_consume_queue_before_simulated_fill():
+    mm = bot.StablecoinMarketMaker
+    order = {"limit_price": 1.0, "remaining_qty": 5.0, "queue_ahead_qty": 10.0}
+    # Same-price sell prints first consume the visible queue ahead.
+    assert mm.consume_trade_fill(order, {"side": "sell", "price": 1.0, "amount": 8.0}, "buy") == 0.0
+    assert order["queue_ahead_qty"] == pytest.approx(2.0)
+    assert mm.consume_trade_fill(order, {"side": "sell", "price": 1.0, "amount": 5.0}, "buy") == pytest.approx(3.0)
+    # A print through the limit is evidence of executable volume, but still capped by order remainder.
+    assert mm.consume_trade_fill(order, {"side": "sell", "price": 0.9999, "amount": 4.0}, "buy") == pytest.approx(2.0)
+    assert order["remaining_qty"] == pytest.approx(0.0)
+    assert mm.consume_trade_fill(order, {"side": "buy", "price": 1.0, "amount": 10.0}, "buy") == 0.0
+
+
+def test_a83_quote_assessment_requires_edge_depth_depeg_and_print_flow(monkeypatch):
+    mm = bot.StablecoinMarketMaker
+    now_ms = int(time.time() * 1000)
+    book = {"bids": [[0.9998, 2000.0]], "asks": [[1.0002, 2000.0]], "timestamp": now_ms}
+    trades = [
+        {"id": "1", "timestamp": now_ms - 1000, "side": "buy", "price": 1.0002, "amount": 10.0},
+        {"id": "2", "timestamp": now_ms - 500, "side": "sell", "price": 0.9998, "amount": 2.0},
+    ]
+    eligible, reason, metrics = mm.assess_quote(book, trades, maker_fee_rate=0.0, now_ms=now_ms)
+    assert eligible and reason == "eligible_shadow_quote"
+    assert metrics["estimated_net_bps"] > metrics["required_net_bps"]
+    bad_book = {"bids": [[0.996, 2000.0]], "asks": [[0.9962, 2000.0]], "timestamp": now_ms}
+    eligible, reason, _ = mm.assess_quote(bad_book, trades, maker_fee_rate=0.0, now_ms=now_ms)
+    assert not eligible and reason == "depeg_guard"
+    thin_book = {"bids": [[0.9998, 10.0]], "asks": [[1.0002, 10.0]], "timestamp": now_ms}
+    eligible, reason, _ = mm.assess_quote(thin_book, trades, maker_fee_rate=0.0, now_ms=now_ms)
+    assert not eligible and reason == "depth_below_floor"
+
+
+def test_a83_cycle_journal_persists_active_state_and_daily_report_claim(tmp_path):
+    old_db = bot.CONFIG.get("DB_PATH")
+    bot.CONFIG["DB_PATH"] = str(tmp_path / "a83.db")
+    try:
+        bot.DBManager.init_schema()
+        cycle = {
+            "cycle_id": "a83-cycle-test", "symbol": "USDC/USDT", "state": "BUY_PENDING",
+            "started_at": datetime.now(timezone.utc).isoformat(), "buy_filled_qty": 0.0,
+            "buy_cost_usdt": 0.0,
+        }
+        bot.DBManager.save_stablecoin_mm_cycle(cycle, "BUY_QUOTE_CREATED", {"test": True})
+        recovered = bot.DBManager.get_active_stablecoin_mm_cycle("USDC/USDT")
+        assert recovered and recovered["cycle_id"] == cycle["cycle_id"]
+        assert recovered["state"] == "BUY_PENDING"
+        cycle.update({"state": "CLOSED", "closed_at": datetime.now(timezone.utc).isoformat(), "net_pnl_usdt": 0.025})
+        bot.DBManager.save_stablecoin_mm_cycle(cycle, "CYCLE_CLOSED")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        summary = bot.DBManager.stablecoin_mm_daily_summary(today)
+        assert summary["completed_cycles"] == 1
+        assert summary["net_pnl_usdt"] == pytest.approx(0.025)
+        assert bot.DBManager.has_stablecoin_mm_daily_report(today) is False
+        assert bot.DBManager.claim_stablecoin_mm_daily_report(today) is True
+        assert bot.DBManager.claim_stablecoin_mm_daily_report(today) is False
+        assert bot.DBManager.has_stablecoin_mm_daily_report(today) is True
+    finally:
+        bot.CONFIG["DB_PATH"] = old_db
+
+
+def test_a83_tick_creates_only_a_shadow_quote_and_never_calls_order_methods(tmp_path):
+    cfg_keys = ("DB_PATH", "STABLECOIN_MM_MODE", "STABLECOIN_MM_KILL_SWITCH",
+                "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE", "STABLECOIN_MM_MIN_NET_BPS",
+                "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", "STABLECOIN_MM_MAX_SPREAD_BPS",
+                "STABLECOIN_MM_ORDERBOOK_DEPTH_USDT", "STABLECOIN_MM_TRADE_LOOKBACK_SEC")
+    old_cfg = {key: bot.CONFIG.get(key) for key in cfg_keys}
+    bot.CONFIG["DB_PATH"] = str(tmp_path / "a83_tick.db")
+    bot.CONFIG["STABLECOIN_MM_MODE"] = "SHADOW"
+    bot.CONFIG["STABLECOIN_MM_KILL_SWITCH"] = False
+    bot.CONFIG["STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE"] = 0.0
+    bot.CONFIG["STABLECOIN_MM_MIN_NET_BPS"] = 1.0
+    bot.CONFIG["STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS"] = 0.1
+    bot.CONFIG["STABLECOIN_MM_MAX_SPREAD_BPS"] = 12.0
+    bot.CONFIG["STABLECOIN_MM_ORDERBOOK_DEPTH_USDT"] = 1000.0
+    bot.CONFIG["STABLECOIN_MM_TRADE_LOOKBACK_SEC"] = 120.0
+    bot.DBManager.init_schema()
+    now_ms = int(time.time() * 1000)
+
+    class PublicOnlyFake:
+        markets = {"USDC/USDT": {"symbol": "USDC/USDT", "base": "USDC", "quote": "USDT", "spot": True, "active": True, "maker": 0.0}}
+        async def load_markets(self): return self.markets
+        async def fetch_order_book(self, symbol, limit=20):
+            return {"bids": [[0.9998, 2000.0]], "asks": [[1.0002, 2000.0]], "timestamp": now_ms}
+        async def fetch_trades(self, symbol, limit=100):
+            return [{"id": "recent-buy", "timestamp": now_ms - 100, "side": "buy", "price": 1.0002, "amount": 20.0}]
+        def price_to_precision(self, symbol, value): return f"{float(value):.4f}"
+        def amount_to_precision(self, symbol, value): return f"{float(value):.4f}"
+        async def create_order(self, *args, **kwargs): raise AssertionError("Shadow must not submit orders")
+        async def create_limit_buy_order(self, *args, **kwargs): raise AssertionError("Shadow must not submit orders")
+        async def create_limit_sell_order(self, *args, **kwargs): raise AssertionError("Shadow must not submit orders")
+
+    try:
+        result = asyncio.run(bot.StablecoinMarketMaker.tick(PublicOnlyFake(), now_ms=now_ms))
+        assert result["ok"] is True
+        assert result["reason"] == "shadow_quote_created"
+        active = bot.DBManager.get_active_stablecoin_mm_cycle("USDC/USDT")
+        assert active and active["state"] == "BUY_PENDING"
+        assert active["buy_order"]["limit_price"] == pytest.approx(0.9998)
+        assert bot.StablecoinMarketMaker.live_is_armed() is False
+    finally:
+        for key, value in old_cfg.items():
+            bot.CONFIG[key] = value
+
+
+def test_a83_shadow_cycle_closes_only_after_buy_and_sell_public_prints(tmp_path, monkeypatch):
+    old_cfg = {key: bot.CONFIG.get(key) for key in (
+        "DB_PATH", "STABLECOIN_MM_MODE", "STABLECOIN_MM_KILL_SWITCH",
+        "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE", "STABLECOIN_MM_MIN_NET_BPS",
+        "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", "STABLECOIN_MM_MAX_SPREAD_BPS",
+        "STABLECOIN_MM_ORDERBOOK_DEPTH_USDT", "STABLECOIN_MM_TRADE_LOOKBACK_SEC",
+        "STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER", "STABLECOIN_MM_MIN_NET_PROFIT_USDT",
+    )}
+    bot.CONFIG.update({
+        "DB_PATH": str(tmp_path / "a83_full_cycle.db"),
+        "STABLECOIN_MM_MODE": "SHADOW",
+        "STABLECOIN_MM_KILL_SWITCH": False,
+        "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE": 0.0,
+        "STABLECOIN_MM_MIN_NET_BPS": 1.0,
+        "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS": 0.1,
+        "STABLECOIN_MM_MAX_SPREAD_BPS": 12.0,
+        "STABLECOIN_MM_ORDERBOOK_DEPTH_USDT": 1000.0,
+        "STABLECOIN_MM_TRADE_LOOKBACK_SEC": 120.0,
+        "STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER": 1.25,
+        "STABLECOIN_MM_MIN_NET_PROFIT_USDT": 0.02,
+    })
+    bot.DBManager.init_schema()
+    now_ms = int(time.time() * 1000)
+
+    class PublicOnlyCycleExchange:
+        markets = {"USDC/USDT": {"symbol": "USDC/USDT", "base": "USDC", "quote": "USDT",
+                                 "spot": True, "active": True, "maker": 0.0,
+                                 "limits": {"amount": {"min": 0.0}, "cost": {"min": 0.0}}}}
+        trades = [{"id": "seed-flow", "timestamp": now_ms - 100, "side": "buy",
+                   "price": 1.0002, "amount": 20.0}]
+        order_methods_called = 0
+
+        async def fetch_order_book(self, symbol, limit=20):
+            return {"bids": [[0.9998, 1.0], [0.9997, 2000.0]],
+                    "asks": [[1.0002, 1.0], [1.0003, 2000.0]], "timestamp": now_ms}
+
+        async def fetch_trades(self, symbol, limit=100):
+            return list(self.trades)
+
+        def price_to_precision(self, symbol, value):
+            return f"{float(value):.4f}"
+
+        def amount_to_precision(self, symbol, value):
+            return f"{float(value):.4f}"
+
+        async def create_order(self, *args, **kwargs):
+            self.order_methods_called += 1
+            raise AssertionError("A83 Shadow must never submit orders")
+
+        async def create_limit_buy_order(self, *args, **kwargs):
+            self.order_methods_called += 1
+            raise AssertionError("A83 Shadow must never submit orders")
+
+        async def create_limit_sell_order(self, *args, **kwargs):
+            self.order_methods_called += 1
+            raise AssertionError("A83 Shadow must never submit orders")
+
+    async def no_notify(cls, message):
+        return True
+
+    monkeypatch.setattr(bot.StablecoinMarketMaker, "_notify", classmethod(no_notify))
+    exchange = PublicOnlyCycleExchange()
+    try:
+        created = asyncio.run(bot.StablecoinMarketMaker.tick(exchange, now_ms=now_ms))
+        assert created["reason"] == "shadow_quote_created"
+
+        exchange.trades.append({"id": "buy-side-fill", "timestamp": now_ms + 500,
+                                "side": "sell", "price": 0.9998, "amount": 120.0})
+        bought = asyncio.run(bot.StablecoinMarketMaker.tick(exchange, now_ms=now_ms + 1000))
+        assert bought["state"] == "SELL_PENDING"
+        active = bot.DBManager.get_active_stablecoin_mm_cycle("USDC/USDT")
+        assert active and active["state"] == "SELL_PENDING"
+        assert active["buy_filled_qty"] > 0
+
+        exchange.trades.append({"id": "sell-side-fill", "timestamp": now_ms + 1500,
+                                "side": "buy", "price": 1.0002, "amount": 120.0})
+        sold = asyncio.run(bot.StablecoinMarketMaker.tick(exchange, now_ms=now_ms + 2000))
+        assert sold["state"] == "CLOSED"
+        assert bot.DBManager.get_active_stablecoin_mm_cycle("USDC/USDT") is None
+        summary = bot.DBManager.stablecoin_mm_daily_summary(
+            datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d"))
+        assert summary["completed_cycles"] == 1
+        assert summary["net_pnl_usdt"] >= 0.02
+        assert exchange.order_methods_called == 0
+    finally:
+        for key, value in old_cfg.items():
+            if value is None:
+                bot.CONFIG.pop(key, None)
+            else:
+                bot.CONFIG[key] = value
+
+
+def test_a83_mexc_raw_is_buyer_maker_maps_to_taker_aggressor_side():
+    mm = bot.StablecoinMarketMaker
+    assert mm._aggressor_side({"info": {"isBuyerMaker": True}}) == "sell"
+    assert mm._aggressor_side({"info": {"isBuyerMaker": False}}) == "buy"
+    assert mm._aggressor_side({"info": {"isBuyerMaker": "true"}}) == "sell"
+    assert mm._aggressor_side({"side": "buy", "info": {"isBuyerMaker": True}}) == "buy"
+    order = {"limit_price": 1.0, "remaining_qty": 2.0, "queue_ahead_qty": 0.0}
+    raw_mexc_sell = {"info": {"isBuyerMaker": True}, "price": 1.0, "amount": 1.0}
+    assert mm.consume_trade_fill(order, raw_mexc_sell, "buy") == pytest.approx(1.0)
+
+
+def test_a83_public_market_zero_maker_rate_is_not_treated_as_account_fee(monkeypatch):
+    old_fallback = bot.CONFIG.get("STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE")
+    old_override = bot.CONFIG.get("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE")
+    try:
+        bot.CONFIG["STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE"] = 0.001
+        bot.CONFIG["STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE"] = None
+        rate, source = bot.StablecoinMarketMaker.resolve_maker_fee_rate({"maker": 0.0})
+        assert rate == pytest.approx(0.001)
+        assert "NOT_ACCOUNT_CONFIRMED" in source
+        bot.CONFIG["STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE"] = 0.0
+        rate, source = bot.StablecoinMarketMaker.resolve_maker_fee_rate({"maker": 0.001})
+        assert rate == 0.0
+        assert "OPERATOR_OVERRIDE" in source
+    finally:
+        if old_fallback is None:
+            bot.CONFIG.pop("STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE", None)
+        else:
+            bot.CONFIG["STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE"] = old_fallback
+        if old_override is None:
+            bot.CONFIG.pop("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE", None)
+        else:
+            bot.CONFIG["STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE"] = old_override

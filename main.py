@@ -249,6 +249,34 @@ CONFIG: Dict[str, Any] = {
     # ---- Operational modes -------------------------------------------------
     "ENABLE_LIVE_TRADING": False,    # Fail-closed default; LIVE requires explicit env confirmation
     "PAPER_TRADING_MODE": True,      # Fail-closed default; V621 explicit opt-in can disable this
+    # A83 dedicated stablecoin spread-capture research lane. Public-data Shadow only.
+    "STABLECOIN_MM_ENABLE": False,
+    "STABLECOIN_MM_MODE": "SHADOW",
+    "STABLECOIN_MM_SYMBOL": "USDC/USDT",
+    "STABLECOIN_MM_POLL_SEC": 15.0,
+    "STABLECOIN_MM_MAX_CAPITAL_USDT": 100.0,
+    "STABLECOIN_MM_RESERVE_USDT": 5.0,
+    "STABLECOIN_MM_MAX_COMPLETED_CYCLES_PER_DAY": 100,
+    "STABLECOIN_MM_MAX_OPEN_CYCLES": 1,
+    "STABLECOIN_MM_MIN_NET_PROFIT_USDT": 0.02,
+    "STABLECOIN_MM_MIN_NET_BPS": 2.0,
+    "STABLECOIN_MM_MAX_SPREAD_BPS": 12.0,
+    "STABLECOIN_MM_MAX_DEPEG_BPS": 25.0,
+    "STABLECOIN_MM_MAX_ORDER_AGE_SEC": 60.0,
+    "STABLECOIN_MM_ORDERBOOK_DEPTH_USDT": 1000.0,
+    "STABLECOIN_MM_MIN_BOOK_IMBALANCE": -0.15,
+    "STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE": 0.001,
+    "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE": None,  # Explicit only after account/pair fee confirmation.
+    "STABLECOIN_MM_MAX_API_ERRORS": 3,
+    "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS": 0.5,
+    "STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER": 1.25,
+    "STABLECOIN_MM_TRADE_LOOKBACK_SEC": 120.0,
+    "STABLECOIN_MM_TRADE_LIMIT": 100,
+    "STABLECOIN_MM_FETCH_TIMEOUT_SEC": 8.0,
+    "STABLECOIN_MM_TELEGRAM_ENABLE": True,
+    "STABLECOIN_MM_DAILY_REPORT_ENABLE": True,
+    "STABLECOIN_MM_DAILY_REPORT_HOUR": 23,  # UTC
+    "STABLECOIN_MM_KILL_SWITCH": False,
     "SELECTIVE_STRONG_MODE": True,
     "OPPORTUNITY_ENGINE_ENABLED": True,
     "USE_LIQUIDITY_TIERS": True,
@@ -1329,6 +1357,49 @@ def _apply_loaded_environment_config() -> None:
     _daily_tz = _env_first("V702_INTRADAY_SHADOW_DAILY_TIMEZONE")
     if _daily_tz:
         CONFIG["V702_INTRADAY_SHADOW_DAILY_TIMEZONE"] = _daily_tz.strip()
+
+    # A83 stablecoin engine controls. LIVE_ARM is intentionally read only for
+    # telemetry; it never creates an order permission path.
+    _a83_bool_keys = ("STABLECOIN_MM_ENABLE", "STABLECOIN_MM_TELEGRAM_ENABLE",
+                      "STABLECOIN_MM_DAILY_REPORT_ENABLE", "STABLECOIN_MM_KILL_SWITCH")
+    for _key in _a83_bool_keys:
+        _raw = _env_first(_key)
+        if _raw is not None:
+            CONFIG[_key] = _raw.strip().lower() in {"1", "true", "yes", "on"}
+    _a83_mode = _env_first("STABLECOIN_MM_MODE")
+    if _a83_mode:
+        CONFIG["STABLECOIN_MM_MODE"] = _a83_mode.strip().upper()
+    _a83_symbol = _env_first("STABLECOIN_MM_SYMBOL")
+    if _a83_symbol:
+        CONFIG["STABLECOIN_MM_SYMBOL"] = _a83_symbol.strip().upper()
+    _a83_float_keys = ("STABLECOIN_MM_POLL_SEC", "STABLECOIN_MM_MAX_CAPITAL_USDT",
+        "STABLECOIN_MM_RESERVE_USDT", "STABLECOIN_MM_MIN_NET_PROFIT_USDT",
+        "STABLECOIN_MM_MIN_NET_BPS", "STABLECOIN_MM_MAX_SPREAD_BPS",
+        "STABLECOIN_MM_MAX_DEPEG_BPS", "STABLECOIN_MM_MAX_ORDER_AGE_SEC",
+        "STABLECOIN_MM_ORDERBOOK_DEPTH_USDT", "STABLECOIN_MM_MIN_BOOK_IMBALANCE",
+        "STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE",
+        "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", "STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER",
+        "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE",
+        "STABLECOIN_MM_TRADE_LOOKBACK_SEC", "STABLECOIN_MM_FETCH_TIMEOUT_SEC")
+    for _key in _a83_float_keys:
+        _raw = _env_first(_key)
+        if _raw is not None:
+            try:
+                _parsed = float(_raw)
+                if math.isfinite(_parsed):
+                    CONFIG[_key] = _parsed
+            except (TypeError, ValueError, OverflowError):
+                pass
+    _a83_int_keys = ("STABLECOIN_MM_MAX_COMPLETED_CYCLES_PER_DAY",
+                     "STABLECOIN_MM_MAX_OPEN_CYCLES", "STABLECOIN_MM_TRADE_LIMIT",
+                     "STABLECOIN_MM_DAILY_REPORT_HOUR")
+    for _key in _a83_int_keys:
+        _raw = _env_first(_key)
+        if _raw is not None:
+            try:
+                CONFIG[_key] = int(_raw)
+            except (TypeError, ValueError, OverflowError):
+                pass
 
 
 # Apply settings after load_dotenv and before the runtime snapshots any config
@@ -12114,6 +12185,18 @@ class DBManager:
                 status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
             )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS stablecoin_mm_cycles (
+                cycle_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, state TEXT NOT NULL,
+                started_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+                net_pnl_usdt REAL, payload_json TEXT NOT NULL)""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_stablecoin_mm_state ON stablecoin_mm_cycles(symbol,state,updated_at)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_stablecoin_mm_closed ON stablecoin_mm_cycles(closed_at,state)")
+            c.execute("""CREATE TABLE IF NOT EXISTS stablecoin_mm_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL,
+                ts TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL)""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_stablecoin_mm_events_cycle ON stablecoin_mm_events(cycle_id,ts)")
+            c.execute("""CREATE TABLE IF NOT EXISTS stablecoin_mm_reports (
+                report_date TEXT PRIMARY KEY, created_at TEXT NOT NULL)""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_telegram_outbox_status ON telegram_outbox(status, created_at)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_telegram_outbox_key ON telegram_outbox(message_key)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_rejection_ts ON rejection_events(ts)")
@@ -12543,6 +12626,111 @@ class DBManager:
             if conn is not None:
                 try: conn.close()
                 except Exception: pass
+
+    @staticmethod
+    def save_stablecoin_mm_cycle(cycle: Dict[str, Any], event_type: str = "STATE_SNAPSHOT",
+                                 event_details: Optional[Dict[str, Any]] = None) -> None:
+        """Atomically persist the current Shadow cycle and its lifecycle event."""
+        if not isinstance(cycle, dict) or not str(cycle.get("cycle_id") or "").strip():
+            raise ValueError("stablecoin_mm_cycle_id_missing")
+        cycle_id = str(cycle["cycle_id"])
+        symbol = str(cycle.get("symbol") or "USDC/USDT")
+        state = str(cycle.get("state") or "ERROR").upper()
+        started_at = str(cycle.get("started_at") or datetime.now(timezone.utc).isoformat())
+        now = datetime.now(timezone.utc).isoformat()
+        closed_at = str(cycle.get("closed_at") or "") or None
+        net_value = cycle.get("net_pnl_usdt")
+        net_value = float(net_value) if net_value is not None and math.isfinite(float(net_value)) else None
+        payload = json.dumps(cycle, default=str, allow_nan=False, separators=(",", ":"))
+        event_payload = json.dumps(dict(event_details or cycle), default=str, allow_nan=False, separators=(",", ":"))
+        conn = None
+        try:
+            conn = sqlite3.connect(str(CONFIG.get("DB_PATH") or "./unified_scalper.db"), timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("""INSERT INTO stablecoin_mm_cycles
+                (cycle_id,symbol,state,started_at,updated_at,closed_at,net_pnl_usdt,payload_json)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(cycle_id) DO UPDATE SET symbol=excluded.symbol,state=excluded.state,
+                updated_at=excluded.updated_at,closed_at=excluded.closed_at,
+                net_pnl_usdt=excluded.net_pnl_usdt,payload_json=excluded.payload_json""",
+                (cycle_id, symbol, state, started_at, now, closed_at, net_value, payload))
+            conn.execute("INSERT INTO stablecoin_mm_events(cycle_id,ts,event_type,payload_json) VALUES(?,?,?,?)",
+                         (cycle_id, now, str(event_type or "STATE_SNAPSHOT")[:80], event_payload))
+            conn.commit()
+            STATS["v702_a83_cycle_persist_ok"] = int(STATS.get("v702_a83_cycle_persist_ok", 0) or 0) + 1
+        except Exception as exc:
+            if conn is not None:
+                try: conn.rollback()
+                except Exception: pass
+            STATS["v702_a83_cycle_persist_failures"] = int(STATS.get("v702_a83_cycle_persist_failures", 0) or 0) + 1
+            logger.critical("[A83-MM] durable cycle write failed cycle=%s: %s", cycle_id, exc)
+            raise RuntimeError("stablecoin_mm_cycle_persist_failed") from exc
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
+    @staticmethod
+    def get_active_stablecoin_mm_cycle(symbol: str = "USDC/USDT") -> Optional[Dict[str, Any]]:
+        conn = None
+        try:
+            conn = sqlite3.connect(str(CONFIG.get("DB_PATH") or "./unified_scalper.db"), timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""SELECT payload_json FROM stablecoin_mm_cycles
+                WHERE symbol=? AND state IN ('BUY_PENDING','BUY_PARTIALLY_FILLED','SELL_PENDING','SELL_PARTIALLY_FILLED','RECONCILIATION_REQUIRED')
+                ORDER BY updated_at DESC LIMIT 1""", (str(symbol),)).fetchone()
+            if not row:
+                return None
+            value = json.loads(row["payload_json"] or "{}")
+            return value if isinstance(value, dict) else None
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @staticmethod
+    def stablecoin_mm_daily_summary(report_date: str) -> Dict[str, Any]:
+        start = datetime.strptime(str(report_date), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        conn = None
+        try:
+            conn = sqlite3.connect(str(CONFIG.get("DB_PATH") or "./unified_scalper.db"), timeout=5.0)
+            row = conn.execute("""SELECT COUNT(*),COALESCE(SUM(net_pnl_usdt),0),
+                SUM(CASE WHEN net_pnl_usdt>0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN net_pnl_usdt<0 THEN 1 ELSE 0 END)
+                FROM stablecoin_mm_cycles WHERE state='CLOSED' AND closed_at>=? AND closed_at<?""",
+                (start.isoformat(), end.isoformat())).fetchone()
+            return {"completed_cycles": int(row[0] or 0), "net_pnl_usdt": float(row[1] or 0.0),
+                    "wins": int(row[2] or 0), "losses": int(row[3] or 0)}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @staticmethod
+    def has_stablecoin_mm_daily_report(report_date: str) -> bool:
+        conn = None
+        try:
+            conn = sqlite3.connect(str(CONFIG.get("DB_PATH") or "./unified_scalper.db"), timeout=5.0)
+            row = conn.execute("SELECT 1 FROM stablecoin_mm_reports WHERE report_date=? LIMIT 1",
+                               (str(report_date),)).fetchone()
+            return bool(row)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @staticmethod
+    def claim_stablecoin_mm_daily_report(report_date: str) -> bool:
+        conn = None
+        try:
+            conn = sqlite3.connect(str(CONFIG.get("DB_PATH") or "./unified_scalper.db"), timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            cur = conn.execute("INSERT OR IGNORE INTO stablecoin_mm_reports(report_date,created_at) VALUES(?,?)",
+                               (str(report_date), datetime.now(timezone.utc).isoformat()))
+            conn.commit()
+            return bool(cur.rowcount)
+        finally:
+            if conn is not None:
+                conn.close()
 
     # ---------------------------------------------------------------------
     # v4.2.2 FIX — ASYNC NON-BLOCKING WRAPPERS.
@@ -26391,6 +26579,17 @@ async def run_bot(universe: List[str]):
             tasks.append(asyncio.create_task(KnowledgeOutcomeLedger.task(exchange)))
         except Exception as _v702_ko_task_e:
             logger.warning("[V702-KNOWLEDGE] shadow tracker task start suppressed: %s", _v702_ko_task_e)
+    if bool(CONFIG.get("STABLECOIN_MM_ENABLE", False)):
+        if str(CONFIG.get("STABLECOIN_MM_MODE", "SHADOW")).upper() == "SHADOW":
+            try:
+                tasks.append(asyncio.create_task(StablecoinMarketMaker.run_forever(exchange)))
+                logger.warning("[A83-MM] independent read-only Shadow task scheduled; no wallet or order endpoint required")
+            except Exception as _a83_task_exc:
+                STATS["v702_a83_task_start_error"] = f"{type(_a83_task_exc).__name__}:{str(_a83_task_exc)[:160]}"
+                logger.critical("[A83-MM] task could not start; existing bot safety policy unchanged: %s", _a83_task_exc)
+        else:
+            STATS["v702_a83_startup_state"] = "BLOCKED_UNSUPPORTED_MODE"
+            logger.critical("[A83-MM] unsupported mode=%s; only SHADOW allowed", CONFIG.get("STABLECOIN_MM_MODE"))
 # V652: independent read-only operator root-cause watch. No trading authority.
     try:
         _v652_task_factory = _v652_install_task_reference()
@@ -29596,6 +29795,599 @@ def _validate_config_base() -> bool:
         logger.critical(f"[MSE.selftest] exception: {_mse_e} — disabling MSE")
         CONFIG["MSE_ENABLED"] = False
     return True
+
+
+# A83 Stablecoin Market Maker. This engine is read-only and Shadow-only.
+# It never calls create_order / create_limit_order / market order endpoints.
+class StablecoinMarketMaker:
+    SYMBOL = "USDC/USDT"
+    STATES = {"IDLE", "BUY_PENDING", "BUY_PARTIALLY_FILLED", "SELL_PENDING",
+              "SELL_PARTIALLY_FILLED", "CLOSED", "EXPIRED_NO_FILL", "ERROR", "PAUSED"}
+    ACTIVE_STATES = {"BUY_PENDING", "BUY_PARTIALLY_FILLED", "SELL_PENDING", "SELL_PARTIALLY_FILLED"}
+
+    @staticmethod
+    def microprice(bid, bid_qty, ask, ask_qty):
+        bid, bid_qty, ask, ask_qty = map(float, (bid, bid_qty, ask, ask_qty))
+        if min(bid, ask, bid_qty, ask_qty) <= 0 or bid >= ask:
+            raise ValueError("invalid or crossed order book")
+        return (ask * bid_qty + bid * ask_qty) / (bid_qty + ask_qty)
+
+    @staticmethod
+    def imbalance(bid_depth, ask_depth):
+        b, a = float(bid_depth), float(ask_depth)
+        if b < 0 or a < 0 or (b + a) <= 0:
+            raise ValueError("invalid depth")
+        return (b - a) / (b + a)
+
+    @staticmethod
+    def spread_bps(bid, ask):
+        b, a = float(bid), float(ask)
+        if b <= 0 or a <= b:
+            raise ValueError("invalid spread")
+        return ((a - b) / ((a + b) / 2.0)) * 10000.0
+
+    @staticmethod
+    def net_profit(entry_value, exit_value, buy_fee_usdt=0, sell_fee_usdt=0, other_fee_usdt=0):
+        vals = tuple(map(float, (entry_value, exit_value, buy_fee_usdt, sell_fee_usdt, other_fee_usdt)))
+        entry, exit_, bf, sf, of = vals
+        if min(entry, exit_, bf, sf, of) < 0 or not all(math.isfinite(x) for x in vals):
+            raise ValueError("invalid accounting input")
+        gross = exit_ - entry
+        net = gross - bf - sf - of
+        return {"gross_pnl_usdt": gross, "net_pnl_estimate_usdt": net,
+                "net_pnl_pct": (net / entry * 100.0 if entry else None),
+                "net_pnl_bps": (net / entry * 10000.0 if entry else None)}
+
+    @staticmethod
+    def buy_edge(fair_value, ask, round_trip_cost_bps, min_net_bps, imbalance, trade_flow, depeg_bps, max_depeg_bps):
+        fair, ask_px = float(fair_value), float(ask)
+        if fair <= 0 or ask_px <= 0:
+            return False, "invalid_price", 0.0
+        edge_bps = (fair - ask_px) / fair * 10000.0
+        if abs(float(depeg_bps)) >= float(max_depeg_bps):
+            return False, "depeg_guard", edge_bps
+        if float(imbalance) <= 0 or float(trade_flow) <= 0:
+            return False, "flow_or_book_not_supportive", edge_bps
+        if edge_bps - float(round_trip_cost_bps) < float(min_net_bps):
+            return False, "net_edge_insufficient", edge_bps
+        return True, "eligible_shadow_only", edge_bps
+
+    @staticmethod
+    def live_is_armed():
+        return False  # Intentionally permanent in A83; independent release required.
+
+    @staticmethod
+    def _aggressor_side(trade: Dict[str, Any]) -> str:
+        """Return taker/aggressor direction, with a MEXC raw-payload fallback.
+
+        MEXC's spot tape exposes `isBuyerMaker`: when true, the buyer is the
+        resting maker and the aggressor was a sell; otherwise the aggressor was
+        a buy. CCXT's normalized `side` takes precedence when it is available.
+        """
+        side = str((trade or {}).get("side") or "").strip().lower()
+        if side in ("buy", "sell"):
+            return side
+        info = (trade or {}).get("info")
+        if not isinstance(info, dict):
+            return ""
+        raw = info.get("isBuyerMaker", info.get("m"))
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            value = raw.strip().lower()
+            if value in ("true", "1", "yes"):
+                buyer_is_maker = True
+            elif value in ("false", "0", "no"):
+                buyer_is_maker = False
+            else:
+                return ""
+        elif isinstance(raw, (bool, int)):
+            buyer_is_maker = bool(raw)
+        else:
+            return ""
+        return "sell" if buyer_is_maker else "buy"
+
+    @staticmethod
+    def resolve_maker_fee_rate(market: Dict[str, Any]) -> Tuple[float, str]:
+        """Use only an explicit operator override or a conservative fallback.
+
+        CCXT's public market maker rate is not account-tier fee confirmation and
+        may be a generic exchange default. Do not silently treat public 0.0 as
+        proof that this account/pair qualifies for zero fees.
+        """
+        override = CONFIG.get("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE")
+        if override is not None:
+            rate = float(override)
+            source = "OPERATOR_OVERRIDE_ACCOUNT_PAIR_CONFIRMATION_REQUIRED"
+        else:
+            rate = float(CONFIG.get("STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE", 0.001))
+            source = "CONSERVATIVE_FALLBACK_PUBLIC_METADATA_NOT_ACCOUNT_CONFIRMED"
+        if not math.isfinite(rate) or rate < 0 or rate > 0.01:
+            raise ValueError("maker_fee_rate_invalid")
+        return rate, source
+
+    @staticmethod
+    def _trade_key(trade: Dict[str, Any]) -> str:
+        if trade.get("id") not in (None, ""):
+            return "id:" + str(trade.get("id"))
+        return "raw:{:.0f}|{}|{:.12g}|{:.12g}".format(
+            float(trade.get("timestamp") or 0), StablecoinMarketMaker._aggressor_side(trade),
+            float(trade.get("price") or 0), float(trade.get("amount") or 0))
+
+    @staticmethod
+    def consume_trade_fill(order: Dict[str, Any], trade: Dict[str, Any], side: str) -> float:
+        """Conservative L2 queue approximation; no fill from price-touch alone.
+
+        A trade through the limit contributes only its printed volume. At the
+        exact price, observed queue-ahead volume is consumed before our order.
+        """
+        wanted_side = "sell" if str(side).lower() == "buy" else "buy"
+        if StablecoinMarketMaker._aggressor_side(trade) != wanted_side:
+            return 0.0
+        try:
+            price = float(trade.get("price")); amount = float(trade.get("amount"))
+            limit_price = float(order.get("limit_price")); remaining = max(0.0, float(order.get("remaining_qty", 0.0)))
+            queue_ahead = max(0.0, float(order.get("queue_ahead_qty", 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+        if not all(math.isfinite(x) for x in (price, amount, limit_price, remaining, queue_ahead)) or amount <= 0 or remaining <= 0:
+            return 0.0
+        tolerance = max(1e-12, abs(limit_price) * 1e-10)
+        through = (price < limit_price - tolerance) if side == "buy" else (price > limit_price + tolerance)
+        at_limit = abs(price - limit_price) <= tolerance
+        if not (through or at_limit):
+            return 0.0
+        available = amount
+        if at_limit and queue_ahead > 0:
+            consumed = min(queue_ahead, available)
+            order["queue_ahead_qty"] = queue_ahead - consumed
+            available -= consumed
+        fill = min(remaining, max(0.0, available))
+        order["remaining_qty"] = remaining - fill
+        return fill
+
+    @staticmethod
+    def _book_snapshot(orderbook: Dict[str, Any], depth_levels: int = 20) -> Dict[str, float]:
+        bids = list((orderbook or {}).get("bids") or [])
+        asks = list((orderbook or {}).get("asks") or [])
+        if not bids or not asks:
+            raise ValueError("orderbook_side_missing")
+        bid, bid_qty = float(bids[0][0]), float(bids[0][1])
+        ask, ask_qty = float(asks[0][0]), float(asks[0][1])
+        if min(bid, bid_qty, ask, ask_qty) <= 0 or bid >= ask:
+            raise ValueError("orderbook_invalid_or_crossed")
+        bid_depth = sum(float(x[0]) * float(x[1]) for x in bids[:depth_levels] if len(x) >= 2 and float(x[0]) > 0 and float(x[1]) > 0)
+        ask_depth = sum(float(x[0]) * float(x[1]) for x in asks[:depth_levels] if len(x) >= 2 and float(x[0]) > 0 and float(x[1]) > 0)
+        mid = (bid + ask) / 2.0
+        return {"bid": bid, "bid_qty": bid_qty, "ask": ask, "ask_qty": ask_qty,
+                "mid": mid, "microprice": StablecoinMarketMaker.microprice(bid, bid_qty, ask, ask_qty),
+                "bid_depth_usdt": bid_depth, "ask_depth_usdt": ask_depth,
+                "spread_bps": StablecoinMarketMaker.spread_bps(bid, ask),
+                "imbalance": StablecoinMarketMaker.imbalance(bid_depth, ask_depth)}
+
+    @staticmethod
+    def _trade_flow(trades: List[Dict[str, Any]], now_ms: int, lookback_sec: float) -> Dict[str, Any]:
+        cutoff = int(now_ms - max(1.0, float(lookback_sec)) * 1000.0)
+        buy = sell = 0.0
+        count = 0
+        for trade in (trades or []):
+            if not isinstance(trade, dict):
+                continue
+            try:
+                ts = int(float(trade.get("timestamp") or 0))
+                price, amount = float(trade.get("price") or 0), float(trade.get("amount") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            side = StablecoinMarketMaker._aggressor_side(trade)
+            if ts < cutoff or ts > now_ms + 2000 or price <= 0 or amount <= 0 or side not in ("buy", "sell"):
+                continue
+            value = price * amount
+            if side == "buy": buy += value
+            else: sell += value
+            count += 1
+        total = buy + sell
+        return {"buy_quote": buy, "sell_quote": sell, "trade_count": count,
+                "signed_flow_ratio": ((buy - sell) / total if total > 0 else None)}
+
+    @classmethod
+    def assess_quote(cls, book: Dict[str, Any], trades: List[Dict[str, Any]], maker_fee_rate: float,
+                     now_ms: Optional[int] = None) -> Tuple[bool, str, Dict[str, Any]]:
+        now_ms = int(now_ms or time.time() * 1000)
+        snap = cls._book_snapshot(book)
+        flow = cls._trade_flow(trades, now_ms, float(CONFIG.get("STABLECOIN_MM_TRADE_LOOKBACK_SEC", 120.0)))
+        snap.update(flow)
+        fee = float(maker_fee_rate)
+        if not math.isfinite(fee) or fee < 0 or fee > 0.01:
+            return False, "fee_rate_invalid", snap
+        depeg_bps = (snap["mid"] - 1.0) * 10000.0
+        costs_bps = (2.0 * fee * 10000.0) + float(CONFIG.get("STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", 0.5))
+        expected_net_bps = snap["spread_bps"] - costs_bps
+        virtual_budget = max(0.0, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0))
+                             - float(CONFIG.get("STABLECOIN_MM_RESERVE_USDT", 5.0)))
+        min_profit_bps = (float(CONFIG.get("STABLECOIN_MM_MIN_NET_PROFIT_USDT", 0.02))
+                          / virtual_budget * 10000.0) if virtual_budget > 0 else float("inf")
+        required_net_bps = max(float(CONFIG.get("STABLECOIN_MM_MIN_NET_BPS", 2.0)), min_profit_bps)
+        snap.update({"depeg_bps": depeg_bps, "maker_fee_rate": fee, "fee_cost_bps": 2.0 * fee * 10000.0,
+                     "required_net_bps": required_net_bps,
+                     "estimated_slippage_bps": float(CONFIG.get("STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", 0.5)),
+                     "estimated_net_bps": expected_net_bps})
+        if abs(depeg_bps) >= float(CONFIG.get("STABLECOIN_MM_MAX_DEPEG_BPS", 25.0)):
+            return False, "depeg_guard", snap
+        if snap["spread_bps"] > float(CONFIG.get("STABLECOIN_MM_MAX_SPREAD_BPS", 12.0)):
+            return False, "spread_too_wide", snap
+        min_depth = float(CONFIG.get("STABLECOIN_MM_ORDERBOOK_DEPTH_USDT", 1000.0))
+        if min(snap["bid_depth_usdt"], snap["ask_depth_usdt"]) < min_depth:
+            return False, "depth_below_floor", snap
+        if snap["imbalance"] < float(CONFIG.get("STABLECOIN_MM_MIN_BOOK_IMBALANCE", -0.15)):
+            return False, "book_imbalance_below_floor", snap
+        if flow["trade_count"] < 1 or flow["signed_flow_ratio"] is None:
+            return False, "trade_flow_unavailable", snap
+        if float(flow["signed_flow_ratio"]) < -0.20:
+            return False, "aggressive_sell_flow", snap
+        if expected_net_bps < required_net_bps:
+            return False, "net_edge_below_floor", snap
+        return True, "eligible_shadow_quote", snap
+
+    @classmethod
+    def _queue_ahead(cls, levels: List[List[float]], price: float, side: str) -> float:
+        multiplier = max(1.0, float(CONFIG.get("STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER", 1.25)))
+        qty = 0.0
+        for level in (levels or []):
+            try:
+                px, amount = float(level[0]), float(level[1])
+                if side == "buy" and px >= price - max(1e-12, price * 1e-10):
+                    qty += amount
+                elif side == "sell" and px <= price + max(1e-12, price * 1e-10):
+                    qty += amount
+            except (TypeError, ValueError, IndexError):
+                continue
+        return qty * multiplier
+
+    @classmethod
+    def _new_cycle(cls, snap: Dict[str, Any], fee_rate: float, now_ms: int, symbol: str) -> Dict[str, Any]:
+        max_capital = max(0.0, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0)))
+        reserve = max(0.0, float(CONFIG.get("STABLECOIN_MM_RESERVE_USDT", 5.0)))
+        budget = max(0.0, max_capital - reserve)
+        if budget <= 0 or snap["bid"] <= 0:
+            raise ValueError("shadow_budget_invalid")
+        qty = budget / snap["bid"]
+        now_iso = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).isoformat()
+        buy_order = {"limit_price": snap["bid"], "remaining_qty": qty,
+                     "queue_ahead_qty": cls._queue_ahead([[snap["bid"], snap["bid_qty"]]], snap["bid"], "buy")}
+        return {"cycle_id": uuid.uuid4().hex, "symbol": symbol, "state": "BUY_PENDING",
+                "started_at": now_iso, "updated_at": now_iso, "created_ms": now_ms,
+                "initial_qty": qty, "buy_order": buy_order, "buy_filled_qty": 0.0,
+                "buy_cost_usdt": 0.0, "buy_fee_usdt": 0.0, "sell_order": None,
+                "sell_filled_qty": 0.0, "sell_proceeds_usdt": 0.0, "sell_fee_usdt": 0.0,
+                "maker_fee_buy_rate": fee_rate, "maker_fee_sell_rate": fee_rate,
+                "fee_source": "MEXC_MARKET_METADATA_OR_CONSERVATIVE_FALLBACK",
+                "estimated_net_bps_at_quote": snap["estimated_net_bps"],
+                "estimated_slippage_bps": float(CONFIG.get("STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", 0.5)),
+                "spread_bps_at_quote": snap["spread_bps"], "depeg_bps_at_quote": snap["depeg_bps"],
+                "last_trade_keys": [], "last_trade_ts": now_ms, "last_alert_state": "BUY_PENDING"}
+
+    @classmethod
+    def _prepare_sell_order(cls, cycle: Dict[str, Any], snap: Dict[str, Any], now_ms: int) -> None:
+        qty = float(cycle.get("buy_filled_qty") or 0.0)
+        if qty <= 0:
+            cycle["state"] = "EXPIRED_NO_FILL"
+            return
+        buy_cost = float(cycle.get("buy_cost_usdt") or 0.0)
+        buy_fee = float(cycle.get("buy_fee_usdt") or 0.0)
+        sell_fee_rate = float(cycle.get("maker_fee_sell_rate") or 0.0)
+        min_profit = max(0.0, float(CONFIG.get("STABLECOIN_MM_MIN_NET_PROFIT_USDT", 0.02)))
+        slip_rate = max(0.0, float(cycle.get("estimated_slippage_bps", 0.0))) / 10000.0
+        denominator = qty * (1.0 - sell_fee_rate - slip_rate / 2.0)
+        if denominator <= 0:
+            cycle["state"] = "RECONCILIATION_REQUIRED"
+            cycle["error"] = "sell_fee_slippage_denominator_invalid"
+            return
+        min_exit_price = (buy_cost + buy_fee + min_profit + slip_rate * buy_cost / 2.0) / denominator
+        exit_price = max(float(snap["ask"]), min_exit_price)
+        sell_queue = cls._queue_ahead(snap.get("asks_levels") or [], exit_price, "sell")
+        cycle["sell_order"] = {"limit_price": exit_price, "remaining_qty": qty,
+                               "queue_ahead_qty": sell_queue, "created_ms": now_ms}
+        cycle["state"] = "SELL_PENDING"
+        cycle["sell_order_created_ms"] = now_ms
+
+    @classmethod
+    def _process_trades(cls, cycle: Dict[str, Any], trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        changes = []
+        seen = set(str(x) for x in (cycle.get("last_trade_keys") or []))
+        fresh = []
+        for trade in (trades or []):
+            if not isinstance(trade, dict):
+                continue
+            try:
+                ts = int(float(trade.get("timestamp") or 0))
+                px = float(trade.get("price") or 0)
+                amount = float(trade.get("amount") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if px <= 0 or amount <= 0 or cls._aggressor_side(trade) not in ("buy", "sell"):
+                continue
+            key = cls._trade_key(trade)
+            last_ts = int(cycle.get("last_trade_ts") or 0)
+            if ts < last_ts or (ts == last_ts and key in seen):
+                continue
+            if key in seen:
+                continue
+            if ts < int(cycle.get("created_ms") or 0) - 1000:
+                continue
+            fresh.append((ts, key, trade))
+        fresh.sort(key=lambda x: (x[0], x[1]))
+        for ts, key, trade in fresh:
+            if key in seen:
+                continue
+            seen.add(key)
+            cycle["last_trade_ts"] = max(int(cycle.get("last_trade_ts") or 0), ts)
+            state = str(cycle.get("state") or "")
+            if state in ("BUY_PENDING", "BUY_PARTIALLY_FILLED"):
+                fill = cls.consume_trade_fill(cycle["buy_order"], trade, "buy")
+                if fill > 0:
+                    px = float(cycle["buy_order"]["limit_price"])
+                    cost = fill * px
+                    fee = cost * float(cycle.get("maker_fee_buy_rate") or 0.0)
+                    cycle["buy_filled_qty"] = float(cycle.get("buy_filled_qty") or 0.0) + fill
+                    cycle["buy_cost_usdt"] = float(cycle.get("buy_cost_usdt") or 0.0) + cost
+                    cycle["buy_fee_usdt"] = float(cycle.get("buy_fee_usdt") or 0.0) + fee
+                    cycle["state"] = "BUY_PARTIALLY_FILLED"
+                    changes.append({"event": "BUY_SHADOW_FILL", "fill_qty": fill, "fill_price": px,
+                                    "fee_estimate_usdt": fee, "trade_key": key})
+                    if float(cycle["buy_order"].get("remaining_qty") or 0.0) <= 1e-12:
+                        cycle["state"] = "BUY_PARTIALLY_FILLED"
+            elif state in ("SELL_PENDING", "SELL_PARTIALLY_FILLED") and isinstance(cycle.get("sell_order"), dict):
+                fill = cls.consume_trade_fill(cycle["sell_order"], trade, "sell")
+                if fill > 0:
+                    px = float(cycle["sell_order"]["limit_price"])
+                    proceeds = fill * px
+                    fee = proceeds * float(cycle.get("maker_fee_sell_rate") or 0.0)
+                    cycle["sell_filled_qty"] = float(cycle.get("sell_filled_qty") or 0.0) + fill
+                    cycle["sell_proceeds_usdt"] = float(cycle.get("sell_proceeds_usdt") or 0.0) + proceeds
+                    cycle["sell_fee_usdt"] = float(cycle.get("sell_fee_usdt") or 0.0) + fee
+                    cycle["state"] = "SELL_PARTIALLY_FILLED"
+                    changes.append({"event": "SELL_SHADOW_FILL", "fill_qty": fill, "fill_price": px,
+                                    "fee_estimate_usdt": fee, "trade_key": key})
+                    remaining = max(0.0, float(cycle.get("buy_filled_qty") or 0.0) - float(cycle.get("sell_filled_qty") or 0.0))
+                    if remaining <= 1e-10:
+                        cycle["sell_order"]["remaining_qty"] = 0.0
+            cycle["updated_at"] = datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).isoformat()
+        cycle["last_trade_keys"] = list(seen)[-300:]
+        return changes
+
+    @classmethod
+    async def _notify(cls, message: str) -> None:
+        if not bool(CONFIG.get("STABLECOIN_MM_TELEGRAM_ENABLE", True)):
+            return
+        try:
+            ok = await TelegramDispatcher.enqueue(message)
+            STATS["v702_a83_telegram_enqueued"] = int(STATS.get("v702_a83_telegram_enqueued", 0) or 0) + int(bool(ok))
+        except Exception as exc:
+            STATS["v702_a83_telegram_errors"] = int(STATS.get("v702_a83_telegram_errors", 0) or 0) + 1
+            logger.warning("[A83-MM] Telegram enqueue failed: %s", exc)
+
+    @classmethod
+    async def tick(cls, exchange, *, now_ms: Optional[int] = None) -> Dict[str, Any]:
+        symbol = str(CONFIG.get("STABLECOIN_MM_SYMBOL", cls.SYMBOL) or cls.SYMBOL).upper()
+        if symbol != cls.SYMBOL:
+            return {"ok": False, "reason": "symbol_not_whitelisted"}
+        if str(CONFIG.get("STABLECOIN_MM_MODE", "SHADOW")).upper() != "SHADOW" or cls.live_is_armed():
+            return {"ok": False, "reason": "live_mode_not_supported_a83"}
+        if bool(CONFIG.get("STABLECOIN_MM_KILL_SWITCH", False)):
+            STATS["v702_a83_kill_switch_active"] = True
+            return {"ok": False, "reason": "kill_switch"}
+        if not isinstance(getattr(exchange, "markets", None), dict) or not exchange.markets:
+            await asyncio.wait_for(exchange.load_markets(), timeout=float(CONFIG.get("STABLECOIN_MM_FETCH_TIMEOUT_SEC", 8.0)))
+        market = (getattr(exchange, "markets", {}) or {}).get(symbol)
+        if not isinstance(market, dict) or market.get("active") is False or not bool(market.get("spot")):
+            return {"ok": False, "reason": "spot_market_unavailable"}
+        try:
+            fee_rate, fee_source = cls.resolve_maker_fee_rate(market)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "reason": "market_fee_invalid"}
+        timeout = max(1.0, float(CONFIG.get("STABLECOIN_MM_FETCH_TIMEOUT_SEC", 8.0)))
+        book, trades = await asyncio.gather(
+            asyncio.wait_for(safe_api_call("a83_stablecoin_orderbook", lambda: exchange.fetch_order_book(symbol, limit=20), retry_safe=True), timeout=timeout),
+            asyncio.wait_for(safe_api_call("a83_stablecoin_trades", lambda: exchange.fetch_trades(symbol, limit=max(10, int(CONFIG.get("STABLECOIN_MM_TRADE_LIMIT", 100)))), retry_safe=True), timeout=timeout),
+        )
+        if not isinstance(book, dict) or not isinstance(trades, list):
+            return {"ok": False, "reason": "public_market_data_invalid"}
+        now_ms = int(now_ms or time.time() * 1000)
+        book_ts = book.get("timestamp")
+        book_age = (max(0.0, now_ms - int(float(book_ts))) / 1000.0) if book_ts else 0.0
+        if book_ts and (float(book_ts) > now_ms + 2000 or book_age > float(CONFIG.get("STABLECOIN_MM_MAX_ORDER_AGE_SEC", 60.0))):
+            return {"ok": False, "reason": "orderbook_stale_or_future", "age_sec": book_age}
+        snap = cls._book_snapshot(book)
+        snap["asks_levels"] = list(book.get("asks") or [])
+        # Only market-print evidence advances a Shadow order. Price touches alone never fill it.
+        flow = cls._trade_flow(trades, now_ms, float(CONFIG.get("STABLECOIN_MM_TRADE_LOOKBACK_SEC", 120.0)))
+        snap.update(flow)
+        snap["depeg_bps"] = (snap["mid"] - 1.0) * 10000.0
+        snap["fee_source"] = fee_source
+        active = await asyncio.to_thread(DBManager.get_active_stablecoin_mm_cycle, symbol)
+        if active:
+            changes = cls._process_trades(active, trades)
+            now_iso = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).isoformat()
+            active["updated_at"] = now_iso
+            if str(active.get("state")) in ("BUY_PENDING", "BUY_PARTIALLY_FILLED"):
+                age = max(0.0, (now_ms - int(active.get("created_ms") or now_ms)) / 1000.0)
+                if age >= float(CONFIG.get("STABLECOIN_MM_MAX_ORDER_AGE_SEC", 60.0)):
+                    active["buy_order"]["remaining_qty"] = 0.0
+                    if float(active.get("buy_filled_qty") or 0.0) > 0:
+                        cls._prepare_sell_order(active, snap, now_ms)
+                        changes.append({"event": "BUY_QUOTE_EXPIRED_AFTER_PARTIAL_FILL"})
+                    else:
+                        active["state"] = "EXPIRED_NO_FILL"
+                        changes.append({"event": "BUY_QUOTE_EXPIRED_NO_FILL"})
+            if str(active.get("state")) in ("BUY_PARTIALLY_FILLED",) and float(active.get("buy_order", {}).get("remaining_qty") or 0.0) <= 1e-10:
+                cls._prepare_sell_order(active, snap, now_ms)
+                changes.append({"event": "BUY_FILLED_SELL_QUOTE_OPENED"})
+            if str(active.get("state")) in ("SELL_PENDING", "SELL_PARTIALLY_FILLED"):
+                remaining_sell = max(0.0, float(active.get("buy_filled_qty") or 0.0) - float(active.get("sell_filled_qty") or 0.0))
+                if remaining_sell <= 1e-10:
+                    buy_cost = float(active.get("buy_cost_usdt") or 0.0)
+                    sell_proceeds = float(active.get("sell_proceeds_usdt") or 0.0)
+                    slip_rate = max(0.0, float(active.get("estimated_slippage_bps", 0.0))) / 10000.0
+                    slippage_cost = ((buy_cost + sell_proceeds) / 2.0) * slip_rate
+                    result = cls.net_profit(buy_cost, sell_proceeds,
+                                            active.get("buy_fee_usdt", 0.0), active.get("sell_fee_usdt", 0.0),
+                                            slippage_cost)
+                    active.update(result)
+                    active["estimated_slippage_usdt"] = slippage_cost
+                    active["state"] = "CLOSED"
+                    active["closed_at"] = now_iso
+                    active["net_pnl_usdt"] = result["net_pnl_estimate_usdt"]
+                    changes.append({"event": "CYCLE_CLOSED", "net_pnl_usdt": result["net_pnl_estimate_usdt"]})
+            for change in changes:
+                await asyncio.to_thread(DBManager.save_stablecoin_mm_cycle, active, change.get("event", "STATE"), change)
+                if change.get("event") in ("BUY_SHADOW_FILL", "SELL_SHADOW_FILL", "CYCLE_CLOSED"):
+                    await cls._notify("<b>A83 STABLECOIN MM — SHADOW EVENT</b>\n"
+                        f"Symbol: {symbol}\nEvent: {change.get('event')}\n"
+                        f"Qty: {float(change.get('fill_qty') or 0):.6f}\n"
+                        f"Price: {float(change.get('fill_price') or 0):.6f}\n"
+                        f"Net PnL estimate: {float(active.get('net_pnl_usdt') or 0):+.5f} USDT\n"
+                        "This is simulated from public trade prints; no exchange order was sent.")
+            if not changes:
+                await asyncio.to_thread(DBManager.save_stablecoin_mm_cycle, active, "CYCLE_HEARTBEAT", {"book": snap})
+            return {"ok": True, "reason": "active_cycle_updated", "state": active.get("state"), "changes": changes}
+
+        # Enforce an explicit daily cap on completed cycles. The allocated cash
+        # is virtual in Shadow mode and never deducted from the real wallet.
+        day = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+        daily = await asyncio.to_thread(DBManager.stablecoin_mm_daily_summary, day)
+        if int(daily.get("completed_cycles") or 0) >= int(CONFIG.get("STABLECOIN_MM_MAX_COMPLETED_CYCLES_PER_DAY", 100)):
+            return {"ok": True, "reason": "daily_cycle_cap_reached"}
+        eligible, reason, assessed = cls.assess_quote(book, trades, fee_rate, now_ms)
+        assessed["asks_levels"] = snap["asks_levels"]
+        if not eligible:
+            STATS["v702_a83_rejected_" + str(reason)] = int(STATS.get("v702_a83_rejected_" + str(reason), 0) or 0) + 1
+            return {"ok": True, "reason": reason, "metrics": assessed}
+        cycle = cls._new_cycle(assessed, fee_rate, now_ms, symbol)
+        try:
+            price_formatter = getattr(exchange, "price_to_precision", None)
+            amount_formatter = getattr(exchange, "amount_to_precision", None)
+            if not callable(price_formatter) or not callable(amount_formatter):
+                return {"ok": False, "reason": "market_precision_helpers_unavailable"}
+            rounded_price = float(price_formatter(symbol, cycle["buy_order"]["limit_price"]))
+            rounded_qty = float(amount_formatter(symbol, cycle["initial_qty"]))
+            if rounded_price <= 0 or rounded_qty <= 0:
+                return {"ok": False, "reason": "market_precision_rounds_to_zero"}
+            limits = market.get("limits") if isinstance(market.get("limits"), dict) else {}
+            amount_limits = limits.get("amount") if isinstance(limits.get("amount"), dict) else {}
+            cost_limits = limits.get("cost") if isinstance(limits.get("cost"), dict) else {}
+            min_amount = float(amount_limits.get("min") or 0.0)
+            min_cost = float(cost_limits.get("min") or 0.0)
+            rounded_cost = rounded_price * rounded_qty
+            virtual_budget = max(0.0, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0))
+                                 - float(CONFIG.get("STABLECOIN_MM_RESERVE_USDT", 5.0)))
+            if rounded_qty < min_amount or rounded_cost < min_cost or rounded_cost > virtual_budget + 1e-8:
+                return {"ok": True, "reason": "precision_or_market_minimum_reject",
+                        "rounded_qty": rounded_qty, "rounded_notional_usdt": rounded_cost,
+                        "min_amount": min_amount, "min_cost_usdt": min_cost}
+            cycle["buy_order"]["limit_price"] = rounded_price
+            cycle["buy_order"]["remaining_qty"] = rounded_qty
+            cycle["initial_qty"] = rounded_qty
+        except Exception as precision_exc:
+            return {"ok": False, "reason": f"market_precision_error:{type(precision_exc).__name__}"}
+        cycle["fee_source"] = fee_source
+        await asyncio.to_thread(DBManager.save_stablecoin_mm_cycle, cycle, "BUY_QUOTE_CREATED", {"metrics": assessed})
+        STATS["v702_a83_shadow_quotes_created"] = int(STATS.get("v702_a83_shadow_quotes_created", 0) or 0) + 1
+        await cls._notify("<b>A83 STABLECOIN MM — SHADOW BUY QUOTE</b>\n"
+            f"Pair: {symbol}\nBid limit: {cycle['buy_order']['limit_price']:.6f}\n"
+            f"Virtual notional: {cycle['initial_qty'] * cycle['buy_order']['limit_price']:.2f} USDT\n"
+            f"Spread: {assessed['spread_bps']:.2f} bps\n"
+            f"Fee model: {fee_rate * 100:.4f}%/side ({fee_source})\n"
+            f"Estimated net edge: {assessed['estimated_net_bps']:.2f} bps\n"
+            "Status: simulated resting quote; not a real order and not a fill.")
+        return {"ok": True, "reason": "shadow_quote_created", "cycle_id": cycle["cycle_id"], "metrics": assessed}
+
+    @classmethod
+    async def _daily_report_tick(cls, now_dt: Optional[datetime] = None) -> None:
+        if not bool(CONFIG.get("STABLECOIN_MM_DAILY_REPORT_ENABLE", True)) or not bool(CONFIG.get("STABLECOIN_MM_TELEGRAM_ENABLE", True)):
+            return
+        now_dt = now_dt or datetime.now(timezone.utc)
+        day = now_dt.strftime("%Y-%m-%d")
+        report_hour = max(0, min(23, int(CONFIG.get("STABLECOIN_MM_DAILY_REPORT_HOUR", 23))))
+        if now_dt.hour < report_hour:
+            return
+        already_sent = await asyncio.to_thread(DBManager.has_stablecoin_mm_daily_report, day)
+        if already_sent:
+            return
+        summary = await asyncio.to_thread(DBManager.stablecoin_mm_daily_summary, day)
+        msg = ("<b>A83 STABLECOIN MM — DAILY SHADOW REPORT</b>\n"
+               f"Date UTC: {day}\nCompleted simulated cycles: {summary['completed_cycles']}\n"
+               f"Wins / losses: {summary['wins']} / {summary['losses']}\n"
+               f"Estimated net PnL: {summary['net_pnl_usdt']:+.5f} USDT\n"
+               "Accounting is a Shadow estimate from public trades, not a wallet balance or realized exchange PnL.")
+        queued = await TelegramDispatcher.enqueue(msg)
+        if queued:
+            await asyncio.to_thread(DBManager.claim_stablecoin_mm_daily_report, day)
+
+    @classmethod
+    async def run_forever(cls, exchange) -> None:
+        if not bool(CONFIG.get("STABLECOIN_MM_ENABLE", False)):
+            return
+        mode = str(CONFIG.get("STABLECOIN_MM_MODE", "SHADOW")).upper()
+        live_arm_requested = str(_env_first("STABLECOIN_MM_LIVE_ARM") or "0").lower() in {"1", "true", "yes", "on"}
+        STATS["v702_a83_live_arm_requested_but_ignored"] = bool(live_arm_requested)
+        STATS["v702_a83_live_enabled"] = False
+        if mode != "SHADOW" or cls.live_is_armed():
+            STATS["v702_a83_startup_state"] = "BLOCKED_UNSUPPORTED_MODE"
+            logger.critical("[A83-MM] only SHADOW mode is supported; no LIVE execution path exists")
+            return
+        symbol = str(CONFIG.get("STABLECOIN_MM_SYMBOL", cls.SYMBOL)).upper()
+        if symbol != cls.SYMBOL:
+            STATS["v702_a83_startup_state"] = "BLOCKED_SYMBOL_NOT_WHITELISTED"
+            logger.critical("[A83-MM] refusing non-whitelisted symbol=%s", symbol)
+            return
+        try:
+            if not (getattr(exchange, "markets", None) or {}):
+                await exchange.load_markets()
+            market = (getattr(exchange, "markets", {}) or {}).get(symbol)
+            if not isinstance(market, dict) or market.get("active") is False or not bool(market.get("spot")):
+                raise RuntimeError("MEXC spot market metadata not active/available")
+            if str(market.get("base") or "").upper() != "USDC" or str(market.get("quote") or "").upper() != "USDT":
+                raise RuntimeError("MEXC market base/quote mismatch")
+        except Exception as exc:
+            STATS["v702_a83_startup_state"] = "MARKET_METADATA_UNAVAILABLE"
+            STATS["v702_a83_last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
+            logger.error("[A83-MM] Shadow engine not started: %s", exc)
+            return
+        STATS["v702_a83_startup_state"] = "SHADOW_RUNNING"
+        STATS["v702_a83_live_enabled"] = False
+        logger.warning("[A83-MM] SHADOW only enabled for %s; virtual capital cap=%.2f USDT; no create_order calls",
+                       symbol, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0)))
+        consecutive_errors = 0
+        while _SHUTDOWN is None or not _SHUTDOWN.is_set():
+            try:
+                result = await cls.tick(exchange)
+                if result.get("ok"):
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                STATS["v702_a83_consecutive_errors"] = consecutive_errors
+                STATS["v702_a83_last_tick"] = {"ts": float(WALL_NOW()), "reason": result.get("reason"),
+                                               "state": result.get("state"), "ok": bool(result.get("ok"))}
+                await cls._daily_report_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive_errors += 1
+                STATS["v702_a83_tick_errors"] = int(STATS.get("v702_a83_tick_errors", 0) or 0) + 1
+                STATS["v702_a83_last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
+                logger.warning("[A83-MM] Shadow tick failed closed (%d): %s", consecutive_errors, exc)
+            STATS["v702_a83_consecutive_errors"] = consecutive_errors
+            max_errors = max(1, int(CONFIG.get("STABLECOIN_MM_MAX_API_ERRORS", 3)))
+            if consecutive_errors >= max_errors:
+                STATS["v702_a83_startup_state"] = "API_CIRCUIT_OPEN"
+                await cls._notify("<b>A83 STABLECOIN MM — SHADOW PAUSED</b>\n"
+                    f"Consecutive API/runtime failures: {consecutive_errors}.\n"
+                    "No orders were sent. The read-only lane is backing off before retry.")
+                await asyncio.sleep(min(300.0, max(60.0, float(CONFIG.get("STABLECOIN_MM_POLL_SEC", 15.0)) * 4.0)))
+                consecutive_errors = 0
+                STATS["v702_a83_consecutive_errors"] = 0
+                STATS["v702_a83_startup_state"] = "SHADOW_RUNNING"
+            await asyncio.sleep(max(5.0, float(CONFIG.get("STABLECOIN_MM_POLL_SEC", 15.0))))
 
 
 def main():
@@ -107392,3 +108184,16 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[V702-BOOT] fingerprint logging failed: {type(exc).__name__}: {exc}", flush=True)
     main()
+
+# A83 release marker: analytical primitives only; feature disabled and LIVE locked.
+V702_A83_REVISION = "A83-STABLECOIN-MARKET-MAKER-SHADOW-LIFECYCLE-2026-11-19"
+STATS["v702_a83_revision"] = V702_A83_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "active_a83_revision_current": V702_A83_REVISION,
+    "stablecoin_mm_symbol_fixed": StablecoinMarketMaker.SYMBOL,
+    "stablecoin_mm_live_authorized": False,
+    "stablecoin_mm_scope": "ANALYTICAL_PRIMITIVES_ONLY",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
