@@ -2427,3 +2427,131 @@ def test_a83_public_market_zero_maker_rate_is_not_treated_as_account_fee(monkeyp
             bot.CONFIG.pop("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE", None)
         else:
             bot.CONFIG["STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE"] = old_override
+
+
+def test_a79_supplement_fetch_uses_canonical_monitor_scan_authority(monkeypatch):
+    """A79 supplemental market-data reads must not depend on an undefined alias."""
+    monkeypatch.setattr(bot, "_V699_VALIDATE_ONLY_REQUEST", False)
+    monkeypatch.setattr(bot, "_v702_monitor_only_scan_authorized", lambda: False)
+
+    class MustNotFetch:
+        async def fetch_ohlcv(self, *args, **kwargs):
+            raise AssertionError("scan-disabled research must not call the exchange")
+
+    snapshots, diagnostics = asyncio.run(bot._v702_a79_fetch_supplemental_snapshots(
+        MustNotFetch(), ["AAA/USDT"], {"AAA/USDT": {"quoteVolume": 1_000_000}},
+    ))
+    assert snapshots == {}
+    assert diagnostics["disabled_reason"] == "monitor_scan_disabled"
+    assert diagnostics["attempted"] == diagnostics["failed"] == 1
+
+
+def test_a83_market_primitives_and_orderbook_reject_nonfinite_values():
+    mm = bot.StablecoinMarketMaker
+    with pytest.raises(ValueError):
+        mm.microprice(float("nan"), 10.0, 1.0002, 10.0)
+    with pytest.raises(ValueError):
+        mm.imbalance(float("inf"), 10.0)
+    with pytest.raises(ValueError):
+        mm.spread_bps(0.9998, float("nan"))
+    with pytest.raises(ValueError):
+        mm._book_snapshot({"bids": [[float("nan"), 1000.0]],
+                           "asks": [[1.0002, 1000.0]]})
+    allowed, reason, _ = mm.buy_edge(
+        float("nan"), 1.0, 1.0, 0.1, 0.5, 0.5, 0.0, 25.0,
+    )
+    assert not allowed and reason == "invalid_price_or_metrics"
+
+
+def test_a83_trade_flow_ignores_nonfinite_public_prints():
+    now_ms = int(time.time() * 1000)
+    flow = bot.StablecoinMarketMaker._trade_flow([
+        {"timestamp": now_ms, "side": "buy", "price": float("nan"), "amount": 10.0},
+        {"timestamp": now_ms, "side": "sell", "price": 1.0, "amount": float("inf")},
+        {"timestamp": now_ms, "side": "buy", "price": 1.0, "amount": 2.0},
+    ], now_ms, 120.0)
+    assert flow["trade_count"] == 1
+    assert flow["buy_quote"] == pytest.approx(2.0)
+    assert flow["signed_flow_ratio"] == pytest.approx(1.0)
+
+
+def test_a79_supplement_fetch_populates_isolated_read_only_research_map(monkeypatch):
+    monkeypatch.setattr(bot, "_V699_VALIDATE_ONLY_REQUEST", False)
+    monkeypatch.setattr(bot, "_v702_monitor_only_scan_authorized", lambda: True)
+    async def passthrough(_label, callback, **_kwargs):
+        value = callback()
+        return await value if hasattr(value, "__await__") else value
+    monkeypatch.setattr(bot, "safe_api_call", passthrough)
+
+    now_ms = int(time.time() * 1000)
+    periods = {"4h": 14_400_000, "1h": 3_600_000, "15m": 900_000, "5m": 300_000}
+    rows_by_tf = {}
+    for tf, period in periods.items():
+        last_closed_open = (now_ms // period) * period - period
+        rows_by_tf[tf] = [
+            [last_closed_open - offset * period, 100.0, 101.0, 99.0, 100.0, 10.0]
+            for offset in range(79, -1, -1)
+        ]
+
+    class PublicOhlcvOnly:
+        calls = []
+        async def fetch_ohlcv(self, symbol, timeframe, limit=100):
+            self.calls.append((symbol, timeframe, limit))
+            return rows_by_tf[timeframe]
+
+    exchange = PublicOhlcvOnly()
+    snapshots, diagnostics = asyncio.run(bot._v702_a79_fetch_supplemental_snapshots(
+        exchange, ["AAA/USDT"],
+        {"AAA/USDT": {"quoteVolume": 1_000_000, "last": 1.0, "bid": 0.999, "ask": 1.001}},
+        cycle_budget_sec=10.0, read_timeout_sec=2.0,
+    ))
+    assert diagnostics["attempted"] == diagnostics["ok"] == 1, diagnostics
+    assert diagnostics["failed"] == 0
+    assert set(tf for _sym, tf, _limit in exchange.calls) == set(periods)
+    row = snapshots["AAA/USDT"]
+    assert row["v702_a79_research_recall_lane"] is True
+    assert row["v702_a79_canonical_mse_eligible"] is False
+    assert all(key in row for key in ("df_4h", "df_1h", "df_15m", "df_5m"))
+    assert diagnostics["canonical_map_mutated"] is False
+
+
+def test_a83_shadow_rejects_orderbook_without_exchange_timestamp(monkeypatch):
+    old_cfg = {key: bot.CONFIG.get(key) for key in (
+        "STABLECOIN_MM_MODE", "STABLECOIN_MM_KILL_SWITCH", "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE",
+        "STABLECOIN_MM_FETCH_TIMEOUT_SEC", "STABLECOIN_MM_MAX_ORDER_AGE_SEC",
+    )}
+    bot.CONFIG.update({"STABLECOIN_MM_MODE": "SHADOW", "STABLECOIN_MM_KILL_SWITCH": False,
+                      "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE": 0.0,
+                      "STABLECOIN_MM_FETCH_TIMEOUT_SEC": 2.0,
+                      "STABLECOIN_MM_MAX_ORDER_AGE_SEC": 60.0})
+    class MissingTimestampExchange:
+        markets = {"USDC/USDT": {"base": "USDC", "quote": "USDT", "spot": True, "active": True}}
+        async def fetch_order_book(self, *_args, **_kwargs):
+            return {"bids": [[0.9998, 2000.0]], "asks": [[1.0002, 2000.0]]}
+        async def fetch_trades(self, *_args, **_kwargs):
+            return [{"id": "x", "timestamp": int(time.time() * 1000),
+                     "side": "buy", "price": 1.0002, "amount": 10.0}]
+    try:
+        result = asyncio.run(bot.StablecoinMarketMaker.tick(MissingTimestampExchange()))
+        assert result == {"ok": False, "reason": "orderbook_timestamp_missing"}
+    finally:
+        for key, value in old_cfg.items():
+            if value is None:
+                bot.CONFIG.pop(key, None)
+            else:
+                bot.CONFIG[key] = value
+
+
+def test_a83_trade_processor_ignores_future_and_nonfinite_prints():
+    now_ms = int(time.time() * 1000)
+    cycle = {"state": "BUY_PENDING", "created_ms": now_ms - 1000,
+             "last_trade_ts": now_ms - 1000, "last_trade_keys": [],
+             "buy_order": {"limit_price": 1.0, "remaining_qty": 5.0, "queue_ahead_qty": 0.0},
+             "buy_filled_qty": 0.0, "buy_cost_usdt": 0.0, "buy_fee_usdt": 0.0,
+             "maker_fee_buy_rate": 0.0}
+    changes = bot.StablecoinMarketMaker._process_trades(cycle, [
+        {"id": "future", "timestamp": now_ms + 10_000, "side": "sell", "price": 0.9999, "amount": 5.0},
+        {"id": "nonfinite", "timestamp": now_ms, "side": "sell", "price": 0.9999, "amount": float("inf")},
+    ], now_ms=now_ms)
+    assert changes == []
+    assert cycle["buy_filled_qty"] == 0.0

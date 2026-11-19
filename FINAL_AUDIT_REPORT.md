@@ -1,4 +1,57 @@
-# A77 Final Production Audit — Micro Outcome Telegram Closure (2026-11-17)
+# FINAL PRODUCTION RELEASE — A84 Executive Audit Summary (2026-11-19)
+
+**Artifact:** `FINAL_PRODUCTION_RELEASE.zip`  
+**Project identity:** Unified Scalper 4.5.99-V702-R40-SMALL-NET-PROFIT-CANONICAL  
+**Audit closure:** A84 — A79 supplemental-scan NameError and A83 Shadow market-data integrity  
+**Operating authority:** `MONITOR_ONLY_NO_NEW_BUYS`; no live orders are authorized by this release.
+
+## Release result
+
+- **Original files:** 99. **Final files:** 99. **Added:** 0. **Removed:** 0. **Existing files modified:** 8.
+- **Defects identified and repaired in this closure:** 6. **Regression tests added:** 6. **Focused A79/A83 regression tests:** 21 passed.
+- **Full automated test suite:** 58 modules; **615 passed, 1 skipped, 0 failed**, run in six non-overlapping groups (63, 59, 78, 136 plus one skip, 67, 212). The only skip requires a historical A51 runtime log that is not included in the source archive.
+- **Python compilation:** `compileall` passed for all 73 Python files; explicit `py_compile` also passed for 73/73.
+- **Release contract tests on the final clean extraction:** 44 passed, 1 historical-fixture skip, 0 failed.
+- **Clean-extract `python main.py --validate-only`:** exit 0; `bot_started=false`; `live_threads=[]`; no exchange or Telegram credentials were present.
+- **Archive integrity:** 99 unique paths; exact match to the original archive inventory; CRC check and clean extraction passed; all 98 entries in `A66_SHA256SUMS.txt` match. No `.env`, DB, bytecode, or cache files are packaged.
+
+## A84 repairs
+
+1. Fixed the undefined A79 monitor-only helper reference that prevented all supplemental research snapshots from being fetched (`attempted=32 / ok=0 / failed=32` in the supplied logs). The corrected path uses the canonical scan authorization helper and remains research-only.
+2. Added fail-closed finite-number validation to A83 order-book metrics and public trade-flow values.
+3. Rejects missing, invalid, stale, or future-dated order-book timestamps instead of treating untimed data as fresh.
+4. Rejects non-finite and future-dated public prints during simulated fill processing.
+5. Clamps virtual capital and reserve to non-negative values before deriving the minimum net-profit threshold.
+6. Added six deterministic regression tests for the A79/A83 failure cases.
+
+## Trading-opportunity and risk decision
+
+The supplied 2026-11-18 Micro Shadow digest recorded 26 signals, 23 resolved, 3 TP, 14 SL and 6 timeouts; the reported modeled net expectancy for the listed Micro strategies was negative. These are simulated observations, not exchange fills, but they are sufficient reason **not** to promote those engines to live execution. The repeated bearish-BTC family-policy rejections are consistent with the configured strategy policy; that policy, HTF checks, spread/cost gates, liquidity floors, score thresholds, PreSend, execution, and protection controls were not weakened.
+
+The A83 `USDC/USDT` market-making lane remains disabled by default and Shadow-only. Its fallback maker-fee assumption is 0.1% per side (20 bps round trip), greater than the default 12 bps spread ceiling before slippage; therefore it should not generate a quote under the default assumptions. A zero-fee override is only an operator-supplied assumption after independently confirming the exact account/pair fee tier. No `create_order` route, real fill, daily-income guarantee, or profitability claim is included.
+
+## Files changed in A84
+
+`main.py`; `test_v702_production_audit_fixes.py`; `README.md`; `CHANGELOG.md`; `FINAL_AUDIT_REPORT.md`; `FINAL_MANIFEST.json`; `A66_RELEASE_MANIFEST.json`; `A66_SHA256SUMS.txt`. No file was added or removed.
+
+## Verification limits
+
+The environment lacked `ccxt` and `aiosqlite` during the import probe. No authenticated MEXC session, wallet query, live order, real fill, Telegram network delivery acknowledgement, deployment soak, or out-of-sample profitability study was performed. The 100k+ line canonical runtime remains a large historical module; this closure is a targeted source repair, not a claim that every historical line was manually reviewed or that the whole runtime was modularized.
+
+## Google Colab
+
+```python
+!unzip -q /content/FINAL_PRODUCTION_RELEASE.zip -d /content/unified_scalper
+%cd /content/unified_scalper
+!pip install -r requirements.txt
+!python main.py --validate-only
+```
+
+For the initial monitor-only validation, keep live switches off and do not provide private MEXC trading credentials. Optional Telegram credentials are only for notifications.
+
+---
+
+# Historical audit record — A77 Micro Outcome Telegram Closure (2026-11-17)
 
 ## Executive result
 
@@ -318,3 +371,48 @@ For monitoring only, copy `.env.example` to `.env`; keep `UNIFIED_LIVE_PILOT_ENA
 - No authenticated MEXC account was used. No live MEXC market-data session, order, exchange fill, private fee query or Telegram delivery acknowledgement was performed from this environment.
 - No historical replay, forward Shadow soak, account-tier fee confirmation, profitability/expectancy validation, Docker build or target-host load/memory test was performed. The deterministic fake exchange verifies code behavior only; it does not establish current exchange availability or profitability.
 - Do not set `STABLECOIN_MM_ENABLE=1` until the operator has intentionally chosen to run the read-only Shadow monitor and configured persistent storage/Telegram as needed. This release does not authorize live stablecoin trading; any future live proposal requires a separate audited implementation and explicit release decision.
+
+
+# A84 — A79 research scan NameError and Shadow market-data integrity closure (2026-11-19)
+
+## Scope and evidence
+
+The accompanying runtime digest repeatedly reported `A79_RESEARCH ... attempted=32 / ok=0 / failed=32` with `NameError:name__v702_monitor_only_scan_enabled_is_not_defined`. In the source, `_v702_a79_fetch_supplemental_snapshots` called `_v702_monitor_only_scan_enabled()`, but the only defined authority was `_v702_monitor_only_scan_authorized()`. The exception occurred before the supplemental OHLCV requests, so the extra A79 research coverage did not run. This did not disable the canonical scanner and did not grant or remove order authority.
+
+The same log showed canonical candidate rejections dominated by `family_regime_disallowed.macro` for PULLBACK under `BTC=BEARISH`. That is consistent with the registered family policy (`PULLBACK@BEARISH[allow=BULLISH+NEUTRAL]`), not evidence of a broken selector. The release does not weaken this policy, HTF confirmation, liquidity, spread, cost, score, PreSend, execution or protection gates.
+
+The 2026-11-18 Micro daily report in the supplied log recorded 26 Shadow signals, 23 resolved observations, 3 TP, 14 SL and 6 timeouts. Reported average modeled net returns were negative for MICRO_MOMENTUM_1M (-1.92R), MICRO_SWEEP_RECLAIM_1M (-2.16R), MICRO_PULLBACK_RECLAIM_1M (-1.83R), and VWAP_RECLAIM_RS_5M (-0.83R on one resolved observation). These are small, simulated samples, not realized account results; they do not justify enabling those patterns for live trading or claiming daily income.
+
+## Applied source repairs
+
+1. Replaced the undefined A79 helper call with `_v702_monitor_only_scan_authorized()`. The scan-disabled condition remains fail-closed, and enabled supplemental snapshots remain tagged `v702_a79_canonical_mse_eligible=False`.
+2. Hardened A83 `microprice`, depth imbalance, spread and top-of-book validation against `NaN` and infinity.
+3. Public trade-flow aggregation now ignores non-finite price/amount prints rather than counting them in signed flow.
+4. A83 now rejects an order book without a valid exchange timestamp instead of assuming that an untimestamped snapshot is fresh.
+5. A83 lifecycle fill processing now rejects non-finite prints and prints more than two seconds in the future relative to the current tick.
+6. The virtual budget calculation clamps both capital and reserve to non-negative values before deriving the minimum required net-bps threshold.
+
+## Opportunity and profitability decision
+
+A79 supplemental research can again collect its bounded, fair-rotated 5m/15m/1H/4H evidence for read-only Swing and A9 analysis. It remains isolated from the canonical `market_data_map`; it cannot inject a candidate into selector, builder, queue or execution.
+
+No additional strategy was promoted to trading. The supplied Micro Shadow results are negative, while the canonical core funnel is correctly rejecting strategies whose regime policy does not allow a bearish macro context. Increasing the number of alerts or weakening those policies would increase risk, not establish positive expectancy. The A83 stablecoin lane remains a Shadow simulator only. Its default 0.1% maker-fee fallback means modeled two-sided fees alone are 20 bps, above the configured 12 bps spread ceiling; a zero-fee override is only an operator assumption after confirming the actual account/pair fee schedule. The code does not verify that fee schedule or submit exchange orders.
+
+## Files changed
+
+- `main.py` — A79 authority-name correction and A83 input/freshness/fill integrity checks.
+- `test_v702_production_audit_fixes.py` — six focused regression tests for A79 and A83.
+- `README.md`, `CHANGELOG.md`, `FINAL_AUDIT_REPORT.md` — release and operational documentation.
+- `FINAL_MANIFEST.json`, `A66_RELEASE_MANIFEST.json` — synchronized canonical source SHA-256 fields and A84 metadata.
+
+No files were added to or removed from the archive. The supplied inventory was already exactly 99 files.
+
+## Verification and limitations
+
+- Python compilation: 73/73 packaged Python files passed `compileall`; edited Python files also passed `py_compile`.
+- Focused A79/A83 tests: 21 passed, 0 failed.
+- `python main.py --validate-only`: exit 0; final output showed `bot_started=false` and `live_threads=[]`.
+- The full 58-module regression suite was run in six non-overlapping groups: **615 passed, 1 skipped, 0 failed**. Group pass counts: 63, 59, 78, 136 (+1 historical skip), 67, and 212. Five intermediate failures were stale source-digest assertions after the source patch; the canonical digest fields were synchronized and all affected groups were rerun successfully.
+- No authenticated MEXC call, live order, real wallet access, or external Telegram delivery was attempted. This environment did not have `ccxt` or `aiosqlite` installed during the import probe. Synthetic lifecycle tests do not verify fills, fees, slippage, profitability, or 24/7 uptime.
+- `main.py` remains a large canonical runtime module (108,000+ lines). A wholesale split/refactor was not attempted because it would alter the established import/runtime contract and materially increase regression risk in a 99-file release. The patch is targeted rather than a claim that every historical code path has been exhaustively reviewed line-by-line.
+

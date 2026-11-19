@@ -425,3 +425,14 @@ Eligibility checks include valid non-crossed book, spread ceiling, USDC/USDT dep
 The current implementation is a **Shadow research engine**, not a live market-making bot. The following are not claimed: actual exchange fills, realized wallet PnL, verified personal fee rate, historical profitability, or 24/7 MEXC/Telegram soak. A83 live order submission is intentionally absent; the existing canonical `MONITOR_ONLY_NO_NEW_BUYS` policy and all other live risk gates are unchanged.
 
 See `.env.example` for A83 settings. For a first shadow run, enable only `STABLECOIN_MM_ENABLE=1`, keep `STABLECOIN_MM_MODE=SHADOW`, retain a durable `SCALPER_DB` mount, and leave `STABLECOIN_MM_LIVE_ARM=0`. The lane remains disabled until the operator explicitly enables Shadow.
+
+
+## A84 — A79 research fetch and A83 data-integrity closure (2026-11-19)
+
+A84 fixes the undefined monitor-scan helper used by the A79 supplemental 5m/15m/1H/4H fetch. With monitor-only scanning authorized, the bounded supplemental fetch can execute again; with scanning disabled, it returns without exchange reads. Its snapshots remain marked research-only and are never added to the canonical trading map.
+
+The A83 Shadow stablecoin simulator now fails closed on non-finite top-of-book values, non-finite print volume/prices, missing exchange book timestamps, and future-dated public prints. The default fee assumption remains 0.1% per maker side; with the default 12 bps maximum spread, the lane should reject quotes unless a lower account/pair fee has been independently confirmed and explicitly configured. No trade orders are possible in this A83 path.
+
+The supplied 2026-11-18 Micro Shadow report was negative across the reported strategies. Accordingly, no Micro engine was promoted to live execution and no bearish family-policy gate was weakened. The broader A79 data collection is for additional read-only research and WATCH-level discovery only. It is not a promise of frequent opportunities or daily income.
+
+A84 regression coverage includes scan authorization, research-map isolation, non-finite book/print rejection, timestamp freshness and future-print handling. See `FINAL_AUDIT_REPORT.md` for the full evidence and final test totals.

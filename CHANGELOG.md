@@ -2636,3 +2636,11 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - A83 contains **no exchange create-order path**. `STABLECOIN_MM_LIVE_ARM` is ignored, `live_is_armed()` remains hard-false, and existing `MONITOR_ONLY_NO_NEW_BUYS` plus all canonical execution gates remain unchanged.
 - Fee caveat: public CCXT market maker metadata is not account-tier confirmation and is never silently treated as the account fee. The default is 0.1% per side; this exceeds the default 12 bps spread ceiling and therefore blocks quote creation until a verified lower account/pair fee assumption is supplied. An explicit fee override is supported only after independent verification of the exact account/pair fee schedule.
 - Tests use deterministic synthetic market data and SQLite; no claim is made about actual fills, personal zero fees, profitability, live exchange connectivity, or deployment soak.
+
+
+# A84 — A79 research fetch and A83 Shadow market-data integrity (2026-11-19)
+- Fixed the A79 supplemental scan NameError by calling the existing canonical `_v702_monitor_only_scan_authorized()` authority. The supplemental research lane remains read-only and cannot mutate the canonical trading map.
+- Added fail-closed checks for non-finite order-book values, non-finite public trades, missing order-book timestamps, and future-dated public prints in the A83 Shadow lifecycle.
+- Clamped the Shadow capital/reserve calculation before applying its minimum-dollar-profit threshold.
+- Added six deterministic regression tests. No live order authority, family policy, spread/fee floor, macro gate, or canonical liquidity floor was relaxed.
+- The release remains exactly 99 files; no files were added or deleted. Profitability and real exchange/Telegram integration remain unverified.

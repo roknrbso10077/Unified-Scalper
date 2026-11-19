@@ -29808,21 +29808,22 @@ class StablecoinMarketMaker:
     @staticmethod
     def microprice(bid, bid_qty, ask, ask_qty):
         bid, bid_qty, ask, ask_qty = map(float, (bid, bid_qty, ask, ask_qty))
-        if min(bid, ask, bid_qty, ask_qty) <= 0 or bid >= ask:
+        if (not all(math.isfinite(x) for x in (bid, bid_qty, ask, ask_qty))
+                or min(bid, ask, bid_qty, ask_qty) <= 0 or bid >= ask):
             raise ValueError("invalid or crossed order book")
         return (ask * bid_qty + bid * ask_qty) / (bid_qty + ask_qty)
 
     @staticmethod
     def imbalance(bid_depth, ask_depth):
         b, a = float(bid_depth), float(ask_depth)
-        if b < 0 or a < 0 or (b + a) <= 0:
+        if not all(math.isfinite(x) for x in (b, a)) or b < 0 or a < 0 or (b + a) <= 0:
             raise ValueError("invalid depth")
         return (b - a) / (b + a)
 
     @staticmethod
     def spread_bps(bid, ask):
         b, a = float(bid), float(ask)
-        if b <= 0 or a <= b:
+        if not all(math.isfinite(x) for x in (b, a)) or b <= 0 or a <= b:
             raise ValueError("invalid spread")
         return ((a - b) / ((a + b) / 2.0)) * 10000.0
 
@@ -29841,8 +29842,11 @@ class StablecoinMarketMaker:
     @staticmethod
     def buy_edge(fair_value, ask, round_trip_cost_bps, min_net_bps, imbalance, trade_flow, depeg_bps, max_depeg_bps):
         fair, ask_px = float(fair_value), float(ask)
-        if fair <= 0 or ask_px <= 0:
-            return False, "invalid_price", 0.0
+        if not all(math.isfinite(x) for x in (fair, ask_px, float(round_trip_cost_bps),
+                                               float(min_net_bps), float(imbalance),
+                                               float(trade_flow), float(depeg_bps),
+                                               float(max_depeg_bps))) or fair <= 0 or ask_px <= 0:
+            return False, "invalid_price_or_metrics", 0.0
         edge_bps = (fair - ask_px) / fair * 10000.0
         if abs(float(depeg_bps)) >= float(max_depeg_bps):
             return False, "depeg_guard", edge_bps
@@ -29954,8 +29958,9 @@ class StablecoinMarketMaker:
             raise ValueError("orderbook_side_missing")
         bid, bid_qty = float(bids[0][0]), float(bids[0][1])
         ask, ask_qty = float(asks[0][0]), float(asks[0][1])
-        if min(bid, bid_qty, ask, ask_qty) <= 0 or bid >= ask:
-            raise ValueError("orderbook_invalid_or_crossed")
+        if (not all(math.isfinite(x) for x in (bid, bid_qty, ask, ask_qty))
+                or min(bid, bid_qty, ask, ask_qty) <= 0 or bid >= ask):
+            raise ValueError("orderbook_invalid_or_crossed_or_nonfinite")
         bid_depth = sum(float(x[0]) * float(x[1]) for x in bids[:depth_levels] if len(x) >= 2 and float(x[0]) > 0 and float(x[1]) > 0)
         ask_depth = sum(float(x[0]) * float(x[1]) for x in asks[:depth_levels] if len(x) >= 2 and float(x[0]) > 0 and float(x[1]) > 0)
         mid = (bid + ask) / 2.0
@@ -29979,7 +29984,9 @@ class StablecoinMarketMaker:
             except (TypeError, ValueError, OverflowError):
                 continue
             side = StablecoinMarketMaker._aggressor_side(trade)
-            if ts < cutoff or ts > now_ms + 2000 or price <= 0 or amount <= 0 or side not in ("buy", "sell"):
+            if (ts < cutoff or ts > now_ms + 2000
+                    or not all(math.isfinite(x) for x in (price, amount))
+                    or price <= 0 or amount <= 0 or side not in ("buy", "sell")):
                 continue
             value = price * amount
             if side == "buy": buy += value
@@ -30002,8 +30009,8 @@ class StablecoinMarketMaker:
         depeg_bps = (snap["mid"] - 1.0) * 10000.0
         costs_bps = (2.0 * fee * 10000.0) + float(CONFIG.get("STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", 0.5))
         expected_net_bps = snap["spread_bps"] - costs_bps
-        virtual_budget = max(0.0, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0))
-                             - float(CONFIG.get("STABLECOIN_MM_RESERVE_USDT", 5.0)))
+        virtual_budget = max(0.0, max(0.0, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0)))
+                             - max(0.0, float(CONFIG.get("STABLECOIN_MM_RESERVE_USDT", 5.0))))
         min_profit_bps = (float(CONFIG.get("STABLECOIN_MM_MIN_NET_PROFIT_USDT", 0.02))
                           / virtual_budget * 10000.0) if virtual_budget > 0 else float("inf")
         required_net_bps = max(float(CONFIG.get("STABLECOIN_MM_MIN_NET_BPS", 2.0)), min_profit_bps)
@@ -30011,6 +30018,11 @@ class StablecoinMarketMaker:
                      "required_net_bps": required_net_bps,
                      "estimated_slippage_bps": float(CONFIG.get("STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", 0.5)),
                      "estimated_net_bps": expected_net_bps})
+        numeric_metrics = ("mid", "spread_bps", "bid_depth_usdt", "ask_depth_usdt", "imbalance")
+        if (not all(math.isfinite(float(snap.get(key, float("nan")))) for key in numeric_metrics)
+                or (flow["signed_flow_ratio"] is not None
+                    and not math.isfinite(float(flow["signed_flow_ratio"])) )):
+            return False, "nonfinite_market_metrics", snap
         if abs(depeg_bps) >= float(CONFIG.get("STABLECOIN_MM_MAX_DEPEG_BPS", 25.0)):
             return False, "depeg_guard", snap
         if snap["spread_bps"] > float(CONFIG.get("STABLECOIN_MM_MAX_SPREAD_BPS", 12.0)):
@@ -30091,7 +30103,9 @@ class StablecoinMarketMaker:
         cycle["sell_order_created_ms"] = now_ms
 
     @classmethod
-    def _process_trades(cls, cycle: Dict[str, Any], trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _process_trades(cls, cycle: Dict[str, Any], trades: List[Dict[str, Any]],
+                        now_ms: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Apply only finite, chronological public prints to the Shadow queue model."""
         changes = []
         seen = set(str(x) for x in (cycle.get("last_trade_keys") or []))
         fresh = []
@@ -30104,7 +30118,9 @@ class StablecoinMarketMaker:
                 amount = float(trade.get("amount") or 0)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if px <= 0 or amount <= 0 or cls._aggressor_side(trade) not in ("buy", "sell"):
+            if (not all(math.isfinite(x) for x in (px, amount)) or px <= 0 or amount <= 0
+                    or (now_ms is not None and ts > int(now_ms) + 2000)
+                    or cls._aggressor_side(trade) not in ("buy", "sell")):
                 continue
             key = cls._trade_key(trade)
             last_ts = int(cycle.get("last_trade_ts") or 0)
@@ -30194,8 +30210,16 @@ class StablecoinMarketMaker:
             return {"ok": False, "reason": "public_market_data_invalid"}
         now_ms = int(now_ms or time.time() * 1000)
         book_ts = book.get("timestamp")
-        book_age = (max(0.0, now_ms - int(float(book_ts))) / 1000.0) if book_ts else 0.0
-        if book_ts and (float(book_ts) > now_ms + 2000 or book_age > float(CONFIG.get("STABLECOIN_MM_MAX_ORDER_AGE_SEC", 60.0))):
+        if book_ts in (None, ""):
+            return {"ok": False, "reason": "orderbook_timestamp_missing"}
+        try:
+            book_ts_ms = float(book_ts)
+            if not math.isfinite(book_ts_ms):
+                raise ValueError("nonfinite_timestamp")
+            book_age = max(0.0, (now_ms - int(book_ts_ms)) / 1000.0)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "reason": "orderbook_timestamp_invalid"}
+        if book_ts_ms > now_ms + 2000 or book_age > float(CONFIG.get("STABLECOIN_MM_MAX_ORDER_AGE_SEC", 60.0)):
             return {"ok": False, "reason": "orderbook_stale_or_future", "age_sec": book_age}
         snap = cls._book_snapshot(book)
         snap["asks_levels"] = list(book.get("asks") or [])
@@ -30206,7 +30230,7 @@ class StablecoinMarketMaker:
         snap["fee_source"] = fee_source
         active = await asyncio.to_thread(DBManager.get_active_stablecoin_mm_cycle, symbol)
         if active:
-            changes = cls._process_trades(active, trades)
+            changes = cls._process_trades(active, trades, now_ms=now_ms)
             now_iso = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).isoformat()
             active["updated_at"] = now_iso
             if str(active.get("state")) in ("BUY_PENDING", "BUY_PARTIALLY_FILLED"):
@@ -107469,7 +107493,7 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
     """Fetch up to 32 fair-rotated 1H/4H+5m/15m snapshots for READ-ONLY research."""
     if not symbols:
         return {}, {"attempted": 0, "ok": 0, "failed": 0, "symbols_ok": []}
-    if _V699_VALIDATE_ONLY_REQUEST or not _v702_monitor_only_scan_enabled():
+    if _V699_VALIDATE_ONLY_REQUEST or not _v702_monitor_only_scan_authorized():
         return {}, {"attempted": len(symbols), "ok": 0, "failed": len(symbols), "symbols_ok": [], "disabled_reason": "monitor_scan_disabled"}
     concurrency = max(1, min(16, int(concurrency)))
     sem = asyncio.Semaphore(concurrency)
