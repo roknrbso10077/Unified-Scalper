@@ -1,20 +1,46 @@
-# UNIFIED SCALPER V702 — VERIFIED A84 RECOVERY / PARTIAL A85 SAFETY CORRECTION
+# UNIFIED SCALPER V702 — A85 MARKET INTELLIGENCE & VISUAL TRADE ANALYST
 
-**Recovery revision:** `A84-RECOVERY-A85-PARTIAL-2026-11-20`  
-**Canonical executable:** `main.py` · **Archive limit:** 99 files  
-**Entry authority:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`
+**Active analytical revision:** `A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20`  
+**Canonical runtime:** `main.py` · **Archive limit:** 99 files (preserved exactly)  
+**Entry authority:** `MONITOR_ONLY_NO_NEW_BUYS` · **Live arming:** OFF
 
-## What is actually included
+## A85 implementation included in this release
 
-- Preserves the A84 source package, its 99-file inventory, the original strategy engines, risk controls, lifecycle, SQLite telemetry, reconciliation, protection and Telegram text/outbox paths.
-- The existing BTC directional macro gate is observational by default (`V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE=0`); missing/unknown context and confirmed crash/extreme/hard-reject conditions remain fail-closed. Symbol-local HTF, structure, volume, liquidity, fee, spread, risk and PreSend gates are retained.
-- The existing Strategy Router evaluates nine built-in detectors, collapses correlated hits into six confluence groups, returns one candidate and caps the confluence bonus at 1.5 ranking points. This is a bounded Router enhancement, not a newly implemented full-market consensus system.
-- A83 stablecoin `USDC/USDT` research code is retained but **disabled by default** (`STABLECOIN_MM_ENABLE=0`). When explicitly enabled it remains `SHADOW` only, `STABLECOIN_MM_LIVE_ARM=0`, with no exchange order authority. The fallback fee assumption remains 0.1% per side, so the default 12 bps spread ceiling cannot satisfy the positive net-edge rule.
-- The two live arming switches remain explicitly off: `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`.
+A85 is integrated into the existing runtime and consumes the existing A79/A80 ticker snapshot and the shared closed-candle `market_data_map`. It does not start a parallel OHLCV downloader, does not add candidates to the canonical selector, and has no order-submission authority.
 
-## A85 scope not yet implemented in this package
+- **Staged market radar:** fast ticker statistics from the available shared MEXC ticker snapshot; intermediate ranking of up to 100–150 research-eligible symbols using the existing A80 research-volume floor; deep technical analysis of up to 60 shared OHLCV snapshots per cycle by default. A80 can prepare up to 500 research symbols, but neither ticker coverage nor deep OHLCV coverage is claimed to be 500 every cycle.
+- **Fair rotation:** A85 deep-analysis rotation is persisted in the existing SQLite database. Opportunity-Hunter priority may use at most half of the deep-analysis budget; the remainder is rotated so one active family cannot monopolize the scan.
+- **Market regime and breadth:** BTC closed 1D/4H/1H/15M and ETH 1H relative-strength context when those frames exist. Breadth counts are explicitly labelled as a sample of the shared data map, not full-exchange breadth. Missing BTC context is `UNKNOWN`, never replaced by another coin.
+- **Technical analysis:** six closed-candle frames (1D/4H/1H/15M/5M/1M), EMA 9/20/50/100/200, RSI, MACD histogram, ATR, Bollinger, VWAP, relative volume, candle patterns, swing pivots, HH/HL/LH/LL flags, BOS/CHoCH, liquidity-sweep proxies, equal highs/lows, FVG/OB proxies, clustered support/resistance and Fibonacci levels. Volume-profile POC/value area are explicitly approximate from OHLCV typical-price/volume bins, not exchange trade-level volume-at-price.
+- **Sector rotation:** an explicit static symbol taxonomy calculates relative sector return/breadth only for known and sufficiently liquid symbols. Its status is `PARTIAL_STATIC_TAXONOMY`; unknown symbols are left unclassified. This is not an exchange-verified taxonomy and does not invent categories for unclassified coins.
+- **Consensus and ranking:** A85 deduplicates fresh Opportunity-Hunter family evidence, exposes primary/supporting families and conflicts, and computes separate signal quality, execution quality, data confidence and ranking scores. The raw nine-detector Router remains the canonical candidate authority; A85 does not replace it or directly recompute every detector. Scores are not win probabilities.
+- **Trade plan:** best Ask reference, entry zone/preferred entry, bounded chase distance and expiry, structural/ATR stop, ordered targets using nearby structural resistance/Fibonacci extensions and conservative R fallbacks, estimated duration, invalidation conditions, and a cost ledger for two-side fees, spread, slippage, estimated net return/RR and position-notional estimate. `READY_NOW` requires closed 15M/5M trigger, 1M confirmation when 1M data exists, fresh order book, acceptable spread, top-five depth and positive configured net economics. It is a read-only analytical label, not an order instruction.
+- **Charts:** Matplotlib Agg renders actual PNG candles for 1H/15M with EMA 9/20/50/100/200, VWAP/Bollinger, support/resistance zones, FVG/OB proxies, swing levels, BOS/CHoCH and sweep markers, Fibonacci, approximate volume POC, volume bars, entry/SL/TP plan and timestamps. Telegram `sendPhoto` is used when credentials and the Telegram session are available; failures are recorded and text/TradingView fallback remains.
+- **Telegram read-only commands:** `/market`, `/top`, `/ready`, `/waiting`, `/analyze SYMBOL`, `/chart SYMBOL`, `/portfolio`, `/strategies`, `/performance`, `/regime`, `/help`. Existing order/protection commands remain in the original command handler and retain their original authorization.
+- **Shadow performance:** completed Opportunity-Hunter Shadow outcomes only; minimum 30 observations per reported group, chronological holdout split when the sample is large enough, no automated strategy-weight or execution-gate changes, and no win probability unless separately calibrated (currently reported as unavailable).
+- **Persistence/resource bounds:** A85 uses the existing SQLite DB path, bounded retention, bounded deep-analysis count, no duplicate OHLCV fetcher, one chart at a time per alert job, and image bytes are passed directly to Telegram rather than accumulated as permanent local files.
 
-The following requested A85 deliverables are **not present** and are not claimed as complete: the dedicated `A85_MARKET_INTELLIGENCE_ENGINE`; full staged 500-pair radar/fair-rotation service beyond existing A79/A80 research paths; new complete BTC/ETH breadth and sector-rotation dashboard; end-to-end unified technical/SMC feature catalogue and cross-strategy statistical consensus beyond the existing Router confluence; the complete A85 trade-plan authority and expiry state machine; automatic multi-timeframe PNG chart renderer with Telegram `sendPhoto`; the expanded `/market`, `/top`, `/ready`, `/waiting`, `/analyze`, `/chart` and related read-only intelligence command suite; and the complete A85 walk-forward performance/adaptive research layer. Existing project capabilities remain, but they are not substitutes for those new A85 deliverables.
+## Explicit source/provider limitations
+
+A85 does not have a trusted configured provider for total crypto market cap, BTC dominance, futures OI/funding/liquidations or real CVD; these fields return `UNAVAILABLE`. Exact matching-engine queue position and hidden liquidity cannot be inferred from public L2. Sector taxonomy is partial/static. Consensus consumes Opportunity-Hunter's published family snapshot rather than re-invoking every raw detector. The duration estimate is a labelled heuristic, not a calibrated forecast. Estimated profit is scenario modelling, not realized PnL. If a symbol lacks a fresh Ask/order book or required closed frames, A85 cannot call it ready.
+
+## Preserved safety and original features
+
+- Original 99-file archive inventory, strategy modules, tests, risk gates, reconciliation, protection, lifecycle controls, telemetry, SQLite history, recovery paths and legacy Telegram controls are retained; no archive path was removed.
+- A85 is read-only: `execution_authority=false`, `selector_authority=false`, `order_authority=false`.
+- Defaults remain `UNIFIED_LIVE_PILOT_ENABLE=0`, `UNIFIED_A55_LIVE_ARM=0` and `MONITOR_ONLY_NO_NEW_BUYS`.
+- A83 stablecoin market-making remains present but `STABLECOIN_MM_ENABLE=0`, `STABLECOIN_MM_MODE=SHADOW`, `STABLECOIN_MM_LIVE_ARM=0` by default. The conservative fallback fee is 0.1% per side; without verified account/API fees, the simulator can correctly reject all quotes as uneconomic.
+- The canonical 3M USDT quote-volume gate and all existing spread, risk, stop/protection, forbidden-asset, pre-send and execution controls are preserved. A85 never lowers them.
+
+## A85 configuration
+
+The A85 controls are documented in `.env.example`: `A85_INTELLIGENCE_ENABLE`, `A85_MAX_ANALYSIS_SYMBOLS` (8–60; default 60), `A85_INTERMEDIATE_SCAN_LIMIT` (100–150; default 150), quality and alert thresholds, symbol cooldown, fresh-book age, net RR/profit floors, slippage assumption, chart bars/DPI, SQLite retention, minimum performance sample, chart/alert switches, sector taxonomy switch, book-depth multiplier, max chase and minimum order-book imbalance. All values are range-checked at startup; invalid input retains the fail-safe default and is visible in A85 validation.
+
+The A85 market analysis runs after the existing Opportunity Hunter research pass. `/ready` and `READY_NOW` do not grant any order authority. Live execution remains disabled independently of A85.
+
+## Validation and deployment limits
+
+The release report records the exact compile, regression, focused A85, manifest, checksum, clean-extract and `--validate-only` results. Real authenticated MEXC connectivity, account-tier fee retrieval, Telegram network delivery, target-host Docker/Railway/Render resource load, long-duration soak, and profitability are not established by offline tests. See `FINAL_AUDIT_REPORT.md` for exact pass counts and unresolved checks.
 
 ## A83 stablecoin monitor — explicit opt-in
 
@@ -27,7 +53,7 @@ The following requested A85 deliverables are **not present** and are not claimed
 
 - The clean recovery source passed `compileall`, `--validate-only`, and the 58-module regression suite (619 passed, 1 historical-fixture skip, 0 failed) in this environment.
 - No authenticated MEXC session, live order, real Telegram delivery acknowledgement, Docker target build, long-duration soak, or profitability validation was performed.
-- This is a verified recovery release of the existing code with an A83 safe-default correction. It is **not a completed A85 Market Intelligence & Visual Analyst release**.
+- This release includes the A85 core analytical pipeline described above. Its provider, sample-coverage, network-integration and deployment limits remain explicitly listed; it does not claim full-market candle coverage on every cycle, verified queue position, authenticated private fee retrieval, live Telegram delivery, profitability or a calibrated win probability.
 
 ---
 

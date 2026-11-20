@@ -553,7 +553,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
         self.assertIn("CMD [\"python\", \"-u\", \"main.py\"]", dockerfile)
 
     def test_runtime_dependency_constraints_match_ccxt_async_support(self):
-        required = {"ccxt", "numpy", "pandas", "aiohttp", "aiosqlite", "python-dotenv"}
+        required = {"ccxt", "numpy", "pandas", "aiohttp", "aiosqlite", "python-dotenv", "matplotlib"}
         constraints = {}
         # requirements.txt is the single installer entrypoint; resolve explicit
         # local -r includes so Docker/Railway and validation inspect the same pins.
@@ -1120,6 +1120,380 @@ class CanonicalReleaseContracts(unittest.TestCase):
             for key, value in structured.items():
                 value.clear()
                 value.extend(old_structured.get(key, []))
+
+
+class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
+    """A85 read-only analytics contracts; all market data is synthetic/offline."""
+
+    @staticmethod
+    def _frame(interval_sec: int, now: float, seed: int = 1):
+        import numpy as np
+        n = 128
+        end_open = (int(now // interval_sec) - 2) * interval_sec
+        stamps = [end_open - (n - 1 - i) * interval_sec for i in range(n)]
+        index = bot.pd.to_datetime(stamps, unit="s", utc=True)
+        x = np.arange(n, dtype=float)
+        close = 100.0 + x * 0.12 + np.sin(x / 3.2 + seed) * 0.9
+        open_ = close - np.sin(x / 2.7 + seed) * 0.18
+        high = np.maximum(open_, close) + 0.55 + (np.sin(x / 5.0) ** 2) * 0.12
+        low = np.minimum(open_, close) - 0.55 - (np.cos(x / 4.7) ** 2) * 0.12
+        volume = 1000.0 + (np.cos(x / 6.0 + seed) + 1.0) * 150.0
+        volume[-1] *= 1.8
+        return bot.pd.DataFrame({"open": open_, "high": high, "low": low,
+                                 "close": close, "volume": volume}, index=index)
+
+    @classmethod
+    def _market_data(cls, now: float, seed: int = 1):
+        periods = {"1d": 86400, "4h": 14400, "1h": 3600, "15m": 900, "5m": 300, "1m": 60}
+        md = {f"df_{name}": cls._frame(seconds, now, seed) for name, seconds in periods.items()}
+        px = float(md["df_1h"]["close"].iloc[-2])
+        md.update({"quote_vol_24h": 5_000_000.0, "bid": px * 0.9999, "ask": px * 1.0001,
+                   "orderbook_ts": now,
+                   "orderbook": {"bids": [[px * (0.9999 - i * 0.0001), 1000.0] for i in range(8)],
+                                "asks": [[px * (1.0001 + i * 0.0001), 1000.0] for i in range(8)]},
+                   "ticker": {"quoteVolume": 5_000_000.0, "bid": px * 0.9999, "ask": px * 1.0001}})
+        return md
+
+    def test_a85_selftest_and_readonly_authority(self):
+        report = bot._v702_a85_self_test_terminal()
+        self.assertTrue(report["pass"], report["failed"])
+        self.assertFalse(bot.A85MarketIntelligence.execution_authority)
+        self.assertFalse(bot.A85MarketIntelligence.selector_authority)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME["effective_entry_policy"], "MONITOR_ONLY_NO_NEW_BUYS")
+        self.assertFalse(bot.CONFIG.get("STABLECOIN_MM_ENABLE"))
+        self.assertEqual(bot.CONFIG.get("STABLECOIN_MM_MODE"), "SHADOW")
+
+    def test_a85_market_data_indicators_are_finite_and_include_volume_profile(self):
+        now = bot.WALL_NOW()
+        frame = self._frame(3600, now)
+        closed, stamp = bot.OpportunityHunter._closed_frame(frame, 3600, now=now)
+        self.assertIsNotNone(closed)
+        self.assertGreater(stamp, 0)
+        ind = bot.A85MarketIntelligence.indicators(closed)
+        self.assertIsNotNone(ind)
+        self.assertTrue(bot.math.isfinite(ind["atr"]))
+        self.assertIn(ind["trend"], {"BULLISH", "BEARISH", "NEUTRAL"})
+        self.assertIn(ind["volume_state"], {"EXPANSION", "CONTRACTION", "NORMAL"})
+        self.assertIn(ind["volume_profile"].get("status"), {"APPROXIMATE_OHLCV_TICK_VOLUME_PROFILE", "UNAVAILABLE"})
+
+    def test_a85_blacklist_and_stablecoin_are_central_and_long_only(self):
+        self.assertTrue(bot.A85MarketIntelligence._forbidden_or_stable("PUMP/USDT")[0])
+        self.assertTrue(bot.A85MarketIntelligence._forbidden_or_stable("USDC/USDT")[0])
+        self.assertTrue(bot.A85MarketIntelligence._forbidden_or_stable("BTC/USDC")[0])
+        self.assertFalse(bot.A85MarketIntelligence._forbidden_or_stable("SOL/USDT")[0])
+
+    def test_a85_consensus_deduplicates_same_family_and_rejects_stale(self):
+        symbol = "SOL/USDT"
+        now = int(bot.WALL_NOW())
+        rows = [
+            {"symbol": symbol, "family": "PULLBACK", "score": 70, "candle_ts": now},
+            {"symbol": symbol, "family": "PULLBACK", "score": 60, "candle_ts": now},
+            {"symbol": symbol, "family": "BREAKOUT", "score": 80, "candle_ts": now},
+            {"symbol": symbol, "family": "MEAN_REVERSION", "score": 99, "candle_ts": now - 99999},
+        ]
+        out = bot.A85MarketIntelligence._strategy_consensus(symbol, rows, now)
+        self.assertEqual(out["unique_family_count"], 2)
+        self.assertEqual(out["primary"], "BREAKOUT")
+        self.assertEqual(len(out["duplicate_or_stale_rejections"]), 2)
+        self.assertFalse(out["execution_authority"])
+
+    def test_a85_orderbook_freshness_spread_and_depth(self):
+        now = bot.WALL_NOW()
+        md = self._market_data(now)
+        facts = bot.A85MarketIntelligence._book_facts(md, now)
+        self.assertTrue(facts["book_fresh"])
+        self.assertGreater(facts["book_min_depth_usdt_5"], 1000.0)
+        self.assertLess(facts["spread_pct"], 0.30)
+        md["orderbook_ts"] = now - 120.0
+        stale = bot.A85MarketIntelligence._book_facts(md, now)
+        self.assertFalse(stale["book_fresh"])
+
+    def test_a85_plan_rejects_below_core_liquidity_and_stale_book(self):
+        now = bot.WALL_NOW()
+        md = self._market_data(now)
+        frame = md["df_1h"]
+        ind = bot.A85MarketIntelligence.indicators(frame)
+        structure = {"swing_lows": [float(frame["low"].iloc[-10])], "swing_highs": [], "resistance": None}
+        md["quote_vol_24h"] = 2_999_999.0
+        plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, {"1H": ind}, structure, 95, True)
+        self.assertEqual(plan["status"], "REJECTED")
+        self.assertEqual(plan["reason"], "CORE_LIQUIDITY_FLOOR_NOT_MET")
+        md["quote_vol_24h"] = 5_000_000.0
+        md["orderbook_ts"] = now - 120.0
+        plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, {"1H": ind}, structure, 95, True)
+        self.assertNotEqual(plan["status"], "READY_NOW")
+        self.assertEqual(plan["reason"], "STALE_OR_MISSING_BOOK")
+
+    def test_a85_ready_requires_executable_ask_and_orderbook_depth(self):
+        now = bot.WALL_NOW()
+        md = self._market_data(now)
+        frame = md["df_1h"]
+        ind1 = bot.A85MarketIntelligence.indicators(frame)
+        frame15 = md["df_15m"]
+        frame5 = md["df_5m"]
+        frame1 = md["df_1m"]
+        structure = {"swing_lows": [float(frame["low"].iloc[-10])], "swing_highs": [], "resistance": None}
+        ind = {"1H": ind1, "15M": bot.A85MarketIntelligence.indicators(frame15),
+               "5M": bot.A85MarketIntelligence.indicators(frame5), "1M": bot.A85MarketIntelligence.indicators(frame1)}
+        plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, ind, structure, 95, True)
+        if plan["status"] == "READY_NOW":
+            self.assertTrue(plan["economic_pass"])
+            self.assertTrue(plan["book"]["book_fresh"])
+            self.assertGreaterEqual(plan["book"]["book_min_depth_usdt_5"], plan["required_top5_depth_usdt"])
+            self.assertGreaterEqual(plan["net_rr_tp1"], bot.CONFIG["A85_MIN_NET_RR_TP1"])
+        else:
+            self.assertNotIn(plan["status"], {"READY_NOW"})
+            self.assertIn(plan["reason"], {"NET_ECONOMICS_FAILED", "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "INVALID_TARGET_SEQUENCE", "STRUCTURAL_STOP_RISK_OVER_4_PERCENT"})
+        md["orderbook"]["bids"] = [[md["bid"], 0.0001]]
+        md["orderbook"]["asks"] = [[md["ask"], 0.0001]]
+        low_depth = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, ind, structure, 95, True)
+        self.assertNotEqual(low_depth["status"], "READY_NOW")
+
+    def test_a85_trade_plan_cost_ledger_and_structural_targets_are_consistent(self):
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        frame=md["df_1h"]; ind1=bot.A85MarketIntelligence.indicators(frame)
+        entry=md["ask"]; stop=min(float(frame["low"].iloc[-10])-0.12*ind1["atr"],entry*(1-0.0035))
+        risk=entry-stop
+        resistance2=entry+risk*2.7; resistance3=entry+risk*3.8
+        structure={"swing_lows":[float(frame["low"].iloc[-10])],"swing_highs":[],"resistance":None,
+                   "resistances":[{"price":resistance2},{"price":resistance3}]}
+        fib={"extensions":{"1.272":entry+risk*4.5}}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frame},{"1H":ind1},structure,90,False,fib=fib)
+        self.assertIn(plan["status"],{"READY_NOW","WAITING_FOR_ENTRY","EARLY_SETUP"})
+        self.assertAlmostEqual(plan["targets"][1]["price"],resistance2,places=8)
+        self.assertAlmostEqual(plan["targets"][2]["price"],resistance3,places=8)
+        self.assertAlmostEqual(plan["total_estimated_cost_usdt"],
+                               plan["fee_cost_usdt_round_trip"]+plan["spread_cost_usdt"]+plan["slippage_cost_usdt_round_trip"],places=8)
+        self.assertAlmostEqual(plan["targets"][0]["estimated_net_profit_usdt"],plan["estimated_net_profit_usdt_tp1"],places=8)
+        self.assertFalse(plan.get("execution_authority",False))
+
+    def test_a85_ready_requires_1m_confirmation_when_1m_data_exists(self):
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        frame1=md["df_1m"].copy()
+        frame1.loc[frame1.index[-1],"close"] = float(frame1["close"].iloc[-1]) * 0.90
+        md["df_1m"]=frame1
+        frames={k:md[k] for k in ("df_1h","df_15m","df_5m","df_1m")}
+        inds={label:bot.A85MarketIntelligence.indicators(frame) for label,frame in (("1H",frames["df_1h"]),("15M",frames["df_15m"]),("5M",frames["df_5m"]),("1M",frames["df_1m"]))}
+        structure={"swing_lows":[float(frames["df_1h"]["low"].iloc[-10])],"swing_highs":[],"resistance":None}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frames["df_1h"]},inds,structure,95,True)
+        self.assertNotEqual(plan["status"],"READY_NOW")
+        self.assertIn(plan["reason"],{"MISSING_1M_CONFIRMATION","STALE_OR_MISSING_BOOK","INSUFFICIENT_TOP5_BOOK_DEPTH","ENTRY_CHASE_DISTANCE_EXCEEDED","NET_ECONOMICS_FAILED","ORDERBOOK_IMBALANCE_BELOW_FLOOR","RESISTANCE_TOO_CLOSE_FOR_NET_TP1","STRUCTURAL_STOP_RISK_OVER_4_PERCENT"})
+
+    def test_a85_fair_rotation_is_persisted_and_bounded(self):
+        import tempfile
+        from unittest.mock import patch
+        now = bot.WALL_NOW()
+        market = {f"COIN{i}/USDT": self._market_data(now, i + 2) for i in range(10)}
+        market["BTC/USDT"] = self._market_data(now, 1)
+        market["ETH/USDT"] = self._market_data(now, 3)
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a85.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_MAX_ANALYSIS_SYMBOLS": 8}, clear=False):
+                first = bot.A85MarketIntelligence.scan_map(market, universe_count=500)
+                off1 = bot.A85MarketIntelligence.get_rotation_offset("A85")
+                second = bot.A85MarketIntelligence.scan_map(market, universe_count=500)
+                off2 = bot.A85MarketIntelligence.get_rotation_offset("A85")
+                self.assertEqual(first["total_universe"], 500)
+                self.assertLessEqual(first["deep_analyzed_symbols"], 8)
+                self.assertNotEqual(off1, off2)
+                self.assertTrue(first["execution_authority"] is False)
+
+    def test_a85_chart_renderer_returns_real_png_from_closed_candles(self):
+        now = bot.WALL_NOW()
+        md = self._market_data(now)
+        with bot._A85_LAST_SCAN_LOCK:
+            previous = dict(bot._A85_LATEST_MARKET_MAP)
+            bot._A85_LATEST_MARKET_MAP["SOL/USDT"] = md
+        try:
+            row = bot.A85MarketIntelligence._analyze_one("SOL/USDT", md, None, [], now)
+            png = bot.A85MarketIntelligence.render_chart("SOL/USDT", "1H", row)
+            self.assertIsInstance(png, bytes)
+            self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        finally:
+            with bot._A85_LAST_SCAN_LOCK:
+                bot._A85_LATEST_MARKET_MAP.clear()
+                bot._A85_LATEST_MARKET_MAP.update(previous)
+
+    def test_a85_performance_reports_insufficient_sample_without_fabrication(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "empty_outcomes.sqlite3")
+            bot.OpportunityHunter._schema_ready_paths.discard(db)
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_MIN_PERFORMANCE_SAMPLE": 30}, clear=False):
+                report = bot.A85MarketIntelligence.performance()
+        self.assertEqual(report["status"], "INSUFFICIENT_SAMPLE")
+        self.assertEqual(report["sample_count"], 0)
+        self.assertNotIn("win_probability", report)
+
+    def test_a85_snapshot_expires_stale_trade_plans(self):
+        from unittest.mock import patch
+        original = list(bot._A85_LATEST_ROWS)
+        row = {"symbol":"SOL/USDT", "status":"READY_NOW", "quality_score":90,
+               "plan":{"entry_expiry_ts":1000.0,"status":"READY_NOW","economic_pass":True}}
+        try:
+            with bot._A85_LAST_SCAN_LOCK:
+                bot._A85_LATEST_ROWS[:] = [row]
+            with patch.object(bot, "WALL_NOW", return_value=1001.0):
+                expired = bot.A85MarketIntelligence.snapshot(["EXPIRED"], 5)
+                ready = bot.A85MarketIntelligence.snapshot(["READY_NOW"], 5)
+            self.assertEqual(len(expired), 1)
+            self.assertEqual(expired[0]["status"], "EXPIRED")
+            self.assertEqual(expired[0]["plan"]["economic_pass"], False)
+            self.assertEqual(ready, [])
+            self.assertEqual(row["status"], "READY_NOW", "snapshot must not mutate canonical stored data")
+        finally:
+            with bot._A85_LAST_SCAN_LOCK:
+                bot._A85_LATEST_ROWS[:] = original
+
+    def test_a85_zero_alert_budget_disables_notifications(self):
+        async def run():
+            from unittest.mock import patch
+            with patch.dict(bot.CONFIG, {"A85_AUTO_ALERTS_ENABLE":True, "TELEGRAM_ENABLED":True,
+                                        "A85_MAX_ALERTS_PER_CYCLE":0}, clear=False):
+                return await bot._v702_a85_publish_alerts([{"symbol":"SOL/USDT","status":"READY_NOW","quality_score":99}])
+        result = asyncio.run(run())
+        self.assertEqual(result, {"sent":0,"skipped":"ZERO_ALERT_BUDGET"})
+
+    def test_a85_telegram_is_integrated_without_a_new_runtime_monkey_patch(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('_v702_a85_readonly_dispatch', source)
+        self.assertIn('if await _a85_dispatch(cls, exchange, message):', source)
+        self.assertNotIn('TelegramCommandController._handle = classmethod(_v702_a85_tg_handle)', source)
+        for legacy in ("/cancel", "/cancel_all_targets", "/orders", "/sl", "/digest", "/opportunities"):
+            self.assertIn(legacy, source)
+
+    def test_a85_pipeline_is_read_only_and_uses_shared_map_only(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("A85MarketIntelligence.scan_map", source)
+        self.assertIn("_a79_research_market_data_map", source)
+        self.assertIn("EXISTING_MARKET_DATA_MAP_ONLY", source)
+        self.assertFalse(bot.A85MarketIntelligence.execution_authority)
+        self.assertFalse(bot.A85MarketIntelligence.selector_authority)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+        import re
+        self.assertEqual(len(re.findall(r'(?m)^if __name__ == "__main__":\s*$', source)), 1)
+        self.assertGreater(source.index("class A85MarketIntelligence"), source.index("def main():"))
+
+
+    def test_a85_snapshot_ranks_best_opportunity_first_within_status(self):
+        from unittest.mock import patch
+        original=list(bot._A85_LATEST_ROWS)
+        rows=[
+            {"symbol":"LOW/USDT","status":"READY_NOW","ranking_score":61,"quality_score":70,"analyzed_at":100,"plan":{"entry_expiry_ts":9999999999}},
+            {"symbol":"HIGH/USDT","status":"READY_NOW","ranking_score":91,"quality_score":92,"analyzed_at":90,"plan":{"entry_expiry_ts":9999999999}},
+            {"symbol":"WAIT/USDT","status":"WAITING_FOR_ENTRY","ranking_score":99,"quality_score":99,"analyzed_at":95,"plan":{"entry_expiry_ts":9999999999}},
+        ]
+        try:
+            with bot._A85_LAST_SCAN_LOCK:
+                bot._A85_LATEST_ROWS[:]=rows
+            with patch.object(bot,"WALL_NOW",return_value=1000.0):
+                ranked=bot.A85MarketIntelligence.snapshot(None,5)
+            self.assertEqual([r["symbol"] for r in ranked],["HIGH/USDT","LOW/USDT","WAIT/USDT"])
+        finally:
+            with bot._A85_LAST_SCAN_LOCK:
+                bot._A85_LATEST_ROWS[:]=original
+
+    def test_a85_fast_radar_uses_available_ticker_snapshot_and_core_liquidity_floor(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"ticker-radar.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            market={"AAA/USDT":{}, "BTC/USDT":{}}
+            tickers={
+                "AAA/USDT":{"quoteVolume":4_000_000,"percentage":7.0,"bid":1.0,"ask":1.001,"last":1.0005,"timestamp":int(bot.WALL_NOW()*1000)},
+                "BBB/USDT":{"quoteVolume":2_000_000,"percentage":12.0,"bid":2.0,"ask":2.001,"last":2.0005,"timestamp":int(bot.WALL_NOW()*1000)},
+                "USDC/USDT":{"quoteVolume":50_000_000,"percentage":0.01,"bid":0.999,"ask":1.001,"last":1.0},
+                "PUMP/USDT":{"quoteVolume":30_000_000,"percentage":40.0,"bid":1.0,"ask":1.001,"last":1.0},
+            }
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_MAX_ANALYSIS_SYMBOLS":8},clear=False):
+                result=bot.A85MarketIntelligence.scan_map(market,universe_count=500,ticker_snapshot=tickers)
+        self.assertEqual(result["total_universe"],500)
+        self.assertEqual(result["fast_scan_ticker_symbols"],2)
+        self.assertEqual(result["fast_scan_eligible_symbols"],1)
+        self.assertEqual(result["intermediate_scan_limit"],150)
+        self.assertEqual(result["intermediate_scanned_symbols"],2)
+        self.assertEqual(result["top_24h_movers"],["BBB/USDT","AAA/USDT"])
+        self.assertFalse(result["execution_authority"])
+
+
+    def test_a85_sector_rotation_is_partial_explicit_and_not_fabricated(self):
+        eligible=[
+            {"symbol":"SOL/USDT","change_24h_pct":5.0,"quote_volume_24h":5_000_000},
+            {"symbol":"SUI/USDT","change_24h_pct":3.0,"quote_volume_24h":4_000_000},
+            {"symbol":"DOGE/USDT","change_24h_pct":-2.0,"quote_volume_24h":6_000_000},
+            {"symbol":"UNKNOWNXYZ/USDT","change_24h_pct":20.0,"quote_volume_24h":9_000_000},
+        ]
+        report=bot.A85MarketIntelligence._sector_rotation(eligible,eligible)
+        self.assertEqual(report["status"],"PARTIAL_STATIC_TAXONOMY")
+        self.assertEqual(report["taxonomy"],"STATIC_EXPLICIT_SYMBOL_MAP_NOT_EXCHANGE_VERIFIED")
+        self.assertEqual(report["classified_eligible_symbols"],3)
+        self.assertLess(report["taxonomy_coverage_pct"],100)
+        self.assertEqual(report["top_sectors"][0]["sector"],"L1_BLOCKCHAINS")
+
+    def test_a85_market_overview_surfaces_a79_api_failures(self):
+        import tempfile
+        from unittest.mock import patch
+        now=bot.WALL_NOW()
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a85-coverage.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_MAX_ANALYSIS_SYMBOLS":8},clear=False):
+                report=bot.A85MarketIntelligence.scan_map(
+                    {"AAA/USDT":{},"BTC/USDT":{}},universe_count=500,ticker_snapshot={},
+                    research_summary={"universe":500,"eligible":90,"attempted":8,"ok":6,"failed":2,
+                                      "timed_out":1,"reject_reasons":{"network_timeout":1,"invalid_ohlcv":1}})
+        self.assertEqual(report["api_errors"],2)
+        self.assertEqual(report["research_coverage"]["timed_out"],1)
+        self.assertEqual(report["research_coverage"]["reject_reasons"]["network_timeout"],1)
+
+
+    def test_a85_market_telegram_command_handles_unknown_btc_context(self):
+        from unittest.mock import AsyncMock, patch
+        reply=AsyncMock()
+        market={"status":"OK","timestamp":bot.WALL_NOW(),"regime":{
+            "regime":"UNKNOWN","btc":"UNKNOWN","eth":"UNKNOWN","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"},
+            "breadth":{"sampled_symbols":0},"total_universe":500,"eligible_symbols":0,
+            "analyzed_symbols":0,"fast_scan_eligible_symbols":0,"intermediate_scanned_symbols":0,
+            "intermediate_eligible_symbols":0,"research_coverage":{},"top_24h_movers":[],"top_24h_volume":[]}
+        with patch.object(bot.A85MarketIntelligence,"market_snapshot",return_value=market), \
+             patch.object(bot.TelegramCommandController,"_reply",new=reply):
+            handled=asyncio.run(bot._v702_a85_readonly_dispatch(
+                bot.TelegramCommandController,None,{"text":"/market","chat":{"id":123}}))
+        self.assertTrue(handled)
+        reply.assert_awaited_once()
+
+
+    def test_a85_shadow_max_drawdown_is_computed_in_chronological_order(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a85-performance-dd.sqlite3")
+            bot.OpportunityHunter._schema_ready_paths.discard(db)
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_MIN_PERFORMANCE_SAMPLE":30},clear=False):
+                bot.OpportunityHunter._ensure_schema()
+                conn=bot.OpportunityHunter._connect()
+                try:
+                    for i,value in enumerate([1.0]*15+[-1.0]*15):
+                        created=1000.0+i*100.0
+                        conn.execute("""INSERT INTO opportunity_hunter
+                            (opportunity_id,symbol,family,pattern,status,timeframe,created_at,updated_at,expires_at,
+                             outcome_status,outcome_final,outcome_updated_at,outcome_net_r,outcome_net_return_pct,
+                             evidence_json,outcome_events_json)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (f"dd-{i}",f"COIN{i}/USDT","TEST_FAMILY","TEST_PATTERN","CLOSED","1H",created,created+10,created+1000,
+                             "TP1" if value>0 else "SL",1,created+10,value,value*0.5,"{}","[]"))
+                    conn.commit()
+                finally: conn.close()
+                report=bot.A85MarketIntelligence.performance()
+            self.assertEqual(report["status"],"OK")
+            self.assertEqual(report["sample_count"],30)
+            self.assertAlmostEqual(report["max_drawdown_r"],15.0,places=6)
 
 
 if __name__ == "__main__":

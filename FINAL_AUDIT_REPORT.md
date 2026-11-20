@@ -462,3 +462,67 @@ No files were added to or removed from the archive. The supplied inventory was a
 - No authenticated MEXC call, live order, real wallet access, or external Telegram delivery was attempted. This environment did not have `ccxt` or `aiosqlite` installed during the import probe. Synthetic lifecycle tests do not verify fills, fees, slippage, profitability, or 24/7 uptime.
 - `main.py` remains a large canonical runtime module (108,000+ lines). A wholesale split/refactor was not attempted because it would alter the established import/runtime contract and materially increase regression risk in a 99-file release. The patch is targeted rather than a claim that every historical code path has been exhaustively reviewed line-by-line.
 
+
+
+# A85 — تقرير تنفيذ Market Intelligence & Visual Analyst (2026-11-20)
+
+## نطاق الدمج داخل المصدر الأصلي
+
+تم دمج طبقة `A85MarketIntelligence` داخل `main.py`، مع الحفاظ على مخزون الملفات الأصلي البالغ 99 ملفًا وعدم حذف أي مسار. تعمل الطبقة بعد مسح Opportunity Hunter وتستهلك خريطة A79/A80 المشتركة ولقطة Ticker الموجودة، دون بناء عميل OHLCV موازٍ أو إرسال أوامر أو حقن مرشحين في Global Selector.
+
+### الوحدات المدمجة
+
+1. **الرادار المتدرج:** إحصاءات سريعة من لقطة Ticker المشتركة، ثم قائمة وسيطة 100–150 زوجًا وفق بيانات الحجم المتاحة، ثم تحليل شموع عميق افتراضيًا لـ60 زوجًا كحد أقصى في الدورة. حد 500 هو سقف سوق البحث A80 وليس ادعاء تحليل 500 شمعة في كل دورة. يستخدم الرادار دورانًا محفوظًا في SQLite ويخصص نصف الميزانية على الأقل للتدوير العادل.
+2. **السياق العام:** BTC على شموع مغلقة 1D/4H/1H/15M عند توفرها، ETH 1H والقوة النسبية، وتصنيف BULLISH/BEARISH/NEUTRAL/HIGH_VOLATILITY/RANGE_BOUND/RECOVERY/DISTRIBUTION أو UNKNOWN. Breadth هو عينة من خريطة البيانات الحالية، وليس إحصاءً مؤكدًا لكل السوق.
+3. **التحليل الفني:** 1D/4H/1H/15M/5M/1M، EMA 9/20/50/100/200، RSI، MACD، ATR، Bollinger، VWAP، Relative Volume، نماذج شموع، Swing/Pivots، HH/HL/LH/LL، BOS/CHoCH، Liquidity Sweep، Equal High/Low، FVG/OB proxies، دعم/مقاومة مجمّع وFibonacci. Volume Profile هو تقريب من Typical Price وOHLCV volume وليس تدفق صفقات كاملًا.
+4. **تدوير القطاعات:** خريطة رموز ثابتة ومحددة للقطاعات المعروفة فقط، تقيس عائد/اتساع العينات المؤهلة. الحالة دائمًا جزئية (`PARTIAL_STATIC_TAXONOMY`) ولا تُسند العملات غير المعروفة إلى قطاعات.
+5. **Consensus والترتيب:** تجميع عائلات Opportunity Hunter المنشورة، إزالة التكرارات داخل العائلة، رفض الدليل القديم، وإظهار الاستراتيجية الأساسية والداعمة والتعارض. يحتفظ Router ذي الكواشف التسعة بسلطته الأصلية؛ طبقة A85 لا تعيد تشغيل كل محرك خام ولا تستبدل Global Selector. فصل درجات Signal Quality وExecution Quality وData Confidence وRanking؛ لا توجد Win Probability مخترعة.
+6. **خطة الصفقة:** Ask كمرجع شراء، Entry Zone وPreferred Entry وChase Limit وExpiry، وقف هيكلي/ATR، أهداف مرتبة من المقاومة/امتداد Fibonacci أو مضاعفات R محافظة، شروط إبطال، تقدير مدة إرشادي، وحساب تكلفة جانبي الرسوم والسبريد والانزلاق وصافي العائد وRR وربح USDT على حجم افتراضي إعداداتي. `READY_NOW` يتطلب تأكيد شموع 15M/5M وتأكيد 1M إذا كانت بياناته متاحة، ودفترًا حديثًا وعمقًا كافيًا وسبريدًا وجدوى صافية. ذلك تصنيف تحليلي لا أمر تداول.
+7. **الرسم:** Matplotlib Agg ينشئ PNG فعلية 1H و15M بعناصر الشموع والمتوسطات وVWAP/BB والدعم/المقاومة وFVG/OB proxy والـSwing وBOS/CHoCH والـSweeps وFib وPOC التقريبي والحجم ومناطق Entry/SL/TP والطوابع الزمنية. يستخدم Telegram `sendPhoto` عند توافر إعدادات الاتصال، ويسجل الفشل بدل الادعاء بالإرسال.
+8. **Telegram:** أوامر قراءة فقط `/market` و`/top` و`/ready` و`/waiting` و`/analyze` و`/chart` و`/portfolio` و`/strategies` و`/performance` و`/regime` و`/help` مدمجة في المعالج الأصلي. لا يوجد Monkey Patch جديد، وتبقى أوامر الإدارة والحماية السابقة في المعالج نفسه.
+9. **الأداء والبحث:** مؤشرات Shadow مأخوذة من سجل Opportunity Hunter فقط، بحد أدنى 30 عينة، وفصل زمني Holdout عند كفاية العينة، وبدون تعديل تلقائي للأوزان أو حواجز المخاطر. تم تصحيح حساب Max Drawdown ليحسب النتائج زمنيًا من الأقدم إلى الأحدث.
+10. **الرصد والميزانية:** يعرض ملخص A79/A80 عدد المحاولات والنجاحات والإخفاقات والمهل وأسباب الرفض؛ يميز أعداد Fast/Intermediate/Deep؛ يتعامل مع حالة BTC المفقودة كـUNKNOWN؛ ويعرض أعلى فرصة أولًا داخل الحالة نفسها.
+
+## ملفات التعديل
+
+التعديل محصور في الملفات الموجودة مسبقًا: `main.py`، `test_release_contracts.py`، `.env.example`، `requirements.in`، `requirements-lock.txt`، `LOCKFILE_NOTES.md`، `README.md`، `CHANGELOG.md`، `FINAL_AUDIT_REPORT.md`، `FINAL_MANIFEST.json`، `A66_RELEASE_MANIFEST.json`، `A66_SHA256SUMS.txt`. لا ملف مضاف ولا ملف محذوف؛ العدد المستهدف 99 بالضبط.
+
+## حدود صريحة لم تدّع هذه الحزمة تجاوزها
+
+- لا يوجد مزود موثوق مهيأ لـTotal Market Cap أو BTC Dominance أو OI/Funding/Liquidations أو CVD؛ هذه الحقول تبقى `UNAVAILABLE`.
+- القطاع مبني على تصنيف رموز ثابت جزئي، وليس Taxonomy موثقًا لكل العملات.
+- Consensus يجمع سجل عائلات Opportunity Hunter ولا يستدعي كل محرك خام بصورة مستقلة؛ Router الأصلي يظل سلطة المرشح الأساسية.
+- بيانات Public L2 لا تكشف ترتيب Queue الحقيقي أو السيولة المخفية. مدة الصفقة تقدير إرشادي وليست نموذجًا معايرًا.
+- نتائج الأداء Shadow فقط وليست صفقات منفذة أو أرباح حساب. لا يوجد إثبات ربحية.
+- لم يُستخدم حساب MEXC حقيقي، ولم يُرسل أمر تداول، ولم يُتحقق من رسوم الحساب الخاصة. اختبار Telegram الحقيقي وDocker وRailway/Render والحمل المستمر لم يُنفذ في هذه البيئة.
+
+## وضع الأمان
+
+`UNIFIED_LIVE_PILOT_ENABLE=0`، و`UNIFIED_A55_LIVE_ARM=0`، والسياسة `MONITOR_ONLY_NO_NEW_BUYS`. A85 سلطاته الثلاث (Selector/Order/Execution) false. A83 يبقى محفوظًا لكنه `STABLECOIN_MM_ENABLE=0` افتراضيًا و`MODE=SHADOW` و`LIVE_ARM=0`. لا يخفف A85 حد السيولة الأساسي 3M USDT أو بوابات السبريد والرسوم والمخاطرة والحماية.
+
+## الاختبارات
+
+تُدرج الأعداد النهائية بعد تشغيل الاختبارات على النسخة المستخرجة من ZIP النهائي. لم تُسجل نتيجة شبكة MEXC أو Telegram حقيقية باعتبارها PASS.
+
+
+
+# A85 — الإغلاق النهائي للاختبارات والإصدار (2026-11-20)
+
+هذه الفقرة هي سجل الإغلاق الحالي وتَسود على أعداد الاختبارات التاريخية المذكورة في أقسام A80–A84 السابقة.
+
+## النتائج النهائية الفعلية
+
+- مجموعة Regression الكاملة: **58 وحدة اختبار، 5 دفعات مستقلة، 642 اختبارًا جُمعت؛ 641 ناجحًا، اختبار واحد متخطّى، صفر إخفاقات**. أعداد النجاح بالدفعات: 70، 84، 97، 157، 233. استُخدم مسار SQLite مستقل (`SCALPER_DB`) لكل دفعة لمنع تداخل حالة الاختبار. لا يُدّعى اكتمال تشغيل واحد مشترك لكل الاختبارات؛ الإغلاق مبني على الدفعات المنفصلة الناجحة.
+- اختبارات A85 المركزة: **22 ناجحًا، صفر إخفاقات**.
+- `test_release_contracts.py`: **66 ناجحًا، اختبار تاريخي واحد متخطّى، صفر إخفاقات**. سبب التخطي أن الاختبار يحتاج سجل A51 تاريخيًا غير مضمن في حزمة الإصدار النظيفة.
+- `compileall` و`py_compile`: **73/73 ملف Python**.
+- `python main.py --validate-only`: exit 0، و`bot_started=false`، و`live_threads=[]`، ولا صلاحية تداول حقيقي.
+- ملف الأرشيف النهائي: 99 ملفًا بالضبط، 0 ملفات مضافة، 0 ملفات محذوفة، 12 ملفًا أصليًا معدّلًا. سجل SHA-256 الداخلي يحتوي 98 بصمة للملفات عدا ملف سجل البصمات نفسه.
+
+## قائمة الملفات المعدلة
+
+`main.py`، `test_release_contracts.py`، `.env.example`، `requirements.in`، `requirements-lock.txt`، `LOCKFILE_NOTES.md`، `README.md`، `CHANGELOG.md`، `FINAL_AUDIT_REPORT.md`، `FINAL_MANIFEST.json`، `A66_RELEASE_MANIFEST.json`، `A66_SHA256SUMS.txt`.
+
+## صلاحيات وأمور لم تُختبر خارجيًا
+
+`UNIFIED_LIVE_PILOT_ENABLE=0`، `UNIFIED_A55_LIVE_ARM=0`، و`MONITOR_ONLY_NO_NEW_BUYS`. A85 لا يملك سلطة Selector أو Order أو Execution. A83 محفوظ لكنه معطل افتراضيًا ويظل Shadow فقط عند تفعيله يدويًا. لم يُستخدم حساب MEXC حقيقي، ولم يُرسل أمر أو يُتحقق من Fill أو الرسوم الخاصة بالحساب؛ لم يتم اختبار تسليم Telegram الفعلي أو بناء Docker على منصة الاستهداف أو حمل Railway/Render أو تشغيل طويل. لا توجد نتيجة تثبت ربحية أو دخلًا يوميًا. الاعتماد `matplotlib==3.10.8` مثبت مباشرةً، لكن `requirements-lock.txt` هو direct-pin seed وليس lock كاملًا transitive/hash؛ لم يُختلق Hash ولم يُدّعَ بناء strict lock.

@@ -15,3 +15,8 @@ The workflow `.github/workflows/a65-production-audit.yml` is configured to resol
 - CI/build configuration is not proof of a successful remote build, exchange authentication, Telegram delivery, stop protection, or profitable trading.
 
 No package hashes are inferred or invented in this A69 merged package. The Python 3.12/Linux amd64 CI resolution and Docker build remain unverified until the workflow actually runs.
+
+
+## A85 chart dependency
+
+`matplotlib==3.10.8` is now a direct pinned runtime input for the A85 headless PNG renderer (`Agg` backend). `requirements-lock.txt` remains a direct-pin seed, not a transitive hash lock. This environment could not establish a fresh Python 3.12/Linux/amd64 transitive hash lock because dependency-index/network resolution is unavailable; no hashes are fabricated. CI must regenerate the full lock before a strict hash-locked Docker build.

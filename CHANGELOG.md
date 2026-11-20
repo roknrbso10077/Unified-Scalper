@@ -1,4 +1,4 @@
-# Changelog — Verified A84 recovery / partial A85 correction
+# Changelog — Unified Scalper A85 Market Intelligence & Visual Trade Analyst
 
 ## 2026-11-20 — Recovery closeout and A83 opt-in safety default
 
@@ -8,7 +8,7 @@
 - Retained BTC directional macro as observational by default with crash/unknown fail-closed controls, and retained the existing nine-detector Router confluence capped at +1.5 ranking points.
 - Updated the A83 regression contract to assert disabled-by-default behavior while continuing to test fee economics and permanent no-live authority.
 - Preserved every original package path: 99 files, no added or removed files. Updated the manifest and SHA-256 ledger after final verification.
-- **Explicit non-delivery:** A85 full-market radar, advanced SMC/market breadth/sector engine, complete opportunity/plan authority, PNG chart renderer/Telegram photo delivery, full A85 command dashboard, and A85 adaptive/walk-forward analytics are not implemented in this recovery package.
+- This entry records the interim recovery state at that point in the release history. It is superseded by the A85 implementation section later in this changelog, which documents the analytical radar, chart renderer, Telegram read-only interface and Shadow performance integration added to the canonical runtime.
 
 ---
 
@@ -2660,3 +2660,42 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Clamped the Shadow capital/reserve calculation before applying its minimum-dollar-profit threshold.
 - Added six deterministic regression tests. No live order authority, family policy, spread/fee floor, macro gate, or canonical liquidity floor was relaxed.
 - The release remains exactly 99 files; no files were added or deleted. Profitability and real exchange/Telegram integration remain unverified.
+
+
+# A85 — Unified Market Intelligence & Visual Trade Analyst (2026-11-20)
+
+## Implemented in the canonical runtime
+
+- Added `A85MarketIntelligence` to `main.py`; it runs after the existing Opportunity Hunter pass and consumes the shared A79/A80 ticker snapshot and closed-candle data map. It has no selector, queue, order or execution authority.
+- Added fast ticker overview, intermediate 100–150-symbol metadata ranking, bounded deep technical analysis (default 60; maximum 60), persistent fair rotation and A79/A80 fetch-error attribution. A80's potential 500-symbol research universe is not represented as 500 deep OHLCV scans.
+- Added BTC/ETH regime context, sampled breadth, explicit static partial sector taxonomy, six-timeframe technical indicators, deterministic market-structure/SMC proxies, support/resistance clustering, Fibonacci, relative volume and approximate OHLCV volume-profile outputs. Missing trusted external market-cap/dominance/OI/funding/CVD providers remain `UNAVAILABLE`.
+- Added family-level consensus over fresh Opportunity-Hunter snapshots, conflict/stale/duplicate reporting, independent signal/execution/data-confidence scores and top-ranked analytical opportunities. The canonical nine-detector Router and Global selector remain unchanged.
+- Added cost-aware read-only trade plans from best Ask, fresh book/depth/spread, two-side fees, spread, slippage, bounded structural stop, structural/Fibonacci targets, entry expiry and invalidation rules. `READY_NOW` requires closed 15M/5M confirmation, 1M confirmation when available, order-book and economic gates; it is not an order.
+- Added real Matplotlib Agg PNG chart rendering for 1H/15M and Telegram `sendPhoto` attempt with graceful failure/text fallback; integrated read-only commands in the existing Telegram handler without monkey-patching it. Legacy management/protection commands retain their original handler.
+- Added Shadow-outcome reporting with a minimum 30-sample floor, chronological holdout and no automatic weight/gate changes. Fixed chronological maximum-drawdown calculation.
+- Added bounded persistence/rotation, status expiry, alert cooldown/budget, and A85 self-tests/regression coverage.
+- Preserved all original archive paths: 99 files, zero added, zero removed. A83 remains disabled by default and Shadow-only; live switches remain off.
+
+## Correctness refinements in this release
+
+- `/top` and status snapshots now sort highest-ranked opportunities first within each status.
+- The A85 radar uses the full existing A79/A80 ticker snapshot when available, without a new API request; intermediate/deep counts remain explicitly separate.
+- `/market` handles missing BTC context safely as `UNKNOWN` rather than raising on an unexpected string payload.
+- Market summaries expose A79/A80 supplement `attempted/ok/failed/timeout/reject_reasons` rather than a hard-coded null error count.
+- Sector performance is limited to an explicit static symbol map and always reports partial taxonomy coverage; unknown coins are not assigned invented sectors.
+
+## Known limitations
+
+- No trusted external market-cap, BTC-dominance, OI, funding, liquidations or CVD provider is configured. Sector mapping is partial/static; real matching-engine queue position is not observable. The volume-profile and SMC zones are clearly labelled approximations/proxies where appropriate.
+- Statistical consensus is over published Opportunity-Hunter family snapshots; it does not independently rerun every raw strategy detector. Historical metrics use the Opportunity-Hunter Shadow outcome ledger only.
+- Real MEXC authenticated calls, private fee verification, actual Telegram network delivery, Docker/host resource testing, long Shadow soak and realized profitability remain unverified.
+
+
+
+## A85 final regression and artifact closeout (2026-11-20)
+
+- Full regression: 58 test modules executed in five non-overlapping batches with isolated SQLite paths; **641 passed, 1 historical A51 fixture skipped, 0 failed** (642 collected). Batch pass counts: 70, 84, 97, 157 and 233.
+- A85-focused tests: **22 passed, 0 failed**. Release-contract file: **66 passed, 1 historical skip, 0 failed**.
+- `compileall` and explicit `py_compile`: all **73/73** packaged Python files passed. `python main.py --validate-only`: exit 0; `bot_started=false`, `live_threads=[]`.
+- Inventory remains 99 files, 0 added, 0 removed. Twelve existing files are modified; all original archive paths and protection/lifecycle modules remain.
+- Tests were offline/deterministic. No authenticated MEXC session, actual Telegram delivery, live order, profitability, Docker target build, Railway/Render load test or long-duration soak was exercised.

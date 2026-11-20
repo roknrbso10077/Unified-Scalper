@@ -13515,6 +13515,16 @@ class TelegramCommandController:
         if not cls._authorized(message):
             return
 
+        # A85 read-only analytics commands are routed inside this canonical
+        # handler. Existing order/protection commands continue below unchanged.
+        _a85_dispatch = globals().get("_v702_a85_readonly_dispatch")
+        if callable(_a85_dispatch):
+            try:
+                if await _a85_dispatch(cls, exchange, message):
+                    return
+            except Exception as _a85_route_exc:
+                logger.warning("[A85-TG] read-only dispatch failed: %s", type(_a85_route_exc).__name__)
+
         chat_id = ((message or {}).get("chat") or {}).get("id")
         text = str(((message or {}).get("text") or "")).strip()
         if not text.startswith("/"):
@@ -27796,7 +27806,7 @@ async def run_bot(universe: List[str]):
                         if str((_r.get("evidence") or {}).get("strategy_style") or "").upper() == "SWING"
                         and str(_r.get("status") or "").upper() in {"WATCH", "CONFIRMED", "TRADEABLE"}
                     ]
-                    _a79_offset = int(getattr(run_bot, "_v702_a79_supplement_offset", 0) or 0)
+                    _a79_offset = (A85MarketIntelligence.get_rotation_offset("A79") if globals().get("A85MarketIntelligence") else int(getattr(run_bot, "_v702_a79_supplement_offset", 0) or 0))
                     _a79_selected = _v702_a79_select_supplemental_symbols(
                         list(_a80_research_universe), _a79_tickers, set(market_data_map),
                         max_symbols=max(16, min(32, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)))),
@@ -27811,6 +27821,8 @@ async def run_bot(universe: List[str]):
                     )
                     if _a79_pool_count:
                         setattr(run_bot, "_v702_a79_supplement_offset", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
+                        if globals().get("A85MarketIntelligence"):
+                            A85MarketIntelligence.set_rotation_offset("A79", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
                     _a79_supplement_summary.update({"universe": int(len(_a80_research_universe)), "core_universe": int(len(scan_universe)),
                                                      "eligible": int(_a79_pool_count), "attempted": int(len(_a79_selected)),
                                                      "symbols": list(_a79_selected)})
@@ -28423,6 +28435,27 @@ async def run_bot(universe: List[str]):
                 STATS["v702_opportunity_hunter_scan_errors"] = int(STATS.get("v702_opportunity_hunter_scan_errors", 0) or 0) + 1
                 logger.warning("[OPPORTUNITY-HUNTER] read-only scan failed closed: %s:%s",
                                type(_v702_hunter_scan_exc).__name__, str(_v702_hunter_scan_exc)[:180])
+
+            # A85 market intelligence consumes the exact shared research map.
+            # It is isolated from GlobalOpportunityBrain, Builder, PreSend and
+            # OrderExecutor; one bounded scan task and one bounded alert task.
+            try:
+                _a85_summary = await asyncio.to_thread(
+                    A85MarketIntelligence.scan_map,
+                    _a79_research_market_data_map,
+                    universe_count=len(_a80_research_universe) if "_a80_research_universe" in locals() and isinstance(_a80_research_universe, (list, tuple)) else len(scan_universe),
+                    ticker_snapshot=(_a79_tickers if "_a79_tickers" in locals() and isinstance(_a79_tickers, dict) and _a79_tickers
+                                     else _v679_ticker_snapshot if isinstance(_v679_ticker_snapshot, dict) else None),
+                    research_summary=_a79_supplement_summary if isinstance(_a79_supplement_summary, dict) else None,
+                )
+                STATS["v702_a85_last_scan_summary"] = {k:v for k,v in dict(_a85_summary or {}).items() if k != "rows"}
+                _a85_task = globals().get("_A85_ALERT_TASK")
+                if not _V699_VALIDATE_ONLY_REQUEST and (not _a85_task or _a85_task.done()):
+                    _a85_rows = A85MarketIntelligence.snapshot(None, 5)
+                    globals()["_A85_ALERT_TASK"] = asyncio.create_task(_v702_a85_publish_alerts(_a85_rows))
+            except Exception as _a85_exc:
+                STATS["v702_a85_scan_errors"] = int(STATS.get("v702_a85_scan_errors", 0) or 0) + 1
+                logger.warning("[A85] read-only intelligence failed closed: %s:%s", type(_a85_exc).__name__, str(_a85_exc)[:160])
 
             # Fail-closed choice: a brain failure does NOT execute all symbols.
             # It falls back to no-new-entry for this cycle rather than bypassing
@@ -30570,6 +30603,15 @@ def main():
             )
         except Exception:
             pass
+    _a85_validation_report = _v702_a85_self_test_terminal()
+    STATS["v702_a85_startup_validation"] = _a85_validation_report
+    if _A85_CONFIG_ERRORS:
+        _a85_validation_report["pass"] = False
+        _a85_validation_report["failed"] = list(_a85_validation_report.get("failed") or []) + ["invalid_a85_environment_settings"]
+        _a85_validation_report["config_errors"] = list(_A85_CONFIG_ERRORS)
+    if not _a85_validation_report.get("pass"):
+        logger.critical("[A85-BOOT-STOP] A85 validation failed: %s", _a85_validation_report.get("failed"))
+        raise SystemExit("a85_validation_failed")
     if not _cfg_ok:
         # Report the *active* terminal validators. Older deployments printed only
         # R23/V704 fields here, which can be empty when the A7-A24 terminal layer
@@ -108298,10 +108340,1517 @@ FINAL_CANONICAL_RUNTIME.update({
 })
 
 
+# A83 release marker: analytical primitives only; feature disabled and LIVE locked.
+V702_A83_REVISION = "A83-STABLECOIN-MARKET-MAKER-SHADOW-LIFECYCLE-2026-11-19"
+STATS["v702_a83_revision"] = V702_A83_REVISION
+FINAL_CANONICAL_RUNTIME.update({
+    "active_a83_revision_current": V702_A83_REVISION,
+    "stablecoin_mm_symbol_fixed": StablecoinMarketMaker.SYMBOL,
+    "stablecoin_mm_live_authorized": False,
+    "stablecoin_mm_scope": "ANALYTICAL_PRIMITIVES_ONLY",
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+# =============================================================================
+# A85 — UNIFIED MARKET INTELLIGENCE & VISUAL TRADE ANALYST
+# Read-only analytical layer over the already collected market_data_map.
+# It has no order, selector, queue, or execution authority.
+# =============================================================================
+V702_A85_REVISION = "A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20"
+CONFIG.setdefault("A85_INTELLIGENCE_ENABLE", True)
+CONFIG.setdefault("A85_MAX_ANALYSIS_SYMBOLS", 60)
+CONFIG.setdefault("A85_INTERMEDIATE_SCAN_LIMIT", 150)
+CONFIG.setdefault("A85_MIN_QUALITY_SCORE", 68.0)
+CONFIG.setdefault("A85_ALERT_MIN_QUALITY", 82.0)
+CONFIG.setdefault("A85_MAX_ALERTS_PER_CYCLE", 3)
+CONFIG.setdefault("A85_SYMBOL_ALERT_COOLDOWN_SEC", 1800.0)
+CONFIG.setdefault("A85_BOOK_MAX_AGE_SEC", 15.0)
+CONFIG.setdefault("A85_MIN_NET_RR_TP1", float(CONFIG.get("V702_SMALL_NET_MIN_NET_RR_TP1", 0.80)))
+CONFIG.setdefault("A85_MIN_NET_PROFIT_PCT", float(CONFIG.get("V702_SMALL_NET_MIN_NET_PROFIT_PCT", 0.10)))
+CONFIG.setdefault("A85_SLIPPAGE_PER_SIDE_PCT", 0.05)
+CONFIG.setdefault("A85_CHART_MAX_BARS", 120)
+CONFIG.setdefault("A85_CHART_DPI", 115)
+CONFIG.setdefault("A85_PERSISTENCE_RETENTION_DAYS", 30)
+CONFIG.setdefault("A85_PERSISTENCE_MAX_ROWS", 20000)
+CONFIG.setdefault("A85_MIN_PERFORMANCE_SAMPLE", 30)
+CONFIG.setdefault("A85_AUTO_ALERTS_ENABLE", True)
+CONFIG.setdefault("A85_AUTO_CHART_ENABLE", True)
+CONFIG.setdefault("A85_SECTOR_CLASSIFICATION_ENABLE", True)
+
+# A85 environment settings are parsed once after dotenv load. Invalid values are
+# recorded and fail the A85 startup self-test rather than silently overriding
+# safety defaults or creating a second configuration layer.
+_A85_CONFIG_ERRORS = []
+def _a85_load_env_setting(env_name, config_key, kind, default, minimum=None, maximum=None):
+    raw = _env_first(env_name)
+    value = default if raw is None else raw
+    try:
+        if kind == "bool":
+            if isinstance(value, bool): parsed = value
+            else:
+                token = str(value).strip().lower()
+                if token not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+                    raise ValueError("expected boolean")
+                parsed = token in {"1", "true", "yes", "on"}
+        elif kind == "int":
+            parsed = int(value)
+        else:
+            parsed = float(value)
+            if not math.isfinite(parsed): raise ValueError("non-finite number")
+        if minimum is not None and parsed < minimum: raise ValueError(f"below minimum {minimum}")
+        if maximum is not None and parsed > maximum: raise ValueError(f"above maximum {maximum}")
+        CONFIG[config_key] = parsed
+    except Exception as exc:
+        _A85_CONFIG_ERRORS.append(f"{env_name}:{type(exc).__name__}")
+        logger.error("[A85-CONFIG] invalid %s; retaining fail-safe default", env_name)
+        CONFIG[config_key] = default
+
+for _a85_spec in (
+    ("A85_INTELLIGENCE_ENABLE", "A85_INTELLIGENCE_ENABLE", "bool", True, None, None),
+    ("A85_MAX_ANALYSIS_SYMBOLS", "A85_MAX_ANALYSIS_SYMBOLS", "int", 60, 8, 60),
+    ("A85_INTERMEDIATE_SCAN_LIMIT", "A85_INTERMEDIATE_SCAN_LIMIT", "int", 150, 100, 150),
+    ("A85_MIN_QUALITY_SCORE", "A85_MIN_QUALITY_SCORE", "float", 68.0, 0.0, 100.0),
+    ("A85_ALERT_MIN_QUALITY", "A85_ALERT_MIN_QUALITY", "float", 82.0, 0.0, 100.0),
+    ("A85_MAX_ALERTS_PER_CYCLE", "A85_MAX_ALERTS_PER_CYCLE", "int", 3, 0, 5),
+    ("A85_SYMBOL_ALERT_COOLDOWN_SEC", "A85_SYMBOL_ALERT_COOLDOWN_SEC", "float", 1800.0, 300.0, 86400.0),
+    ("A85_BOOK_MAX_AGE_SEC", "A85_BOOK_MAX_AGE_SEC", "float", 15.0, 1.0, 60.0),
+    ("A85_MIN_NET_RR_TP1", "A85_MIN_NET_RR_TP1", "float", float(CONFIG.get("V702_SMALL_NET_MIN_NET_RR_TP1", 0.80)), 0.1, 10.0),
+    ("A85_MIN_NET_PROFIT_PCT", "A85_MIN_NET_PROFIT_PCT", "float", float(CONFIG.get("V702_SMALL_NET_MIN_NET_PROFIT_PCT", 0.10)), 0.0, 10.0),
+    ("A85_SLIPPAGE_PER_SIDE_PCT", "A85_SLIPPAGE_PER_SIDE_PCT", "float", 0.05, 0.0, 2.0),
+    ("A85_CHART_MAX_BARS", "A85_CHART_MAX_BARS", "int", 120, 60, 180),
+    ("A85_CHART_DPI", "A85_CHART_DPI", "int", 115, 80, 160),
+    ("A85_PERSISTENCE_RETENTION_DAYS", "A85_PERSISTENCE_RETENTION_DAYS", "int", 30, 7, 365),
+    ("A85_PERSISTENCE_MAX_ROWS", "A85_PERSISTENCE_MAX_ROWS", "int", 20000, 1000, 100000),
+    ("A85_MIN_PERFORMANCE_SAMPLE", "A85_MIN_PERFORMANCE_SAMPLE", "int", 30, 30, 10000),
+    ("A85_AUTO_ALERTS_ENABLE", "A85_AUTO_ALERTS_ENABLE", "bool", True, None, None),
+    ("A85_AUTO_CHART_ENABLE", "A85_AUTO_CHART_ENABLE", "bool", True, None, None),
+    ("A85_SECTOR_CLASSIFICATION_ENABLE", "A85_SECTOR_CLASSIFICATION_ENABLE", "bool", True, None, None),
+    ("A85_BOOK_DEPTH_MULTIPLIER", "A85_BOOK_DEPTH_MULTIPLIER", "float", 1.5, 1.0, 10.0),
+    ("A85_MAX_CHASE_DISTANCE_PCT", "A85_MAX_CHASE_DISTANCE_PCT", "float", 0.35, 0.05, 2.0),
+    ("A85_MIN_BOOK_IMBALANCE", "A85_MIN_BOOK_IMBALANCE", "float", -0.25, -1.0, 1.0),
+):
+    _a85_load_env_setting(*_a85_spec)
+del _a85_spec
+
+_A85_LATEST_MARKET_MAP: Dict[str, Dict[str, Any]] = {}
+_A85_LATEST_ROWS: List[Dict[str, Any]] = []
+_A85_LATEST_MARKET: Dict[str, Any] = {"status": "NOT_SCANNED"}
+_A85_LAST_SCAN_TS = 0.0
+_A85_ALERT_TASK = None
+_A85_LAST_SCAN_LOCK = threading.RLock()
+
+
+class A85MarketIntelligence:
+    """Bounded, read-only market analyst over existing closed-candle snapshots."""
+    _db_lock = threading.RLock()
+    _schema_paths = set()
+    execution_authority = False
+    order_authority = False
+    selector_authority = False
+    source_mode = "EXISTING_MARKET_DATA_MAP_ONLY"
+    _tf = {"1D": ("df_1d", 86400), "4H": ("df_4h", 14400), "1H": ("df_1h", 3600),
+           "15M": ("df_15m", 900), "5M": ("df_5m", 300), "1M": ("df_1m", 60)}
+    # Conservative, explicit symbol taxonomy. Unknown symbols remain unclassified;
+    # this is not treated as a complete exchange/provider sector taxonomy.
+    _sector_by_base = {
+        "L1_BLOCKCHAINS": {"SOL","ADA","AVAX","SUI","SEI","APT","NEAR","DOT","ATOM","TON","TRX","ICP","INJ","KAS","HBAR","VET"},
+        "LAYER_2": {"ARB","OP","POL","MATIC","STRK","ZK","METIS","MANTA"},
+        "DEFI": {"UNI","AAVE","MKR","CRV","COMP","SNX","DYDX","JUP","RAY","ORCA","LDO","PENDLE","MORPHO"},
+        "AI_DATA": {"FET","RENDER","TAO","WLD","ARKM","GRT","OCEAN","IO"},
+        "MEME": {"DOGE","SHIB","PEPE","BONK","WIF","FLOKI","BRETT","MOG"},
+        "GAMING_METAVERSE": {"IMX","GALA","SAND","MANA","AXS","ENJ","ILV"},
+        "ORACLES_INFRA": {"LINK","PYTH","BAND","API3","FIL","AR","STORJ"},
+        "RWA": {"ONDO","CFG","POLYX","PAXG"},
+        "PAYMENTS_VALUE": {"XRP","XLM","LTC","BCH"},
+    }
+
+    @classmethod
+    def _db_path(cls):
+        return str(CONFIG.get("DB_PATH") or os.environ.get("SCALPER_DB") or "/app/unified_scalper.db")
+
+    @classmethod
+    def _connect(cls):
+        path = cls._db_path()
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=3.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=3000")
+        return conn
+
+    @classmethod
+    def _ensure_schema(cls):
+        path = cls._db_path()
+        if path in cls._schema_paths:
+            return
+        with cls._db_lock:
+            if path in cls._schema_paths:
+                return
+            conn = cls._connect()
+            try:
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_market_intelligence (
+                    symbol TEXT NOT NULL, candle_ts INTEGER NOT NULL, analyzed_at REAL NOT NULL,
+                    status TEXT NOT NULL, quality REAL NOT NULL, fingerprint TEXT NOT NULL,
+                    payload_json TEXT NOT NULL, PRIMARY KEY(symbol,candle_ts))""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_mi_rank ON a85_market_intelligence(status,quality,analyzed_at)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_runtime_state (
+                    state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at REAL NOT NULL)""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_alert_state (
+                    symbol TEXT PRIMARY KEY, last_alert_at REAL NOT NULL, fingerprint TEXT NOT NULL)""")
+                conn.commit()
+                cls._schema_paths.add(path)
+            finally:
+                conn.close()
+
+    @classmethod
+    def get_rotation_offset(cls, key="A79"):
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    row = conn.execute("SELECT state_value FROM a85_runtime_state WHERE state_key=?", (f"rotation:{key}",)).fetchone()
+                    return max(0, int(row[0])) if row else 0
+                finally:
+                    conn.close()
+        except Exception as exc:
+            STATS["a85_rotation_read_errors"] = int(STATS.get("a85_rotation_read_errors", 0) or 0) + 1
+            logger.debug("[A85] rotation state read failed: %s", type(exc).__name__)
+            return 0
+
+    @classmethod
+    def set_rotation_offset(cls, key, value):
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    conn.execute("INSERT OR REPLACE INTO a85_runtime_state(state_key,state_value,updated_at) VALUES(?,?,?)",
+                                 (f"rotation:{key}", str(max(0, int(value))), float(WALL_NOW())))
+                    conn.commit()
+                    return True
+                finally:
+                    conn.close()
+        except Exception as exc:
+            STATS["a85_rotation_write_errors"] = int(STATS.get("a85_rotation_write_errors", 0) or 0) + 1
+            logger.debug("[A85] rotation state write failed: %s", type(exc).__name__)
+            return False
+
+    @classmethod
+    def _safe(cls, value, default=None):
+        try:
+            v = float(value)
+            return v if math.isfinite(v) else default
+        except Exception:
+            return default
+
+    @classmethod
+    def _forbidden_or_stable(cls, symbol):
+        token = str(symbol or "").upper().strip()
+        if not token.endswith("/USDT"):
+            return True, "NOT_USDT_SPOT"
+        try:
+            fn = globals().get("_v587_is_forbidden_coin")
+            if callable(fn):
+                result = fn(token)
+                if bool(result[0] if isinstance(result, tuple) else result):
+                    return True, "FORBIDDEN_ASSET"
+            if callable(globals().get("_v702_a74_is_stable_symbol")) and _v702_a74_is_stable_symbol(token):
+                return True, "STABLECOIN_DIRECTIONAL_EXCLUSION"
+            base = token.split("/", 1)[0]
+            if base in set(globals().get("V702_HARD_FORBIDDEN_BASES", _V702_PREDECLARED_FORBIDDEN_BASES)):
+                return True, "HARD_FORBIDDEN_BASE"
+            return False, ""
+        except Exception:
+            return True, "FORBIDDEN_POLICY_UNAVAILABLE"
+
+    @classmethod
+    def _closed(cls, md, label, now=None):
+        key, interval = cls._tf[label]
+        frame, ts = OpportunityHunter._closed_frame((md or {}).get(key), interval, now=now)
+        return frame, int(ts or 0)
+
+    @classmethod
+    def indicators(cls, frame):
+        if not isinstance(frame, pd.DataFrame) or len(frame) < 56:
+            return None
+        c = pd.to_numeric(frame["close"], errors="coerce").astype(float)
+        h = pd.to_numeric(frame["high"], errors="coerce").astype(float)
+        l = pd.to_numeric(frame["low"], errors="coerce").astype(float)
+        v = pd.to_numeric(frame["volume"], errors="coerce").astype(float)
+        prev = c.shift(1)
+        tr = pd.concat([(h-l), (h-prev).abs(), (l-prev).abs()], axis=1).max(axis=1)
+        atr = float(tr.tail(14).mean())
+        emas = {n: float(c.ewm(span=n, adjust=False).mean().iloc[-1]) for n in (9, 20, 50, 100, 200)}
+        delta = c.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        rsi = float((100 - 100/(1+rs)).iloc[-1])
+        rsi = rsi if math.isfinite(rsi) else (100.0 if float(loss.iloc[-1] or 0) == 0 else 50.0)
+        macd_line = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+        macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = float((macd_line-macd_signal).iloc[-1])
+        ma20 = float(c.rolling(20).mean().iloc[-1])
+        sd20 = float(c.rolling(20).std(ddof=0).iloc[-1])
+        vol_mean = float(v.iloc[-21:-1].mean()) if len(v) >= 21 else 0.0
+        volume_ratio = float(v.iloc[-1]/vol_mean) if vol_mean > 0 else 0.0
+        typical = (h+l+c)/3.0
+        vwap_den = float(v.tail(48).sum())
+        vwap = float((typical.tail(48)*v.tail(48)).sum()/vwap_den) if vwap_den > 0 else None
+        close = float(c.iloc[-1])
+        bb_upper, bb_lower = ma20+2*sd20, ma20-2*sd20
+        clv=((2*c-h-l)/(h-l).replace(0,float("nan"))).replace([float("inf"),float("-inf")],float("nan")).fillna(0.0)
+        buying_pressure=float(clv.tail(20).mean())
+        volume_profile={"status":"UNAVAILABLE"}
+        try:
+            px=typical.tail(120).to_numpy(dtype=float); vv=v.tail(120).to_numpy(dtype=float)
+            valid=np.isfinite(px)&np.isfinite(vv)&(vv>=0)
+            px,vv=px[valid],vv[valid]
+            if len(px)>=20 and float(np.nanmax(px))>float(np.nanmin(px)) and float(vv.sum())>0:
+                hist,edges=np.histogram(px,bins=24,weights=vv)
+                idx=int(np.argmax(hist)); total=float(hist.sum()); order=np.argsort(hist)[::-1]
+                chosen=[]; accum=0.0
+                for bi in order:
+                    chosen.append(int(bi)); accum+=float(hist[bi])
+                    if accum>=total*0.70: break
+                volume_profile={"status":"APPROXIMATE_OHLCV_TICK_VOLUME_PROFILE","poc":float((edges[idx]+edges[idx+1])/2),
+                                "value_area_low":float(edges[min(chosen)]),"value_area_high":float(edges[max(chosen)+1]),
+                                "bins":24,"lookback_bars":len(px)}
+        except Exception:
+            volume_profile={"status":"UNAVAILABLE"}
+        volume_climax=bool(volume_ratio>=2.5 and (float(v.iloc[-1])>=float(v.tail(20).quantile(.95))))
+        if not all(math.isfinite(x) for x in [atr, close, rsi, macd_hist, ma20, sd20, volume_ratio, buying_pressure] + list(emas.values())):
+            return None
+        return {"close": close, "atr": atr, "atr_pct": atr/close*100 if close > 0 else None,
+                "ema": emas, "ema20_slope_pct": (emas[20]/float(c.ewm(span=20,adjust=False).mean().iloc[-6])-1)*100 if len(c)>=6 else 0.0,
+                "rsi14": rsi, "macd_hist": macd_hist,
+                "bb_upper": bb_upper, "bb_middle": ma20, "bb_lower": bb_lower,
+                "bb_width_pct": (bb_upper-bb_lower)/max(ma20,1e-12)*100,
+                "volume_ratio": volume_ratio, "volume_climax": volume_climax,
+                "buying_pressure": buying_pressure,
+                "volume_state":"EXPANSION" if volume_ratio>=1.5 else "CONTRACTION" if volume_ratio<=0.65 else "NORMAL",
+                "accumulation_proxy": bool(buying_pressure>=0.20 and volume_ratio>=1.15),
+                "distribution_proxy": bool(buying_pressure<=-0.20 and volume_ratio>=1.15),
+                "volume_profile":volume_profile,"vwap": vwap,
+                "trend": "BULLISH" if close > emas[20] > emas[50] else "BEARISH" if close < emas[20] < emas[50] else "NEUTRAL"}
+
+    @classmethod
+    def _pivots(cls, frame, left=2, right=2):
+        highs = pd.to_numeric(frame["high"], errors="coerce").to_numpy(dtype=float)
+        lows = pd.to_numeric(frame["low"], errors="coerce").to_numpy(dtype=float)
+        ph, pl = [], []
+        for i in range(left, len(frame)-right):
+            if highs[i] >= max(highs[i-left:i+right+1]) and highs[i] > max(highs[i-left:i]) and highs[i] >= max(highs[i+1:i+right+1]):
+                ph.append((i, float(highs[i])))
+            if lows[i] <= min(lows[i-left:i+right+1]) and lows[i] < min(lows[i-left:i]) and lows[i] <= min(lows[i+1:i+right+1]):
+                pl.append((i, float(lows[i])))
+        return ph, pl
+
+    @classmethod
+    def _cluster_levels(cls, points, price, atr, kind, limit=4):
+        if not points:
+            return []
+        tolerance = max(float(atr or 0)*0.45, float(price or 0)*0.0012, 1e-12)
+        clusters = []
+        for idx, value in points:
+            placed = False
+            for group in clusters:
+                if abs(value - group["mean"]) <= tolerance:
+                    group["values"].append((idx, value))
+                    group["mean"] = sum(x[1] for x in group["values"])/len(group["values"])
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({"mean": value, "values": [(idx, value)]})
+        result = []
+        for group in clusters:
+            values = group["values"]
+            level = float(group["mean"])
+            if kind == "support" and level >= price:
+                continue
+            if kind == "resistance" and level <= price:
+                continue
+            age = max(0, len(points) and (max(i for i, _ in points)-max(i for i, _ in values)) or 0)
+            result.append({"low": min(v for _, v in values)-tolerance*0.15,
+                           "high": max(v for _, v in values)+tolerance*0.15,
+                           "price": level, "tests": len(values),
+                           "strength": round(min(100.0, 25+len(values)*13+max(0, 20-age*0.3)), 1),
+                           "age_bars": int(age), "type": kind})
+        result.sort(key=lambda x: abs(x["price"]-price))
+        return result[:limit]
+
+    @classmethod
+    def _structure_smc(cls, frame, ind):
+        price = ind["close"]; atr = max(ind["atr"], price*0.0005)
+        ph, pl = cls._pivots(frame.tail(80))
+        def trend_from(points_a, points_b):
+            if len(points_a) < 2 or len(points_b) < 2:
+                return "UNKNOWN", {"higher_high": False, "higher_low": False, "lower_high": False, "lower_low": False}
+            hh = points_a[-1][1] > points_a[-2][1]
+            hl = points_b[-1][1] > points_b[-2][1]
+            lh = points_a[-1][1] < points_a[-2][1]
+            ll = points_b[-1][1] < points_b[-2][1]
+            return ("BULLISH" if hh and hl else "BEARISH" if lh and ll else "MIXED"), {
+                "higher_high": bool(hh), "higher_low": bool(hl), "lower_high": bool(lh), "lower_low": bool(ll)}
+        structure, flags = trend_from(ph, pl)
+        supports = cls._cluster_levels(pl, price, atr, "support")
+        resistances = cls._cluster_levels(ph, price, atr, "resistance")
+        last = frame.iloc[-1]; prev20 = frame.iloc[-21:-1]
+        prior_high = float(prev20["high"].max()); prior_low = float(prev20["low"].min())
+        sweep_high = float(last["high"]) > prior_high and float(last["close"]) < prior_high
+        sweep_low = float(last["low"]) < prior_low and float(last["close"]) > prior_low
+        # Three-candle fair-value gaps; only unfilled zones are retained.
+        fvgs = []
+        arr = frame.tail(35).reset_index(drop=True)
+        for i in range(2, len(arr)):
+            a, b = arr.iloc[i-2], arr.iloc[i]
+            if float(b["low"]) > float(a["high"]):
+                lo, hi, direction = float(a["high"]), float(b["low"]), "BULLISH"
+                unfilled = float(frame["close"].iloc[-1]) > lo
+            elif float(b["high"]) < float(a["low"]):
+                lo, hi, direction = float(b["high"]), float(a["low"]), "BEARISH"
+                unfilled = float(frame["close"].iloc[-1]) < hi
+            else:
+                continue
+            if unfilled and hi-lo <= atr*2.5:
+                fvgs.append({"low": lo, "high": hi, "direction": direction, "age_bars": len(arr)-1-i,
+                             "validity": round(max(0.0, 100.0-(len(arr)-1-i)*2.2), 1)})
+        # Objective displacement/order-block proxy: last opposite candle before a >1.2 ATR body.
+        obs = []
+        sub = frame.tail(30).reset_index(drop=True)
+        for i in range(2, len(sub)):
+            bar = sub.iloc[i]; body = abs(float(bar["close"])-float(bar["open"]))
+            if body < 1.2*atr:
+                continue
+            bull = float(bar["close"]) > float(bar["open"])
+            for j in range(i-1, max(-1, i-4), -1):
+                prev = sub.iloc[j]
+                opposite = float(prev["close"]) < float(prev["open"]) if bull else float(prev["close"]) > float(prev["open"])
+                if opposite:
+                    lo, hi = float(prev["low"]), float(prev["high"])
+                    if lo <= price <= hi or (bull and price >= lo) or ((not bull) and price <= hi):
+                        obs.append({"low": lo, "high": hi, "direction": "BULLISH" if bull else "BEARISH",
+                                    "age_bars": len(sub)-1-i, "validity": round(max(0.0, 100-(len(sub)-1-i)*3), 1)})
+                    break
+        eqh = bool(len(ph) >= 2 and abs(ph[-1][1]-ph[-2][1]) <= atr*0.20)
+        eql = bool(len(pl) >= 2 and abs(pl[-1][1]-pl[-2][1]) <= atr*0.20)
+        bos = "BULLISH_BOS" if len(ph) and price > ph[-1][1] else "BEARISH_BOS" if len(pl) and price < pl[-1][1] else "NONE"
+        pivot_sequence=sorted([{"index":i,"kind":"HIGH","price":v} for i,v in ph]+[{"index":i,"kind":"LOW","price":v} for i,v in pl],key=lambda x:x["index"])[-10:]
+        return {"structure": structure, "structure_flags": flags, "swing_highs": [v for _,v in ph[-5:]],
+                "swing_lows": [v for _,v in pl[-5:]], "pivot_sequence":pivot_sequence,
+                "supports": supports, "resistances": resistances,
+                "demand_zones":supports,"supply_zones":resistances,
+                "support": supports[0] if supports else None, "resistance": resistances[0] if resistances else None,
+                "dynamic_supports":[{"kind":"EMA20","price":ind["ema"][20]},{"kind":"EMA50","price":ind["ema"][50]}],
+                "dynamic_resistances":[{"kind":"EMA20","price":ind["ema"][20]},{"kind":"EMA50","price":ind["ema"][50]}],
+                "bos": bos, "choch": "BULLISH_CHOCH" if structure == "BULLISH" and ind["trend"] != "BULLISH" else "BEARISH_CHOCH" if structure == "BEARISH" and ind["trend"] != "BEARISH" else "NONE",
+                "liquidity_sweep_high": bool(sweep_high), "liquidity_sweep_low": bool(sweep_low),
+                "equal_highs": eqh, "equal_lows": eql, "fvgs": fvgs[-4:], "order_blocks": obs[-3:],
+                "premium_discount_midpoint":(max([v for _,v in ph[-5:]]+ [price])+min([v for _,v in pl[-5:]]+[price]))/2.0 if ph and pl else None}
+
+    @classmethod
+    def _candle_patterns(cls, frame):
+        if frame is None or len(frame) < 3:
+            return []
+        a, b, c = frame.iloc[-3], frame.iloc[-2], frame.iloc[-1]
+        o,h,l,cl = map(float, (c["open"],c["high"],c["low"],c["close"]))
+        body=max(abs(cl-o), 1e-12); rng=max(h-l,1e-12)
+        lower=min(o,cl)-l; upper=h-max(o,cl); out=[]
+        if cl>o and float(b["close"])<float(b["open"]) and cl>=float(b["open"]) and o<=float(b["close"]): out.append("BULLISH_ENGULFING")
+        if cl<o and float(b["close"])>float(b["open"]) and o>=float(b["close"]) and cl<=float(b["open"]): out.append("BEARISH_ENGULFING")
+        if lower >= body*2 and upper <= body*0.7: out.append("HAMMER_OR_LONG_LOWER_WICK")
+        if upper >= body*2 and lower <= body*0.7: out.append("SHOOTING_STAR_OR_LONG_UPPER_WICK")
+        if float(c["high"]) < float(b["high"]) and float(c["low"]) > float(b["low"]): out.append("INSIDE_BAR")
+        if float(c["high"]) > float(b["high"]) and float(c["low"]) < float(b["low"]): out.append("OUTSIDE_BAR")
+        if rng and body/rng <= 0.12: out.append("DOJI")
+        if cl>o and float(b["close"])>float(b["open"]) and float(a["close"])<float(a["open"]): out.append("MORNING_STAR_CANDIDATE")
+        if cl<o and float(b["close"])<float(b["open"]) and float(a["close"])>float(a["open"]): out.append("EVENING_STAR_CANDIDATE")
+        return out
+
+    @classmethod
+    def _fib(cls, frame, structure):
+        pivots=list(structure.get("pivot_sequence") or [])
+        if len(pivots)<2:
+            return {}
+        pair=None
+        for i in range(len(pivots)-1,0,-1):
+            left,right=pivots[i-1],pivots[i]
+            if left.get("kind")!=right.get("kind"):
+                pair=(left,right); break
+        if not pair:
+            return {}
+        left,right=pair
+        if left["kind"]=="LOW" and right["kind"]=="HIGH":
+            lo,hi=float(left["price"]),float(right["price"]); direction="UP"
+            retrace={"0.236":hi-(hi-lo)*.236,"0.382":hi-(hi-lo)*.382,"0.5":hi-(hi-lo)*.5,
+                     "0.618":hi-(hi-lo)*.618,"0.786":hi-(hi-lo)*.786}
+            extensions={"1.272":lo+(hi-lo)*1.272,"1.618":lo+(hi-lo)*1.618}
+        elif left["kind"]=="HIGH" and right["kind"]=="LOW":
+            hi,lo=float(left["price"]),float(right["price"]); direction="DOWN"
+            retrace={"0.236":lo+(hi-lo)*.236,"0.382":lo+(hi-lo)*.382,"0.5":lo+(hi-lo)*.5,
+                     "0.618":lo+(hi-lo)*.618,"0.786":lo+(hi-lo)*.786}
+            extensions={"1.272":hi-(hi-lo)*.272,"1.618":hi-(hi-lo)*.618}
+        else:
+            return {}
+        if not (math.isfinite(lo) and math.isfinite(hi) and hi>lo):
+            return {}
+        return {**retrace,"extensions":extensions,"swing_high":hi,"swing_low":lo,
+                "direction":direction,"source":"LATEST_CONFIRMED_ALTERNATING_SWING_PIVOTS"}
+
+    @classmethod
+    def _book_facts(cls, md, now):
+        ticker = md.get("ticker") if isinstance(md.get("ticker"), dict) else {}
+        book = md.get("orderbook") or md.get("depth") or md.get("_v703_route_score_orderbook")
+        stamp = cls._safe(next((md.get(k) for k in ("orderbook_ts", "book_ts", "depth_ts", "v703_route_orderbook_captured_ts", "v702_a9_orderbook_prefetch_ts") if md.get(k) is not None), None))
+        if stamp and stamp > 1e12:
+            stamp /= 1000.0
+        age = (float(now) - stamp) if stamp else None
+        bids = book.get("bids") if isinstance(book, dict) else None
+        asks = book.get("asks") if isinstance(book, dict) else None
+        valid_bids, valid_asks = [], []
+        for source, target in ((bids, valid_bids), (asks, valid_asks)):
+            if isinstance(source, list):
+                for level in source[:20]:
+                    try:
+                        price, amount = float(level[0]), float(level[1])
+                        if math.isfinite(price) and math.isfinite(amount) and price > 0 and amount > 0:
+                            target.append((price, amount))
+                    except Exception:
+                        continue
+        fresh = bool(valid_bids and valid_asks and stamp and age is not None
+                     and -1.0 <= age <= float(CONFIG.get("A85_BOOK_MAX_AGE_SEC", 15.0)))
+        bid = cls._safe(md.get("bid", ticker.get("bid", md.get("best_bid"))))
+        ask = cls._safe(md.get("ask", ticker.get("ask", md.get("best_ask"))))
+        if bid is None and valid_bids:
+            bid = valid_bids[0][0]
+        if ask is None and valid_asks:
+            ask = valid_asks[0][0]
+        if not (bid is not None and ask is not None and bid > 0 and ask > bid):
+            bid = ask = None
+        spread = ((ask - bid) / ((ask + bid) / 2.0) * 100.0) if bid and ask else cls._safe(md.get("spread_pct"))
+        bid_depth = sum(px * qty for px, qty in valid_bids[:5]) if fresh else None
+        ask_depth = sum(px * qty for px, qty in valid_asks[:5]) if fresh else None
+        imbalance = cls._safe(md.get("orderbook_imbalance"))
+        if fresh and imbalance is None:
+            imbalance = (bid_depth - ask_depth) / max(bid_depth + ask_depth, 1e-12)
+        return {"bid": bid, "ask": ask, "spread_pct": spread, "book_fresh": fresh,
+                "book_age_sec": age, "book_imbalance": imbalance,
+                "bid_depth_usdt_5": bid_depth, "ask_depth_usdt_5": ask_depth,
+                "book_min_depth_usdt_5": min(bid_depth, ask_depth) if bid_depth is not None and ask_depth is not None else None,
+                "book_source": md.get("v703_route_orderbook_source", "snapshot" if fresh else "unavailable")}
+
+    @classmethod
+    def _plan(cls, symbol, md, frames, ind, structure, quality, trigger, fib=None):
+        now = float(WALL_NOW())
+        book = cls._book_facts(md, now)
+        entry = book.get("ask")
+        if entry is None or not ind.get("1H"):
+            return {"status": "DATA_INCOMPLETE", "reason": "FRESH_EXECUTABLE_ASK_UNAVAILABLE", "book": book}
+        quote_volume = cls._safe(md.get("quote_vol_24h", (md.get("ticker") or {}).get("quoteVolume")))
+        core_floor = max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
+        if quote_volume is None or quote_volume < core_floor:
+            return {"status": "REJECTED", "reason": "CORE_LIQUIDITY_FLOOR_NOT_MET", "quote_vol_24h": quote_volume,
+                    "required_quote_vol_24h": core_floor, "book": book}
+        spread = cls._safe(book.get("spread_pct"))
+        if spread is None or spread > float(CONFIG.get("MAX_SPREAD_PCT", 0.30)):
+            return {"status": "REJECTED", "reason": "SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN", "spread_pct": spread, "book": book}
+        if book.get("book_fresh"):
+            notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
+            required_depth = notional * max(1.0, float(CONFIG.get("A85_BOOK_DEPTH_MULTIPLIER", 1.5)))
+            depth_ok = (book.get("book_min_depth_usdt_5") is not None
+                        and book["book_min_depth_usdt_5"] >= required_depth)
+        else:
+            notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
+            required_depth = notional * max(1.0, float(CONFIG.get("A85_BOOK_DEPTH_MULTIPLIER", 1.5)))
+            depth_ok = False
+        i1 = ind["1H"]
+        structural_lows = structure.get("swing_lows") or []
+        structural_low = min(structural_lows[-3:]) if structural_lows else None
+        atr = float(i1["atr"])
+        raw_stop = (structural_low - 0.12 * atr) if structural_low else (entry - 1.5 * atr)
+        stop = min(raw_stop, entry * (1.0 - 0.0035))
+        if stop <= 0 or stop >= entry:
+            return {"status": "DATA_INCOMPLETE", "reason": "INVALID_STRUCTURAL_STOP", "book": book}
+        risk_pct = (entry - stop) / entry * 100.0
+        if risk_pct > 4.0:
+            return {"status": "REJECTED", "reason": "STRUCTURAL_STOP_RISK_OVER_4_PERCENT", "book": book}
+        if risk_pct < 0.35:
+            stop = entry * (1.0 - 0.0035)
+            risk_pct = (entry - stop) / entry * 100.0
+        resistance = (structure.get("resistance") or {}).get("price") if isinstance(structure.get("resistance"), dict) else None
+        risk = entry - stop
+        raw_targets = [entry + risk * m for m in (1.5, 2.2, 3.0)]
+        if resistance is not None and resistance > entry:
+            # A nearby structural ceiling must not be ignored or placed above merely to manufacture RR.
+            ceiling = float(resistance) * 0.995
+            if ceiling <= entry + risk * 1.05:
+                return {"status": "REJECTED", "reason": "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "book": book,
+                        "resistance": float(resistance)}
+            raw_targets[0] = min(raw_targets[0], ceiling)
+        # Further targets prefer the next observed supply/resistance or a valid
+        # swing-derived Fibonacci extension; otherwise retain R-multiple baselines.
+        extension_map=(fib or {}).get("extensions") or {}
+        structural_targets=[]
+        for level in (structure.get("resistances") or []):
+            value=cls._safe((level or {}).get("price"))
+            if value is not None and value > raw_targets[0] + risk*0.20:
+                structural_targets.append((value,"STRUCTURAL_RESISTANCE"))
+        for key,value in extension_map.items():
+            level=cls._safe(value)
+            if level is not None and level > raw_targets[0] + risk*0.20:
+                structural_targets.append((level,f"FIB_EXTENSION_{key}"))
+        structural_targets=sorted({(round(x,12),src) for x,src in structural_targets if x <= entry+risk*5.0},key=lambda x:x[0])
+        tp2_candidates=[x for x in structural_targets if x[0] > raw_targets[0]+risk*0.20]
+        raw_targets[1]=tp2_candidates[0][0] if tp2_candidates else raw_targets[1]
+        tp3_candidates=[x for x in structural_targets if x[0] > raw_targets[1]+risk*0.20]
+        raw_targets[2]=tp3_candidates[0][0] if tp3_candidates else max(raw_targets[2],raw_targets[1]+risk*0.35)
+        if not (raw_targets[0] < raw_targets[1] < raw_targets[2]):
+            return {"status": "REJECTED", "reason": "INVALID_TARGET_SEQUENCE", "book": book}
+        fee_pct = max(0.0, float(CONFIG.get("TAKER_FEE_PCT", 0.10)))
+        slip = max(0.0, float(CONFIG.get("A85_SLIPPAGE_PER_SIDE_PCT", 0.05)))
+        round_trip_cost = fee_pct * 2.0 + slip * 2.0 + spread
+        stop_cost_pct = risk_pct + round_trip_cost
+        fee_cost_usdt=notional*(fee_pct*2.0)/100.0
+        spread_cost_usdt=notional*spread/100.0
+        slippage_cost_usdt=notional*(slip*2.0)/100.0
+        total_cost_usdt=fee_cost_usdt+spread_cost_usdt+slippage_cost_usdt
+        stop_risk_usdt=notional*risk_pct/100.0
+        max_loss_including_costs_usdt=notional*stop_cost_pct/100.0
+        tps = []
+        for tp in raw_targets:
+            gross = (tp - entry) / entry * 100.0
+            net = gross - round_trip_cost
+            net_rr = net / max(stop_cost_pct, 1e-9)
+            tps.append({"price": tp, "gross_profit_pct": gross, "net_profit_pct": net,
+                        "net_rr": net_rr, "estimated_gross_profit_usdt":notional*gross/100.0,
+                        "estimated_net_profit_usdt": notional * net / 100.0})
+        min_net = float(CONFIG.get("A85_MIN_NET_PROFIT_PCT", CONFIG.get("V702_SMALL_NET_MIN_NET_PROFIT_PCT", 0.10)))
+        min_rr = float(CONFIG.get("A85_MIN_NET_RR_TP1", CONFIG.get("V702_SMALL_NET_MIN_NET_RR_TP1", 0.80)))
+        economic = bool(tps and tps[0]["net_profit_pct"] >= min_net and tps[0]["net_rr"] >= min_rr)
+        last_close = float(i1["close"])
+        chase_pct = max(0.0, (entry - last_close) / max(last_close, 1e-12) * 100.0)
+        max_chase = float(CONFIG.get("A85_MAX_CHASE_DISTANCE_PCT", 0.35))
+        in_entry_zone = chase_pct <= max_chase
+        confirm_1m = bool(ind.get("1M") and ind["1M"]["close"] > ind["1M"]["ema"][20])
+        micro_confirmation_ok = (not ind.get("1M")) or confirm_1m
+        readiness = bool(trigger and micro_confirmation_ok and quality >= float(CONFIG.get("A85_MIN_QUALITY_SCORE", 68.0))
+                         and economic and book.get("book_fresh") and depth_ok and in_entry_zone
+                         and book.get("book_imbalance") is not None and book["book_imbalance"] >= float(CONFIG.get("A85_MIN_BOOK_IMBALANCE", -0.25)))
+        if readiness:
+            status = "READY_NOW"
+        elif quality >= 55.0:
+            status = "WAITING_FOR_ENTRY"
+        else:
+            status = "EARLY_SETUP"
+        if not economic:
+            status = "REJECTED"
+        reason = "NET_COST_AND_TRIGGER_PASS" if readiness else (
+            "STALE_OR_MISSING_BOOK" if not book.get("book_fresh") else
+            "INSUFFICIENT_TOP5_BOOK_DEPTH" if not depth_ok else
+            "ENTRY_CHASE_DISTANCE_EXCEEDED" if not in_entry_zone else
+            "MISSING_1M_5M_15M_CONFIRMATION" if not trigger else
+            "MISSING_1M_CONFIRMATION" if not micro_confirmation_ok else
+            "ORDERBOOK_IMBALANCE_BELOW_FLOOR" if book.get("book_imbalance") is None or book["book_imbalance"] < float(CONFIG.get("A85_MIN_BOOK_IMBALANCE", -0.25)) else
+            "NET_ECONOMICS_FAILED")
+        ttl = max(900.0, float(CONFIG.get("V702_OPPORTUNITY_HUNTER_TTL_SEC", 3600.0)))
+        return {"status": status, "reason": reason,
+                "entry_zone_low": entry * (1 - 0.0025), "entry_zone_high": entry * (1 + 0.001),
+                "preferred_entry": entry, "entry_method": "ASK_REFERENCE_LIMIT_AFTER_CLOSED_15M_5M_CONFIRMATION",
+                "trigger_price": last_close, "maximum_chase_distance_pct": max_chase,
+                "chase_distance_pct": chase_pct, "entry_confirmation_1m": confirm_1m,
+                "stop_loss": stop, "stop_reason": "Below recent confirmed 1H swing-low with ATR buffer; bounded to 0.35%-4.0%.",
+                "targets": tps, "gross_rr_tp1": (raw_targets[0] - entry) / risk,
+                "net_rr_tp1": tps[0]["net_rr"], "round_trip_cost_pct": round_trip_cost,
+                "fee_pct_per_side": fee_pct, "spread_cost_pct": spread, "slippage_pct_per_side": slip,
+                "estimated_gross_profit_usdt_tp1":tps[0]["estimated_gross_profit_usdt"],
+                "estimated_net_profit_usdt_tp1": tps[0]["estimated_net_profit_usdt"],
+                "fee_cost_usdt_round_trip":fee_cost_usdt,"spread_cost_usdt":spread_cost_usdt,
+                "slippage_cost_usdt_round_trip":slippage_cost_usdt,"total_estimated_cost_usdt":total_cost_usdt,
+                "stop_risk_usdt_before_costs":stop_risk_usdt,"max_loss_including_costs_usdt":max_loss_including_costs_usdt,
+                "risk_pct_before_costs":risk_pct,"risk_pct_including_costs": stop_cost_pct,
+                "entry_price_source":"BEST_ASK_FROM_MARKET_SNAPSHOT","exit_cost_model":"TWO_SIDE_FEES_PLUS_SPREAD_AND_TWO_SIDE_SLIPPAGE",
+                "book": book,
+                "required_top5_depth_usdt": required_depth, "quote_vol_24h": quote_volume,
+                "entry_expiry_ts": now + ttl, "invalidation_level": stop,
+                "invalidation_conditions": ["1H close below structural stop", "stale/missing order book",
+                    "top-five depth falls below required notional", "15M volume confirmation fails at trigger",
+                    "market regime becomes UNKNOWN or a verified crash/distribution condition appears",
+                    "entry chase exceeds configured distance", "entry expiry is reached",
+                    "net TP1 economics fall below configured floor"],
+                "target_sources": ["R_MULTIPLE_BASELINE", "NEXT_STRUCTURAL_RESISTANCE_OR_VALID_FIB_EXTENSION"],
+                "duration_estimate": "1-6 hours (heuristic; not a calibrated forecast)",
+                "economic_pass": economic, "economic_reason": "NET_COST_AWARE_TP1_PASS" if economic else "NET_PROFIT_OR_NET_RR_BELOW_FLOOR"}
+
+    @classmethod
+    def _strategy_consensus(cls, symbol, hunter_signals, candle_ts):
+        """One canonical, deduplicated analytical consensus; never grants selector authority."""
+        chosen = {}
+        rejected = []
+        for signal in hunter_signals or []:
+            if str(signal.get("symbol") or "").upper() != str(symbol).upper():
+                continue
+            ts = cls._safe(signal.get("candle_ts")) or 0.0
+            if ts < max(0.0, float(candle_ts or 0) - 7200.0):
+                rejected.append({"family": signal.get("family"), "reason": "STALE_SIGNAL"})
+                continue
+            family = str(signal.get("family") or "UNKNOWN").upper()
+            score = cls._safe(signal.get("score")) or 0.0
+            prev = chosen.get(family)
+            if prev is None or score > (cls._safe(prev.get("score")) or 0.0):
+                if prev is not None:
+                    rejected.append({"family": family, "reason": "DUPLICATE_FAMILY_LOWER_SCORE"})
+                chosen[family] = signal
+            else:
+                rejected.append({"family": family, "reason": "DUPLICATE_FAMILY_LOWER_SCORE"})
+        ordered = sorted(chosen.values(), key=lambda row: cls._safe(row.get("score")) or 0.0, reverse=True)
+        primary = str((ordered[0] if ordered else {}).get("family") or "") or None
+        directions = {str(r.get("side") or r.get("direction") or "LONG").upper() for r in ordered}
+        direction_conflict = len(directions - {"LONG", "BUY", "BULLISH"}) > 0
+        return {"primary": primary, "supporting": [str(r.get("family") or "UNKNOWN").upper() for r in ordered[1:]],
+                "unique_family_count": len(ordered), "duplicate_or_stale_rejections": rejected[:20],
+                "direction_conflict": bool(direction_conflict), "evidence_source": "OPPORTUNITY_HUNTER_SNAPSHOT_ONLY",
+                "execution_authority": False}
+
+    @classmethod
+    def _analyze_one(cls, symbol, md, btc_ind=None, hunter_signals=None, now=None):
+        denied, why=cls._forbidden_or_stable(symbol)
+        if denied: return None
+        now=float(now or WALL_NOW())
+        frames={}; stamps={}; inds={}; missing=[]
+        for label in ("1D","4H","1H","15M","5M","1M"):
+            frame,ts=cls._closed(md,label,now=now)
+            if frame is not None:
+                frames[label]=frame; stamps[label]=ts
+                feature=cls.indicators(frame)
+                if feature: inds[label]=feature
+            elif label in ("4H","1H","15M"):
+                missing.append(label)
+        if "1H" not in inds or "4H" not in inds:
+            return {"symbol":symbol,"status":"DATA_INCOMPLETE","reason":"MISSING_CLOSED_1H_OR_4H",
+                    "missing_timeframes":missing,"quality_score":0.0,"data_confidence":"LOW","execution_authority":False,
+                    "candle_ts":max(stamps.values()) if stamps else 0,"analyzed_at":now}
+        structure=cls._structure_smc(frames["1H"],inds["1H"])
+        # MTF alignment scores only observed frames; missing higher frames lower data confidence.
+        required_order=("1D","4H","1H","15M")
+        valid_order=[x for x in required_order if x in inds]
+        bullish=sum(1 for x in valid_order if inds[x]["trend"]=="BULLISH")
+        bearish=sum(1 for x in valid_order if inds[x]["trend"]=="BEARISH")
+        alignment=bullish/max(1,len(valid_order))
+        mtf_state="BULLISH" if bullish>=3 and bullish>bearish else "BEARISH" if bearish>=3 and bearish>bullish else "NEUTRAL"
+        close=inds["1H"]["close"]
+        btc_return=None
+        try:
+            if btc_ind and btc_ind.get("frame_1h") is not None:
+                b=btc_ind["frame_1h"]["close"].astype(float)
+                if len(b)>=7:
+                    btc_return=(float(b.iloc[-1])/float(b.iloc[-7])-1)*100
+        except Exception: btc_return=None
+        c1=frames["1H"]["close"].astype(float)
+        ret1=(float(c1.iloc[-1])/float(c1.iloc[-7])-1)*100 if len(c1)>=7 and float(c1.iloc[-7])>0 else 0.0
+        rs=(ret1-btc_return) if btc_return is not None else None
+        vratio=inds.get("15M",inds["1H"])["volume_ratio"]
+        structure_score=1.0 if structure["structure"]=="BULLISH" else 0.5 if structure["structure"]=="MIXED" else 0.0
+        volume_score=max(0.0,min(1.0,(vratio-0.7)/0.8))
+        rs_score=(max(0.0,min(1.0,0.5+rs/2.0)) if rs is not None else 0.5)
+        smc_score=min(1.0,0.25*bool(structure["liquidity_sweep_low"])+0.2*bool(structure["equal_lows"])+0.25*bool(structure["fvgs"])+0.3*bool(structure["order_blocks"]))
+        price=inds["1H"]["close"]
+        nearest_support=structure.get("support")
+        entry_proximity=1.0 if nearest_support and abs(price-nearest_support["price"])<=2.0*inds["1H"]["atr"] else 0.55
+        book=cls._book_facts(md,now)
+        liquidity_score=1.0 if book.get("book_fresh") and book.get("spread_pct") is not None and book["spread_pct"]<=0.30 else 0.25 if book.get("spread_pct") is not None and book["spread_pct"]<=0.30 else 0.0
+        # Independent evidence buckets; no extra points for duplicate EMA/RSI/MACD direction evidence.
+        bucket_scores={"mtf":alignment,"structure":structure_score,"volume":volume_score,
+                       "relative_strength":rs_score,"smc":smc_score,"entry_location":entry_proximity,
+                       "liquidity":liquidity_score,"data":min(1.0,len(inds)/6.0)}
+        weights={"mtf":20,"structure":18,"volume":10,"relative_strength":10,"smc":12,
+                 "entry_location":10,"liquidity":10}
+        signal_quality=round(sum(weights[k]*bucket_scores[k] for k in weights)/sum(weights.values())*100.0,1)
+        data_confidence_score=round(bucket_scores["data"]*100.0,1)
+        quality=round(signal_quality*0.90+data_confidence_score*0.10,1)
+        trigger=bool(inds.get("15M") and inds.get("5M") and inds["15M"]["trend"]=="BULLISH"
+                     and inds["5M"]["close"]>inds["5M"]["ema"][20]
+                     and float(frames["5M"]["close"].iloc[-1])>float(frames["5M"]["open"].iloc[-1]))
+        consensus=cls._strategy_consensus(symbol,hunter_signals or [],stamps.get("1H",0))
+        families=([consensus["primary"]] if consensus.get("primary") else [])+list(consensus.get("supporting") or [])
+        primary=consensus.get("primary") or ("SMC+PULLBACK" if structure["structure"]=="BULLISH" and structure["fvgs"] else "MTF_TREND_CONTINUATION")
+        regime="UNKNOWN"
+        fib=cls._fib(frames["1H"],structure)
+        plan=cls._plan(symbol,md,frames,inds,structure,quality,trigger,fib=fib)
+        if plan["status"] in ("DATA_INCOMPLETE","REJECTED"):
+            status=plan["status"]
+        elif quality<float(CONFIG.get("A85_MIN_QUALITY_SCORE",68.0)):
+            status="EARLY_SETUP"
+        else:
+            status=plan["status"]
+        candle_patterns=cls._candle_patterns(frames["15M"] if "15M" in frames else frames["1H"])
+        plan_book=(plan.get("book") or {})
+        spread_now=cls._safe(plan_book.get("spread_pct"))
+        max_spread=max(0.01,float(CONFIG.get("MAX_SPREAD_PCT",0.30)))
+        spread_quality=max(0.0,min(100.0,100.0*(1.0-(spread_now/max_spread)))) if spread_now is not None else 0.0
+        depth_ratio=(cls._safe(plan_book.get("book_min_depth_usdt_5"),0.0) or 0.0)/max(1.0,cls._safe(plan.get("required_top5_depth_usdt"),1.0) or 1.0)
+        depth_quality=max(0.0,min(100.0,depth_ratio*100.0))
+        imbalance=cls._safe(plan_book.get("book_imbalance"))
+        imbalance_quality=max(0.0,min(100.0,50.0+50.0*(imbalance or 0.0))) if imbalance is not None else 0.0
+        execution_quality=round(spread_quality*0.40+depth_quality*0.45+imbalance_quality*0.15,1)
+        rr_quality=max(0.0,min(100.0,(cls._safe(plan.get("net_rr_tp1"),0.0) or 0.0)/2.0*100.0))
+        ranking_score=round(quality*0.55+execution_quality*0.20+rr_quality*0.15+data_confidence_score*0.10,1)
+        return {"symbol":symbol,"status":status,"quality_score":quality,"signal_quality_score":signal_quality,
+                "data_confidence_score":data_confidence_score,"data_confidence":("HIGH" if len(inds)>=5 else "MEDIUM" if len(inds)>=3 else "LOW"),
+                "timeframes":{k:{"trend":v["trend"],"close":v["close"],"ema9":v["ema"][9],"ema20":v["ema"][20],"ema50":v["ema"][50],
+                                  "ema100":v["ema"][100],"ema200":v["ema"][200],"rsi14":v["rsi14"],"macd_hist":v["macd_hist"],
+                                  "atr":v["atr"],"atr_pct":v["atr_pct"],"volume_ratio":v["volume_ratio"],"vwap":v["vwap"]} for k,v in inds.items()},
+                "mtf_state":mtf_state,"mtf_alignment":round(alignment,3),"structure":structure,"fib":fib,"candle_patterns":candle_patterns,
+                "volume_analysis":{"state_1h":inds["1H"].get("volume_state"),"ratio_1h":inds["1H"].get("volume_ratio"),
+                                   "climax_1h":inds["1H"].get("volume_climax"),"buying_pressure_1h":inds["1H"].get("buying_pressure"),
+                                   "accumulation_proxy_1h":inds["1H"].get("accumulation_proxy"),"distribution_proxy_1h":inds["1H"].get("distribution_proxy"),
+                                   "volume_profile_1h":inds["1H"].get("volume_profile")},
+                "relative_strength_vs_btc_pct":rs,"return_1h_pct":ret1,"quote_vol_24h":cls._safe(md.get("quote_vol_24h")),"spread_pct":book.get("spread_pct"),
+                "execution_quality_score":execution_quality,"ranking_score":ranking_score,
+                "primary_strategy":primary,"supporting_strategies":families,"strategy_signal_count":len(families),
+                "strategy_consensus":consensus,"evidence_buckets":bucket_scores,"plan":{**plan,"status":status},"entry_confirmation":trigger,
+                "candle_ts":max(stamps.values()) if stamps else 0,"analyzed_at":now,"execution_authority":False,
+                "reason":"Closed-candle MTF, structure, volume and SMC evidence; execution conditions are separately verified."}
+
+    @classmethod
+    def _macro_context(cls, market_map, now):
+        btc=market_map.get("BTC/USDT") if isinstance(market_map,dict) else None
+        eth=market_map.get("ETH/USDT") if isinstance(market_map,dict) else None
+        btc4,ts4=cls._closed(btc or {},"4H",now) if isinstance(btc,dict) else (None,0)
+        btc1,ts1=cls._closed(btc or {},"1H",now) if isinstance(btc,dict) else (None,0)
+        btcD,tsD=cls._closed(btc or {},"1D",now) if isinstance(btc,dict) else (None,0)
+        eth1,etse=cls._closed(eth or {},"1H",now) if isinstance(eth,dict) else (None,0)
+        if btc4 is None or btc1 is None:
+            return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
+                    "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},
+                    "reason":"BTC_CLOSED_4H_OR_1H_UNAVAILABLE","data_confidence":"LOW","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
+        i4=cls.indicators(btc4); i1=cls.indicators(btc1); iD=cls.indicators(btcD) if btcD is not None else None
+        if not i4 or not i1:
+            return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
+                    "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},
+                    "reason":"BTC_INDICATOR_DATA_INVALID","data_confidence":"LOW","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
+        vol=float(i4.get("atr_pct") or 0)
+        if vol>=3.5: regime="HIGH_VOLATILITY"
+        elif i4["trend"]=="BULLISH" and i1["trend"]=="BEARISH": regime="DISTRIBUTION"
+        elif i4["trend"]=="BEARISH" and i1["trend"]=="BULLISH": regime="RECOVERY"
+        elif i4["trend"]=="BULLISH" and i1["trend"]=="BULLISH": regime="BULLISH"
+        elif i4["trend"]=="BEARISH" and i1["trend"]=="BEARISH": regime="BEARISH"
+        else: regime="RANGE_BOUND" if vol<1.5 else "NEUTRAL"
+        eth_trend="UNKNOWN"; eth_rs=None
+        if eth1 is not None:
+            ie=cls.indicators(eth1)
+            if ie:
+                eth_trend=ie["trend"]
+                if len(eth1)>=7 and len(btc1)>=7:
+                    er=(float(eth1.close.iloc[-1])/float(eth1.close.iloc[-7])-1)*100
+                    br=(float(btc1.close.iloc[-1])/float(btc1.close.iloc[-7])-1)*100
+                    eth_rs=er-br
+        btc15,ts15=cls._closed(btc or {},"15M",now) if isinstance(btc,dict) else (None,0)
+        i15=cls.indicators(btc15) if btc15 is not None else None
+        structure4=cls._structure_smc(btc4,i4)
+        return {"regime":regime,"btc":{"1D":iD["trend"] if iD else "UNKNOWN","4H":i4["trend"],"1H":i1["trend"],
+                                       "15M":i15["trend"] if i15 else "UNKNOWN",
+                                       "close_4h":i4["close"],"ema50_4h":i4["ema"][50],"ema200_4h":i4["ema"][200],"atr_pct_4h":vol,
+                                       "structure_4h":structure4.get("structure"),"bos_4h":structure4.get("bos"),
+                                       "liquidity_sweep_low_4h":structure4.get("liquidity_sweep_low"),
+                                       "closed_candle_ts":ts4,"closed_15m_ts":ts15},
+                "eth":{"1H":eth_trend,"relative_strength_vs_btc_pct":eth_rs},
+                "reason":f"BTC 4H={i4['trend']}; BTC 1H={i1['trend']}; 4H ATR={vol:.2f}%",
+                "data_confidence":"HIGH" if iD and i15 else "MEDIUM" if iD or i15 else "LOW",
+                "missing_timeframes":[tf for tf,frame in (("1D",btcD),("15M",btc15)) if frame is None],
+                "source":"MEXC_CLOSED_SPOT_OHLCV_ONLY","external_derivatives":"UNAVAILABLE_NOT_ASSUMED"}
+
+    @classmethod
+    def _fingerprint(cls, row):
+        import hashlib
+        payload={k:row.get(k) for k in ("symbol","status","primary_strategy","mtf_state")}
+        plan=row.get("plan") or {}
+        payload.update({k:round(float(plan[k]),8) for k in ("preferred_entry","stop_loss") if cls._safe(plan.get(k)) is not None})
+        return hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()[:24]
+
+    @classmethod
+    def persist(cls, rows):
+        try:
+            cls._ensure_schema(); now=float(WALL_NOW())
+            with cls._db_lock:
+                conn=cls._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    for row in rows:
+                        symbol=str(row.get("symbol") or "")
+                        if not symbol: continue
+                        fp=cls._fingerprint(row)
+                        conn.execute("INSERT OR REPLACE INTO a85_market_intelligence(symbol,candle_ts,analyzed_at,status,quality,fingerprint,payload_json) VALUES(?,?,?,?,?,?,?)",
+                                     (symbol,int(row.get("candle_ts") or 0),now,str(row.get("status") or "UNKNOWN"),float(row.get("quality_score") or 0),fp,
+                                      json.dumps(row,ensure_ascii=False,separators=(",",":"),default=str)))
+                    retention=max(7,int(CONFIG.get("A85_PERSISTENCE_RETENTION_DAYS",30)))
+                    max_rows=max(1000,int(CONFIG.get("A85_PERSISTENCE_MAX_ROWS",20000)))
+                    conn.execute("DELETE FROM a85_market_intelligence WHERE analyzed_at<?",(now-retention*86400,))
+                    conn.execute("DELETE FROM a85_market_intelligence WHERE rowid NOT IN (SELECT rowid FROM a85_market_intelligence ORDER BY analyzed_at DESC LIMIT ?)",(max_rows,))
+                    conn.commit()
+                finally: conn.close()
+            return True
+        except Exception as exc:
+            STATS["a85_persistence_errors"] = int(STATS.get("a85_persistence_errors",0) or 0)+1
+            logger.warning("[A85] persistence failed: %s:%s",type(exc).__name__,str(exc)[:120])
+            return False
+
+    @classmethod
+    def _sector_rotation(cls, ticker_rows, eligible_tickers):
+        if not bool(CONFIG.get("A85_SECTOR_CLASSIFICATION_ENABLE", True)):
+            return {"status":"DISABLED_BY_CONFIG","sectors":[],"taxonomy":"STATIC_EXPLICIT_SYMBOL_MAP"}
+        groups=defaultdict(list)
+        eligible_by_symbol={x["symbol"]:x for x in (eligible_tickers or [])}
+        for symbol,row in eligible_by_symbol.items():
+            base=symbol.split("/",1)[0]
+            sector=next((name for name,bases in cls._sector_by_base.items() if base in bases),None)
+            if sector and cls._safe(row.get("change_24h_pct")) is not None:
+                groups[sector].append(row)
+        classified=sum(len(v) for v in groups.values())
+        total=len(eligible_by_symbol)
+        sectors=[]
+        for name,items in groups.items():
+            changes=[float(x["change_24h_pct"]) for x in items]
+            sectors.append({"sector":name,"symbols":len(items),
+                "avg_change_24h_pct":round(sum(changes)/len(changes),3),
+                "median_change_24h_pct":round(float(pd.Series(changes).median()),3),
+                "positive_breadth_pct":round(sum(x>0 for x in changes)/len(changes)*100,1),
+                "quote_volume_24h":round(sum(float(x.get("quote_volume_24h") or 0) for x in items),2),
+                "leaders":[x["symbol"] for x in sorted(items,key=lambda z:float(z.get("change_24h_pct") or -999),reverse=True)[:3]],
+                "laggards":[x["symbol"] for x in sorted(items,key=lambda z:float(z.get("change_24h_pct") or 999))[:3]]})
+        sectors.sort(key=lambda x:(x["avg_change_24h_pct"],x["quote_volume_24h"]),reverse=True)
+        return {"status":"PARTIAL_STATIC_TAXONOMY" if sectors else "NO_CLASSIFIED_LIQUID_SECTOR_SAMPLES",
+                "taxonomy":"STATIC_EXPLICIT_SYMBOL_MAP_NOT_EXCHANGE_VERIFIED",
+                "classified_eligible_symbols":classified,"eligible_symbols":total,
+                "taxonomy_coverage_pct":round(classified/max(1,total)*100,1),
+                "top_sectors":sectors[:5],"weakest_sectors":list(reversed(sectors[-5:])),"sectors":sectors}
+
+    @classmethod
+    def scan_map(cls, market_map, *, universe_count=None, ticker_snapshot=None, research_summary=None):
+        global _A85_LATEST_MARKET_MAP, _A85_LATEST_ROWS, _A85_LATEST_MARKET, _A85_LAST_SCAN_TS
+        if not bool(CONFIG.get("A85_INTELLIGENCE_ENABLE",True)) or _V699_VALIDATE_ONLY_REQUEST:
+            return {"status":"DISABLED","analyzed":0,"rows":[]}
+        started=float(MONO_NOW()); now=float(WALL_NOW())
+        if not isinstance(market_map,dict) or not market_map:
+            return {"status":"NO_MARKET_SNAPSHOTS","analyzed":0,"rows":[]}
+        # Copy the dictionary, not the DataFrames; source snapshots remain shared and immutable.
+        symbols=sorted(str(s).upper() for s in market_map if str(s).upper().endswith("/USDT"))
+        symbols=[s for s in symbols if not cls._forbidden_or_stable(s)[0]]
+        max_symbols=max(8,min(60,int(CONFIG.get("A85_MAX_ANALYSIS_SYMBOLS",60))))
+        active=[]
+        try:
+            active=[r for r in OpportunityHunter.snapshot(300) if str(r.get("status") or "").upper() in {"WATCH","CONFIRMED","TRADEABLE"}]
+        except Exception: active=[]
+        priority=list(dict.fromkeys(str(r.get("symbol") or "").upper() for r in active if r.get("symbol")))
+        priority=[s for s in priority if s in symbols]
+        normal=[s for s in symbols if s not in set(priority)]
+        offset=cls.get_rotation_offset("A85")
+        # Reserve at least half of every deep-analysis cycle for fair rotation;
+        # Hunter urgency can prioritize, but cannot monopolize the whole cycle.
+        priority_cap=max(1,max_symbols//2)
+        chosen=priority[:priority_cap]
+        room=max(0,max_symbols-len(chosen))
+        if room and normal:
+            start=offset%len(normal); rotated=normal[start:]+normal[:start]
+            chosen += rotated[:room]
+            cls.set_rotation_offset("A85",(start+max(1,room))%len(normal))
+        btc_context=cls._macro_context(market_map,now)
+        btc_ind={"frame_1h":cls._closed(market_map.get("BTC/USDT") or {},"1H",now)[0]} if isinstance(market_map.get("BTC/USDT"),dict) else None
+        signals_by_symbol=defaultdict(list)
+        for r in active: signals_by_symbol[str(r.get("symbol") or "").upper()].append(r)
+        rows=[]; errors=0
+        for symbol in chosen:
+            try:
+                row=cls._analyze_one(symbol,market_map.get(symbol),btc_ind,signals_by_symbol.get(symbol),now)
+                if row: 
+                    row["market_regime"]=btc_context.get("regime","UNKNOWN")
+                    rows.append(row)
+            except Exception as exc:
+                errors+=1
+                logger.debug("[A85] symbol analysis failed %s: %s:%s",symbol,type(exc).__name__,str(exc)[:100])
+        # Market breadth is sample evidence only, never a synthetic full-market claim.
+        usable=[r for r in rows if r.get("timeframes",{}).get("1H")]
+        bullish=sum(1 for r in usable if r["timeframes"]["1H"]["trend"]=="BULLISH")
+        bearish=sum(1 for r in usable if r["timeframes"]["1H"]["trend"]=="BEARISH")
+        volume_expansion=sum(1 for r in usable if (r["timeframes"]["1H"].get("volume_ratio") or 0)>=1.5)
+        above_ema20=sum(1 for r in usable if r["timeframes"]["1H"].get("close",0)>r["timeframes"]["1H"].get("ema20",float("inf")))
+        above_ema50=sum(1 for r in usable if r["timeframes"]["1H"].get("close",0)>r["timeframes"]["1H"].get("ema50",float("inf")))
+        higher_highs=sum(1 for r in usable if (r.get("structure") or {}).get("structure_flags",{}).get("higher_high"))
+        higher_lows=sum(1 for r in usable if (r.get("structure") or {}).get("structure_flags",{}).get("higher_low"))
+        swept_supports=sum(1 for r in usable if (r.get("structure") or {}).get("liquidity_sweep_low"))
+        breadth={"sampled_symbols":len(usable),"bullish_1h":bullish,"bearish_1h":bearish,
+                 "bullish_pct":round(bullish/max(1,len(usable))*100,1),"bearish_pct":round(bearish/max(1,len(usable))*100,1),
+                 "above_ema20":above_ema20,"above_ema50":above_ema50,"higher_highs":higher_highs,
+                 "higher_lows":higher_lows,"volume_expansion_symbols":volume_expansion,"liquidity_sweeps_low":swept_supports,
+                 "coverage_note":"SAMPLED_DATA_MAP_NOT_FULL_EXCHANGE_BREADTH"}
+        status_order={"READY_NOW":0,"WAITING_FOR_ENTRY":1,"EARLY_SETUP":2,"DATA_INCOMPLETE":3,"REJECTED":4,"EXPIRED":5}
+        rows.sort(key=lambda r:(status_order.get(r.get("status"),9),-float(r.get("ranking_score") or r.get("quality_score") or 0),-float(r.get("quality_score") or 0)))
+        ticker_rows=[]
+        fast_source=ticker_snapshot if isinstance(ticker_snapshot,dict) else {}
+        for raw_symbol,ticker in fast_source.items():
+            sym=str(raw_symbol or "").upper()
+            if not sym.endswith("/USDT") or not isinstance(ticker,dict) or cls._forbidden_or_stable(sym)[0]:
+                continue
+            qv=cls._safe(ticker.get("quoteVolume",ticker.get("quote_volume")))
+            pct=cls._safe(ticker.get("percentage",ticker.get("change_pct_24h",ticker.get("change_24h_pct"))))
+            bid=cls._safe(ticker.get("bid")); ask=cls._safe(ticker.get("ask"))
+            spread24=((ask-bid)/((ask+bid)/2.0)*100.0) if bid and ask and ask>bid else None
+            ticker_rows.append({"symbol":sym,"quote_volume_24h":qv,"change_24h_pct":pct,"spread_pct":spread24,
+                                "last":cls._safe(ticker.get("last")),"timestamp":cls._safe(ticker.get("timestamp"))})
+        eligible_tickers=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=max(3_000_000.0,float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME",3_000_000.0)))]
+        research_floor=max(100_000.0,float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT",250_000.0)))
+        intermediate_pool=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=research_floor]
+        intermediate_pool.sort(key=lambda x:(float(x.get("quote_volume_24h") or 0),float(x.get("change_24h_pct") or -999)),reverse=True)
+        intermediate_limit=max(100,min(150,int(CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT",150))))
+        intermediate_selected=intermediate_pool[:intermediate_limit]
+        top24=[x["symbol"] for x in sorted([x for x in ticker_rows if x.get("change_24h_pct") is not None],key=lambda x:x["change_24h_pct"],reverse=True)[:5]]
+        topvol=[x["symbol"] for x in sorted([x for x in ticker_rows if x.get("quote_volume_24h") is not None],key=lambda x:x["quote_volume_24h"],reverse=True)[:5]]
+        rows_by_ranking=[r["symbol"] for r in sorted([r for r in rows if r.get("status") not in {"REJECTED","EXPIRED"}],key=lambda x:float(x.get("ranking_score") or 0),reverse=True)[:5]]
+        total_universe=int(universe_count or len(fast_source) or len(market_map))
+        market={"status":"OK","timestamp":now,"regime":btc_context,"breadth":breadth,
+                "total_universe":total_universe,"fast_scan_ticker_symbols":len(ticker_rows),
+                "fast_scan_eligible_symbols":len(eligible_tickers),"fast_scan_scope":"AVAILABLE_SHARED_TICKER_SNAPSHOT_NOT_GUARANTEED_ALL_EXCHANGE_LISTINGS",
+                "intermediate_eligible_symbols":len(intermediate_pool),"intermediate_scan_limit":intermediate_limit,
+                "intermediate_scanned_symbols":len(intermediate_selected),"intermediate_candidates":[x["symbol"] for x in intermediate_selected[:20]],
+                "top_24h_movers":top24,"top_24h_volume":topvol,
+                "total_map_symbols":len(market_map),"eligible_symbols":len(symbols),"eligible_snapshot_symbols":len(symbols),
+                "scanned_symbols":len(chosen),"deep_analyzed_symbols":len(rows),
+                "analyzed_symbols":len(rows),"deep_analysis_limit":max_symbols,"rotated_symbols":len(chosen),
+                "skipped_symbols":max(0,len(symbols)-len(chosen)),"remaining_budget":max(0,max_symbols-len(chosen)),
+                "top_ranked_opportunities":rows_by_ranking,
+                "stale_orderbook_symbols":sum(1 for r in rows if not bool(((r.get("plan") or {}).get("book") or {}).get("book_fresh"))),
+                "stale_data":sum(1 for r in rows if r.get("status")=="DATA_INCOMPLETE"),
+                "api_errors":int((research_summary or {}).get("failed",0) or 0),"api_error_visibility":"A79_A80_SUPPLEMENT_SUMMARY; CORE API HEALTH REMAINS IN SOURCE TELEMETRY","analysis_success":sum(1 for r in rows if r.get("status") not in {"DATA_INCOMPLETE","REJECTED"}),
+                "analysis_failure":errors,
+                "analysis_errors":errors,"stale_data_or_missing":sum(1 for r in rows if r.get("status")=="DATA_INCOMPLETE"),
+                "top_movers_1h":[r["symbol"] for r in sorted(usable,key=lambda x:float(x.get("return_1h_pct") or -999),reverse=True)[:5]],
+                "top_volume_expansion":[r["symbol"] for r in sorted(usable,key=lambda x:float((x.get("timeframes",{}).get("1H",{}).get("volume_ratio") or 0)),reverse=True)[:5]],
+                "top_relative_strength":[r["symbol"] for r in sorted([x for x in usable if x.get("relative_strength_vs_btc_pct") is not None],key=lambda x:float(x.get("relative_strength_vs_btc_pct") or -999),reverse=True)[:5]],
+                "top_liquidity_sweeps":[r["symbol"] for r in usable if (r.get("structure") or {}).get("liquidity_sweep_low")][:5],
+                "top_resistance_breakouts":[r["symbol"] for r in usable if (r.get("structure") or {}).get("bos")=="BULLISH_BOS"][:5],
+                "top_pullbacks":[r["symbol"] for r in usable if r.get("mtf_state")=="BULLISH" and (r.get("structure") or {}).get("support") and abs(float(r["timeframes"]["1H"]["close"])-float(r["structure"]["support"]["price"]))<=2.0*float(r["timeframes"]["1H"]["atr"])][:5],
+                "sector_rotation":cls._sector_rotation(ticker_rows,eligible_tickers),
+                "external_market_cap_dominance_oi_funding":{"status":"UNAVAILABLE_NO_CONFIGURED_VERIFIED_PROVIDER"},
+                "research_coverage":{"universe":int((research_summary or {}).get("universe",total_universe) or 0),
+                    "eligible":int((research_summary or {}).get("eligible",0) or 0),
+                    "attempted":int((research_summary or {}).get("attempted",0) or 0),
+                    "ok":int((research_summary or {}).get("ok",0) or 0),
+                    "failed":int((research_summary or {}).get("failed",0) or 0),
+                    "timed_out":int((research_summary or {}).get("timed_out",0) or 0),
+                    "reject_reasons":dict((research_summary or {}).get("reject_reasons") or {}),
+                    "failure_stage":(research_summary or {}).get("failure_stage"),
+                    "error":(research_summary or {}).get("error")},
+                "elapsed_sec":round(float(MONO_NOW())-started,3),"execution_authority":False,
+                "source":"SHARED_MARKET_DATA_MAP_AND_CLOSED_CANDLES"}
+        cls.persist(rows)
+        with _A85_LAST_SCAN_LOCK:
+            _A85_LATEST_MARKET_MAP={s: market_map[s] for s in chosen if s in market_map}
+            for core_symbol in ("BTC/USDT","ETH/USDT"):
+                if core_symbol in market_map: _A85_LATEST_MARKET_MAP[core_symbol]=market_map[core_symbol]
+            _A85_LATEST_ROWS=rows[:]
+            _A85_LATEST_MARKET=market
+            _A85_LAST_SCAN_TS=now
+        STATS["v702_a85_revision"]=V702_A85_REVISION
+        STATS["v702_a85_last_market"]={k:v for k,v in market.items() if k!="regime"}
+        STATS["v702_a85_last_market"]["regime"]=btc_context.get("regime","UNKNOWN")
+        STATS["v702_a85_top"]=[{k:r.get(k) for k in ("symbol","status","quality_score","market_regime","primary_strategy","mtf_state")} for r in rows[:10]]
+        logger.info("[A85] analyzed=%d eligible=%d total_map=%d ready=%d waiting=%d errors=%d regime=%s elapsed=%.2fs",
+                    len(rows),len(symbols),len(market_map),sum(r.get("status")=="READY_NOW" for r in rows),
+                    sum(r.get("status")=="WAITING_FOR_ENTRY" for r in rows),errors,btc_context.get("regime"),market["elapsed_sec"])
+        return {**market,"rows":rows[:10]}
+
+    @classmethod
+    def snapshot(cls, statuses=None, limit=10):
+        with _A85_LAST_SCAN_LOCK:
+            source=list(_A85_LATEST_ROWS)
+        now=float(WALL_NOW())
+        rows=[]
+        for original in source:
+            row=dict(original)
+            plan=dict(row.get("plan") or {})
+            expiry=cls._safe(plan.get("entry_expiry_ts"))
+            if expiry is not None and now > expiry and row.get("status") in {"READY_NOW","WAITING_FOR_ENTRY","EARLY_SETUP"}:
+                row["status"]="EXPIRED"
+                row["reason"]="ENTRY_WINDOW_EXPIRED"
+                plan["status"]="EXPIRED"
+                plan["reason"]="ENTRY_WINDOW_EXPIRED"
+                plan["economic_pass"]=False
+                row["plan"]=plan
+            rows.append(row)
+        if statuses is None:
+            rows=[r for r in rows if r.get("status") not in {"REJECTED","EXPIRED"}]
+        else:
+            allowed=set(statuses)
+            rows=[r for r in rows if r.get("status") in allowed]
+        status_order={"READY_NOW":0,"WAITING_FOR_ENTRY":1,"EARLY_SETUP":2,"DATA_INCOMPLETE":3,"REJECTED":4,"EXPIRED":5}
+        rows.sort(key=lambda r:(status_order.get(r.get("status"),9),-float(r.get("ranking_score") or r.get("quality_score") or 0),-float(r.get("quality_score") or 0),-float(r.get("analyzed_at") or 0)), reverse=False)
+        return rows[:max(1,min(50,int(limit)))]
+
+    @classmethod
+    def market_snapshot(cls):
+        with _A85_LAST_SCAN_LOCK: return dict(_A85_LATEST_MARKET)
+
+    @classmethod
+    def analyze_symbol(cls, symbol):
+        token=str(symbol or "").upper().replace("_","/").strip()
+        with _A85_LAST_SCAN_LOCK:
+            md=_A85_LATEST_MARKET_MAP.get(token)
+            btc=_A85_LATEST_MARKET_MAP.get("BTC/USDT")
+        if not isinstance(md,dict): return None
+        btc_ind={"frame_1h":cls._closed(btc,"1H")[0]} if isinstance(btc,dict) else None
+        hunter=[]
+        try: hunter=[r for r in OpportunityHunter.snapshot(300) if r.get("symbol")==token]
+        except Exception: pass
+        return cls._analyze_one(token,md,btc_ind,hunter)
+
+    @classmethod
+    def performance(cls, limit=5000):
+        try:
+            OpportunityHunter._ensure_schema()
+            conn=OpportunityHunter._connect()
+            try:
+                rows=conn.execute("SELECT family,timeframe,outcome_status,outcome_net_r,outcome_net_return_pct,created_at,outcome_updated_at,evidence_json,outcome_events_json FROM opportunity_hunter WHERE outcome_final=1 ORDER BY outcome_updated_at DESC LIMIT ?",(max(100,min(10000,int(limit))),)).fetchall()
+            finally: conn.close()
+        except Exception as exc:
+            return {"status":"UNAVAILABLE","reason":f"{type(exc).__name__}","sample_count":0}
+        samples=[]
+        for raw in rows:
+            try:
+                r=dict(raw); ev=json.loads(r.get("evidence_json") or "{}")
+                nr=cls._safe(r.get("outcome_net_r")); ret=cls._safe(r.get("outcome_net_return_pct"))
+                if nr is None: continue
+                events=json.loads(r.get("outcome_events_json") or "[]")
+                kinds={str(e.get("kind") or "").upper() for e in events if isinstance(e,dict)}
+                regime=str(ev.get("market_regime") or ev.get("macro_regime") or ev.get("regime") or "UNKNOWN").upper()
+                atr_pct=cls._safe(ev.get("atr_pct_1h",ev.get("atr_pct")))
+                volatility="HIGH" if atr_pct is not None and atr_pct>=3.5 else "LOW" if atr_pct is not None and atr_pct<1.0 else "NORMAL" if atr_pct is not None else "UNKNOWN"
+                samples.append({"family":r.get("family"),"timeframe":r.get("timeframe"),"outcome_status":str(r.get("outcome_status") or "UNKNOWN"),
+                                "net_r":nr,"net_return_pct":ret,"duration_sec":max(0,float(r.get("outcome_updated_at") or 0)-float(r.get("created_at") or 0)),
+                                "regime":regime,"volatility":volatility,"tp1_hit":any(k.startswith("SHADOW_TP1_TOUCHED") for k in kinds),
+                                "sl_hit":any(k.startswith("SHADOW_STOP") for k in kinds),"source":"SHADOW_OUTCOME"})
+            except Exception: continue
+        samples.reverse()  # latest bounded sample, restored to chronological order.
+        n=len(samples); min_n=max(30,int(CONFIG.get("A85_MIN_PERFORMANCE_SAMPLE",30)))
+        if n<min_n: return {"status":"INSUFFICIENT_SAMPLE","sample_count":n,"minimum_sample":min_n,"source":"SHADOW_ONLY_NOT_LIVE_PNL"}
+        wins=[x["net_r"] for x in samples if x["net_r"]>0]; losses=[x["net_r"] for x in samples if x["net_r"]<0]
+        equity=peak=0.0; maxdd=0.0
+        for x in samples:  # samples are already restored to chronological order.
+            equity+=x["net_r"]; peak=max(peak,equity); maxdd=max(maxdd,peak-equity)
+        gross_win=sum(wins); gross_loss=abs(sum(losses))
+        split=max(30,int(n*0.20)) if n>=60 else 0
+        holdout=samples[-split:] if split else []
+        training=samples[:-split] if split else []
+        walk_forward={"status":"OK" if holdout and len(training)>=30 else "INSUFFICIENT_SAMPLE",
+                      "train_n":len(training),"holdout_n":len(holdout),
+                      "train_expectancy_r":round(sum(x["net_r"] for x in training)/len(training),4) if training else None,
+                      "holdout_expectancy_r":round(sum(x["net_r"] for x in holdout)/len(holdout),4) if holdout else None,
+                      "chronological_split":True,"no_automatic_weight_changes":True}
+        return {"status":"OK","sample_count":n,"win_rate_pct":round(len(wins)/n*100,2),
+                "tp1_hit_rate_pct":round(sum(1 for x in samples if x["tp1_hit"])/n*100,2),
+                "sl_hit_rate_pct":round(sum(1 for x in samples if x["sl_hit"])/n*100,2),
+                "net_expectancy_r":round(sum(x["net_r"] for x in samples)/n,4),"average_r":round(sum(x["net_r"] for x in samples)/n,4),
+                "profit_factor":round(gross_win/gross_loss,4) if gross_loss else None,"max_drawdown_r":round(maxdd,4),
+                "median_duration_sec":round(float(pd.Series([x["duration_sec"] for x in samples]).median()),1),
+                "by_strategy":cls._group_performance(samples,"family",min_n),"by_timeframe":cls._group_performance(samples,"timeframe",min_n),
+                "by_regime":cls._group_performance(samples,"regime",min_n),"by_volatility":cls._group_performance(samples,"volatility",min_n),
+                "walk_forward":walk_forward,"estimated_win_probability":None,
+                "source":"SHADOW_OUTCOME_ONLY_NOT_REALIZED_EXCHANGE_PNL"}
+
+    @classmethod
+    def _group_performance(cls, samples, key, minimum):
+        out={}
+        for name in sorted({str(x.get(key) or "UNKNOWN") for x in samples}):
+            subset=[x for x in samples if str(x.get(key) or "UNKNOWN")==name]
+            out[name]={"sample_count":len(subset),"status":"OK" if len(subset)>=minimum else "INSUFFICIENT_SAMPLE",
+                       "net_expectancy_r":round(sum(x["net_r"] for x in subset)/len(subset),4) if subset else None}
+        return out
+
+    @classmethod
+    def render_chart(cls, symbol, timeframe="1H", row=None):
+        try:
+            import matplotlib
+            matplotlib.use("Agg", force=True)
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Rectangle
+            token=str(symbol or "").upper().replace("_","/")
+            with _A85_LAST_SCAN_LOCK: md=_A85_LATEST_MARKET_MAP.get(token)
+            if not isinstance(md,dict): return None
+            label=str(timeframe or "1H").upper()
+            if label not in cls._tf: return None
+            frame,ts=cls._closed(md,label)
+            if frame is None: return None
+            frame=frame.tail(max(60,min(180,int(CONFIG.get("A85_CHART_MAX_BARS",120)))))
+            ind=cls.indicators(frame)
+            if not ind: return None
+            if row is None: row=cls.analyze_symbol(token)
+            fig=None
+            try:
+                fig,(ax,volax)=plt.subplots(2,1,figsize=(14,8),sharex=True,gridspec_kw={"height_ratios":[4,1]},constrained_layout=True)
+                x=list(range(len(frame)))
+                for i,(_,c) in enumerate(frame.iterrows()):
+                    o,h,l,cl=map(float,(c.open,c.high,c.low,c.close))
+                    up=cl>=o; col="#15966b" if up else "#d64b55"
+                    ax.vlines(i,l,h,color=col,linewidth=0.8,alpha=0.95)
+                    body=max(abs(cl-o),max(abs(cl)*0.00002,1e-12))
+                    ax.add_patch(Rectangle((i-0.30,min(o,cl)),0.60,body,facecolor=col,edgecolor=col,linewidth=0.5))
+                close=frame.close.astype(float)
+                for span,color in ((9,"#00a6d6"),(20,"#e69b00"),(50,"#7b61a8"),(100,"#8a8f98"),(200,"#5d6d7e")):
+                    ax.plot(x,close.ewm(span=span,adjust=False).mean(),label=f"EMA {span}",linewidth=1.0,color=color)
+                typical=(frame.high+frame.low+frame.close)/3
+                cumv=frame.volume.cumsum().replace(0,float("nan"))
+                vwap=(typical*frame.volume).cumsum()/cumv
+                ax.plot(x,vwap,label="VWAP",color="#2463eb",linewidth=1.0)
+                ax.axhline(ind["bb_upper"],color="#aaaaaa",linestyle=":",linewidth=.7,label="BB Upper")
+                ax.axhline(ind["bb_lower"],color="#aaaaaa",linestyle=":",linewidth=.7,label="BB Lower")
+                if row:
+                    s=(row.get("structure") or {})
+                    for zone in (s.get("supports") or [])[:3]:
+                        ax.axhspan(zone["low"],zone["high"],color="#16a085",alpha=.10)
+                    for zone in (s.get("resistances") or [])[:3]:
+                        ax.axhspan(zone["low"],zone["high"],color="#c0392b",alpha=.09)
+                    for zone in (s.get("fvgs") or [])[-2:]:
+                        ax.axhspan(zone["low"],zone["high"],color="#5dade2" if zone["direction"]=="BULLISH" else "#f5b7b1",alpha=.18)
+                    for zone in (s.get("order_blocks") or [])[-2:]:
+                        ax.axhspan(zone["low"],zone["high"],color="#82e0aa" if zone["direction"]=="BULLISH" else "#f1948a",alpha=.13)
+                    for level in (s.get("swing_highs") or [])[-4:]:
+                        ax.axhline(float(level),color="#c0392b",linestyle=":",linewidth=.55,alpha=.45)
+                    for level in (s.get("swing_lows") or [])[-4:]:
+                        ax.axhline(float(level),color="#148f77",linestyle=":",linewidth=.55,alpha=.45)
+                    if s.get("bos") and s.get("bos")!="NONE":
+                        ax.annotate(str(s.get("bos")),xy=(x[-1],float(close.iloc[-1])),xytext=(max(0,x[-1]-18),float(close.iloc[-1])*1.008),fontsize=8,arrowprops={"arrowstyle":"->","lw":.7})
+                    if s.get("choch") and s.get("choch")!="NONE":
+                        ax.text(max(0,x[-1]-25),float(close.iloc[-1])*0.992,str(s.get("choch")),fontsize=7,alpha=.85)
+                    last_bar=frame.iloc[-1]
+                    if s.get("liquidity_sweep_low"):
+                        ax.scatter([x[-1]],[float(last_bar.low)],marker="^",s=70,color="#00a878",label="Sell-side sweep reclaim",zorder=6)
+                    if s.get("liquidity_sweep_high"):
+                        ax.scatter([x[-1]],[float(last_bar.high)],marker="v",s=70,color="#cc4754",label="Buy-side sweep reject",zorder=6)
+                    if s.get("equal_highs") and s.get("swing_highs"):
+                        ax.axhline(float(s["swing_highs"][-1]),color="#af7ac5",linestyle="--",linewidth=1.0,label="Equal Highs")
+                    if s.get("equal_lows") and s.get("swing_lows"):
+                        ax.axhline(float(s["swing_lows"][-1]),color="#17a589",linestyle="--",linewidth=1.0,label="Equal Lows")
+                    fib=row.get("fib") or {}
+                    for key in ("0.382","0.5","0.618"):
+                        if cls._safe(fib.get(key)): ax.axhline(float(fib[key]),linestyle="--",linewidth=.7,alpha=.7,label=f"Fib {key}")
+                    vp=(row.get("volume_analysis") or {}).get("volume_profile_1h") or {}
+                    if cls._safe(vp.get("poc")):
+                        ax.axhline(float(vp["poc"]),color="#117864",linestyle="-.",linewidth=.8,label="Volume Profile POC (approx)")
+                    plan=row.get("plan") or {}
+                    zone_low=cls._safe(plan.get("entry_zone_low")); zone_high=cls._safe(plan.get("entry_zone_high"))
+                    if zone_low is not None and zone_high is not None and zone_high>zone_low:
+                        ax.axhspan(zone_low,zone_high,color="#58d68d",alpha=.15,label="Entry Zone")
+                    for key,label2,color in (("preferred_entry","ENTRY","#1e8449"),("stop_loss","STOP","#c0392b")):
+                        if cls._safe(plan.get(key)): ax.axhline(float(plan[key]),color=color,linestyle="-.",linewidth=1.1,label=label2)
+                    for i,tp in enumerate(plan.get("targets") or []):
+                        if cls._safe(tp.get("price")): ax.axhline(float(tp["price"]),color="#2e86c1",linestyle=":",linewidth=.9,label=f"TP{i+1}")
+                volax.bar(x,frame.volume.astype(float),color=["#15966b" if float(c.close)>=float(c.open) else "#d64b55" for _,c in frame.iterrows()],width=.75)
+                volax.set_ylabel("Volume")
+                if ind.get("volume_climax"):
+                    volax.scatter([x[-1]],[float(frame.volume.iloc[-1])],marker="*",s=85,color="#f39c12",label="Volume climax")
+                    volax.legend(loc="upper left",fontsize=8)
+                try:
+                    vmean=float(frame.volume.astype(float).tail(21).iloc[:-1].mean())
+                    vlast=float(frame.volume.astype(float).iloc[-1])
+                    volax.set_title(f"Relative Volume: {vlast/max(vmean,1e-12):.2f}x" if vmean>0 else "Relative Volume: UNKNOWN",fontsize=9)
+                except Exception:
+                    volax.set_title("Relative Volume: UNKNOWN",fontsize=9)
+                regime=(row or {}).get("market_regime",_A85_LATEST_MARKET.get("regime",{}).get("regime","UNKNOWN"))
+                plan_meta=(row or {}).get("plan") or {}
+                analysis_ts=datetime.fromtimestamp(float((row or {}).get("analyzed_at") or WALL_NOW()),timezone.utc).isoformat()
+                ax.set_title(f"{token} | MEXC Spot | {label} | Last Closed Candle {datetime.fromtimestamp(ts+cls._tf[label][1],timezone.utc).isoformat()}\n"
+                             f"Analysis UTC={analysis_ts} | Regime={regime} | Strategy={(row or {}).get('primary_strategy','n/a')} | Quality={(row or {}).get('quality_score','n/a')} | Status={(row or {}).get('status','n/a')}\n"
+                             f"Ask reference={plan_meta.get('preferred_entry','n/a')} | SL={plan_meta.get('stop_loss','n/a')} | "
+                             f"TP1/TP2/TP3={','.join(str(x.get('price')) for x in (plan_meta.get('targets') or []))}")
+                tick_idx=sorted(set([0,max(0,len(frame)//4),max(0,len(frame)//2),max(0,3*len(frame)//4),len(frame)-1]))
+                ax.set_xticks(tick_idx)
+                ax.set_xticklabels([str(frame.index[i])[:16] for i in tick_idx],rotation=20,ha="right",fontsize=8)
+                ax.set_xlabel("UTC candle open time")
+                ax.grid(True,alpha=.18); ax.legend(loc="upper left",fontsize=8,ncol=4)
+                ax.set_xlim(-1,len(frame))
+                buf=io.BytesIO(); fig.savefig(buf,format="png",dpi=max(80,min(160,int(CONFIG.get("A85_CHART_DPI",115)))),bbox_inches="tight")
+                data=buf.getvalue(); buf.close()
+                return data if data[:8]==b"\x89PNG\r\n\x1a\n" else None
+            finally:
+                if fig is not None: plt.close(fig)
+        except Exception as exc:
+            STATS["a85_chart_render_failures"] = int(STATS.get("a85_chart_render_failures",0) or 0)+1
+            STATS["a85_chart_last_error"] = f"{type(exc).__name__}:{str(exc)[:120]}"
+            logger.warning("[A85-CHART] render failed: %s:%s",type(exc).__name__,str(exc)[:100])
+            return None
+
+    @classmethod
+    async def send_photo(cls, chat_id, caption, png, filename="a85-chart.png"):
+        if not _AIOHTTP_OK or not ENV.get("TELEGRAM_TOKEN") or not CONFIG.get("TELEGRAM_ENABLED",False): return False
+        if not isinstance(png,(bytes,bytearray)) or not bytes(png).startswith(b"\x89PNG\r\n\x1a\n"): return False
+        session=await TelegramDispatcher._ensure_session()
+        if session is None: return False
+        form=aiohttp.FormData()
+        form.add_field("chat_id",str(chat_id or ENV.get("TELEGRAM_CHAT")))
+        form.add_field("caption",str(caption or "")[:900])
+        form.add_field("parse_mode","HTML")
+        form.add_field("photo",bytes(png),filename=filename,content_type="image/png")
+        url=f"https://api.telegram.org/bot{ENV['TELEGRAM_TOKEN']}/sendPhoto"
+        try:
+            async with session.post(url,data=form,timeout=aiohttp.ClientTimeout(total=20)) as response:
+                body=await response.json(content_type=None)
+                ok=response.status==200 and isinstance(body,dict) and body.get("ok") is True
+                STATS["a85_telegram_photo_last_ack"]=bool(ok)
+                STATS["a85_telegram_photo_last_status"]=int(response.status)
+                if not ok: STATS["a85_telegram_photo_last_error"]=str((body or {}).get("description") or f"HTTP_{response.status}")[:160]
+                return bool(ok)
+        except Exception as exc:
+            STATS["a85_telegram_photo_last_ack"]=False
+            STATS["a85_telegram_photo_last_error"]=f"{type(exc).__name__}:{str(exc)[:140]}"
+            return False
+
+    @classmethod
+    def self_test(cls):
+        checks={
+            "read_only_authority": cls.execution_authority is False and cls.order_authority is False and cls.selector_authority is False,
+            "existing_map_only": cls.source_mode=="EXISTING_MARKET_DATA_MAP_ONLY",
+            "closed_frame_gate": callable(OpportunityHunter._closed_frame),
+            "technical_analysis": callable(cls.indicators) and callable(cls._structure_smc),
+            "smc_detection": callable(cls._structure_smc),
+            "multi_timeframe": set(cls._tf)=={"1D","4H","1H","15M","5M","1M"},
+            "cost_aware_trade_plan": callable(cls._plan),
+            "persistent_rotation_and_history": callable(cls.get_rotation_offset) and callable(cls.persist),
+            "chart_renderer": callable(cls.render_chart),
+            "telegram_photo_fallback": callable(cls.send_photo),
+            "performance_sample_floor": int(CONFIG.get("A85_MIN_PERFORMANCE_SAMPLE",30))>=30,
+            "sector_rotation_is_explicit_partial_classifier": callable(cls._sector_rotation) and bool(cls._sector_by_base),
+            "intermediate_scan_bounded": 100<=int(CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT",150))<=150,
+            "live_keys_default_off": "UNIFIED_LIVE_PILOT_ENABLE=0" in Path(__file__).with_name(".env.example").read_text(encoding="utf-8") and "UNIFIED_A55_LIVE_ARM=0" in Path(__file__).with_name(".env.example").read_text(encoding="utf-8"),
+            "monitor_only_policy": FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")=="MONITOR_ONLY_NO_NEW_BUYS",
+            "no_hard_gate_bypass": FINAL_CANONICAL_RUNTIME.get("hard_gate_bypass") is False and FINAL_CANONICAL_RUNTIME.get("live_gates_relaxed") is False,
+            "a85_environment_valid": not bool(_A85_CONFIG_ERRORS),
+            "a83_off_by_default": CONFIG.get("STABLECOIN_MM_ENABLE") is False and str(CONFIG.get("STABLECOIN_MM_MODE", "SHADOW")).upper()=="SHADOW",
+            "long_only_monitor_policy": str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy"))=="MONITOR_ONLY_NO_NEW_BUYS",
+        }
+        failed=[k for k,v in checks.items() if not v]
+        return {"pass":not failed,"revision":V702_A85_REVISION,"checks":checks,"failed":failed,"execution_authority":False}
+
+
+async def _v702_a85_publish_alerts(rows):
+    """Publish only a small, deduplicated set of high-quality read-only opportunities."""
+    if not bool(CONFIG.get("A85_AUTO_ALERTS_ENABLE",True)) or not bool(CONFIG.get("TELEGRAM_ENABLED",False)):
+        return {"sent":0,"skipped":"DISABLED"}
+    try:
+        A85MarketIntelligence._ensure_schema()
+    except Exception:
+        return {"sent":0,"skipped":"PERSISTENCE_UNAVAILABLE"}
+    configured_alerts=int(CONFIG.get("A85_MAX_ALERTS_PER_CYCLE",3) or 0)
+    if configured_alerts <= 0:
+        return {"sent":0,"skipped":"ZERO_ALERT_BUDGET"}
+    max_alerts=min(5,configured_alerts)
+    minimum=float(CONFIG.get("A85_ALERT_MIN_QUALITY",82.0)); cooldown=max(300.0,float(CONFIG.get("A85_SYMBOL_ALERT_COOLDOWN_SEC",1800.0)))
+    selected=[r for r in rows if r.get("status") in {"READY_NOW","WAITING_FOR_ENTRY"} and float(r.get("quality_score") or 0)>=minimum]
+    sent=0
+    for row in selected[:max_alerts]:
+        symbol=str(row.get("symbol") or "")
+        fp=A85MarketIntelligence._fingerprint(row)
+        now=float(WALL_NOW())
+        try:
+            with A85MarketIntelligence._db_lock:
+                conn=A85MarketIntelligence._connect()
+                try:
+                    old=conn.execute("SELECT last_alert_at,fingerprint FROM a85_alert_state WHERE symbol=?",(symbol,)).fetchone()
+                    if old and now-float(old[0] or 0)<cooldown and str(old[1] or "")==fp: continue
+                finally: conn.close()
+        except Exception: continue
+        plan=row.get("plan") or {}; targets=plan.get("targets") or []
+        esc=lambda s: str(s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        def fmt(v):
+            x=A85MarketIntelligence._safe(v); return f"{x:.10g}" if x is not None else "n/a"
+        tv_url=f"https://www.tradingview.com/chart/?symbol=MEXC%3A{symbol.replace('/','')}"
+        mexc_url=f"https://www.mexc.com/exchange/{symbol.replace('/','_')}"
+        timeframes=row.get("timeframes") or {}
+        invalidations=plan.get("invalidation_conditions") or []
+        fee_cost=max(0.0,float(plan.get("fee_pct_per_side") or 0.0))*2.0
+        spread_cost=max(0.0,float(plan.get("spread_cost_pct") or 0.0))
+        slippage_cost=max(0.0,float(plan.get("slippage_pct_per_side") or 0.0))*2.0
+        cost_total=fee_cost+spread_cost+slippage_cost
+        message=(f"<b>UNIFIED SCALPER — A85 TOP MARKET OPPORTUNITY</b>\n"
+                 f"PAIR: <b>{esc(symbol)}</b> | STATUS: <b>{esc(row.get('status'))}</b>\n"
+                 f"QUALITY: {float(row.get('quality_score') or 0):.1f}/100 | SIGNAL: {fmt(row.get('signal_quality_score'))} | DATA: {esc(row.get('data_confidence'))}\n"
+                 f"REGIME: {esc(row.get('market_regime'))} | MTF: {esc(row.get('mtf_state'))}\n"
+                 f"1D/4H/1H/15M: {esc('/'.join(str((timeframes.get(k) or {}).get('trend','UNKNOWN')) for k in ('1D','4H','1H','15M')))}\n"
+                 f"STRATEGY: {esc(row.get('primary_strategy'))} | Supporting: {esc(', '.join(row.get('supporting_strategies') or []) or 'none')}\n"
+                 f"ENTRY ZONE: {fmt(plan.get('entry_zone_low'))} – {fmt(plan.get('entry_zone_high'))} | ASK ENTRY: {fmt(plan.get('preferred_entry'))}\n"
+                 f"STOP: {fmt(plan.get('stop_loss'))} | TP1/TP2/TP3: {fmt((targets[0] if len(targets)>0 else {}).get('price'))} / {fmt((targets[1] if len(targets)>1 else {}).get('price'))} / {fmt((targets[2] if len(targets)>2 else {}).get('price'))}\n"
+                 f"NET RR TP1: {fmt(plan.get('net_rr_tp1'))} | GROSS RR: {fmt(plan.get('gross_rr_tp1'))} | NET EST TP1: {fmt(plan.get('estimated_net_profit_usdt_tp1'))} USDT\n"
+                 f"COST EST %: fee={fee_cost:.4f} + spread={spread_cost:.4f} + slippage={slippage_cost:.4f} = {cost_total:.4f}\n"
+                 f"CHASE: {fmt(plan.get('chase_distance_pct'))}% / max {fmt(plan.get('maximum_chase_distance_pct'))}% | EXPIRY: {fmt(plan.get('entry_expiry_ts'))} UTC epoch\n"
+                 f"INVALIDATION: {esc('; '.join(invalidations[:5]))}\n"
+                 f"TradingView: <a href=\"{tv_url}\">Chart</a> | MEXC: <a href=\"{mexc_url}\">Spot Pair</a>\n"
+                 f"NOTE: Analytical/Shadow only. No BUY order and no execution authority.")
+        chat_id=ENV.get("TELEGRAM_CHAT")
+        # Queue the complete text plan first. A slow/failed sendPhoto request
+        # must never delay or suppress the primary opportunity notification.
+        queued=await TelegramDispatcher.enqueue(message)
+        photo_acks={}
+        if queued:
+            sent+=1
+            try:
+                conn=A85MarketIntelligence._connect()
+                with conn:
+                    conn.execute("INSERT OR REPLACE INTO a85_alert_state(symbol,last_alert_at,fingerprint) VALUES(?,?,?)",(symbol,now,fp))
+                conn.close()
+            except Exception: pass
+            if bool(CONFIG.get("A85_AUTO_CHART_ENABLE",True)):
+                for chart_tf in ("1H","15M"):
+                    png=await asyncio.to_thread(A85MarketIntelligence.render_chart,symbol,chart_tf,row)
+                    if png:
+                        photo_acks[chart_tf]=await A85MarketIntelligence.send_photo(
+                            chat_id,f"A85 {symbol} {chart_tf} closed-candle analysis chart. Full plan is in the text message; no order authority.",
+                            png,f"{symbol.replace('/','_')}-{chart_tf.lower()}.png")
+                    else:
+                        photo_acks[chart_tf]=False
+        STATS["a85_auto_chart_last_ack"]={k:bool(v) for k,v in photo_acks.items()}
+    return {"sent":sent,"selected":len(selected)}
+
+
+async def _v702_a85_readonly_dispatch(cls, exchange, message):
+    text=str((message or {}).get("text") or "").strip()
+    parts=text.split(); command=parts[0].split("@",1)[0].lower() if parts else ""
+    args=parts[1:]
+    readonly={"/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime","/help"}
+    if command not in readonly:
+        return False
+    chat_id=((message or {}).get("chat") or {}).get("id")
+    def fmt(v):
+        x=A85MarketIntelligence._safe(v); return f"{x:.10g}" if x is not None else "n/a"
+    try:
+        if command=="/help":
+            body=("<b>A85 READ-ONLY MARKET COMMANDS</b>\n/market — market overview\n/top — best ranked opportunities\n/ready — analytical ready only (not an order)\n/waiting — waiting/early setups\n/analyze SYMBOL — technical analysis\n/chart SYMBOL — PNG chart\n/regime — BTC/ETH and breadth\n/strategies — observed strategy families\n/performance — shadow outcome metrics\n/portfolio — local bot position state only\n\nExisting commands: /ping, /status, /digest, /opportunities, /orders, /sl, /cancel, /cancel_all_targets, /cancel_all.\nProtection/account-changing commands retain their original authorization and gates.")
+        elif command in ("/market","/regime"):
+            m=A85MarketIntelligence.market_snapshot(); reg=m.get("regime") or {}; breadth=m.get("breadth") or {}
+            btc=reg.get("btc"); btc=btc if isinstance(btc,dict) else {}
+            eth=reg.get("eth"); eth=eth if isinstance(eth,dict) else {}
+            sectors=m.get("sector_rotation") or {}
+            sector_top="; ".join(f"{x.get('sector')} {x.get('avg_change_24h_pct')}% (positive {x.get('positive_breadth_pct')}%)" for x in (sectors.get("top_sectors") or [])[:3]) or "unavailable"
+            sector_weak="; ".join(f"{x.get('sector')} {x.get('avg_change_24h_pct')}%" for x in (sectors.get("weakest_sectors") or [])[:3]) or "unavailable"
+            body=(f"<b>A85 MARKET OVERVIEW</b>\nSTATUS: {m.get('status','NOT_SCANNED')} | UPDATED: {datetime.fromtimestamp(float(m.get('timestamp') or 0),timezone.utc).isoformat() if m.get('timestamp') else 'never'}\n"
+                  f"REGIME: <b>{reg.get('regime','UNKNOWN')}</b>\n"
+                  f"BTC 1D/4H/1H: {btc.get('1D','UNKNOWN')} / {btc.get('4H','UNKNOWN')} / {btc.get('1H','UNKNOWN')}\n"
+                  f"ETH 1H: {eth.get('1H','UNKNOWN')} | ETH RS-BTC: {fmt(eth.get('relative_strength_vs_btc_pct'))}%\n"
+                  f"Breadth sample: {breadth.get('sampled_symbols',0)} | bullish {breadth.get('bullish_pct',0)}% | bearish {breadth.get('bearish_pct',0)}%\n"
+                  f"Fast eligible (>=3M): {m.get('fast_scan_eligible_symbols',0)} | Intermediate: {m.get('intermediate_scanned_symbols',0)}/{m.get('intermediate_eligible_symbols',0)} | Deep: {m.get('deep_analyzed_symbols',0)}\n"
+                  f"Analyzed: {m.get('analyzed_symbols',0)} / eligible snapshots {m.get('eligible_symbols',0)} / universe {m.get('total_universe',0)} | skipped {m.get('skipped_symbols',0)}\n"
+                  f"A79 research attempted/ok/failed/timeouts: {((m.get('research_coverage') or {}).get('attempted',0))}/{((m.get('research_coverage') or {}).get('ok',0))}/{((m.get('research_coverage') or {}).get('failed',0))}/{((m.get('research_coverage') or {}).get('timed_out',0))}\n"
+                  f"Breadth: above EMA20 {breadth.get('above_ema20','n/a')} | above EMA50 {breadth.get('above_ema50','n/a')} | volume expansion {breadth.get('volume_expansion_symbols','n/a')}\n"
+                  f"Top movers 24H: {', '.join(m.get('top_24h_movers') or []) or 'unavailable'}\n"
+                  f"Top 24H volume: {', '.join(m.get('top_24h_volume') or []) or 'unavailable'}\n"
+                  f"Top movers 1H: {', '.join(m.get('top_movers_1h') or []) or 'none'}\n"
+                  f"Top ranked: {', '.join(m.get('top_ranked_opportunities') or []) or 'none'}\n"
+                  f"Top relative strength: {', '.join(m.get('top_relative_strength') or []) or 'none'}\n"
+                  f"Resistance breakouts: {', '.join(m.get('top_resistance_breakouts') or []) or 'none'}\n"
+                  f"Pullbacks: {', '.join(m.get('top_pullbacks') or []) or 'none'}\n"
+                  f"Liquidity sweeps: {', '.join(m.get('top_liquidity_sweeps') or []) or 'none'}\n"
+                  f"Sectors: {sectors.get('status','UNKNOWN')} | Top: {sector_top} | Weak: {sector_weak}\n"
+                  f"External cap/dominance/OI: {((m.get('external_market_cap_dominance_oi_funding') or {}).get('status','UNKNOWN'))}\n"
+                  f"Data source: {reg.get('source','MEXC_CLOSED_SPOT_OHLCV_ONLY')} | execution authority=false")
+        elif command in ("/top","/ready","/waiting"):
+            statuses=(None if command=="/top" else ["READY_NOW"] if command=="/ready" else ["WAITING_FOR_ENTRY","EARLY_SETUP","DATA_INCOMPLETE"])
+            rows=A85MarketIntelligence.snapshot(statuses,5)
+            if not rows: body="NO CURRENT A85 OPPORTUNITIES — market scan may not have completed or no setups meet current quality gates."
+            else:
+                lines=[f"<b>A85 {command[1:].upper()} — READ ONLY</b>"]
+                for i,r in enumerate(rows,1):
+                    p=r.get("plan") or {}; lines.append(f"{i}. <b>{r['symbol']}</b> {r['status']} | Q={r.get('quality_score')} | {r.get('primary_strategy')} | MTF={r.get('mtf_state')} | Entry={fmt(p.get('preferred_entry'))} SL={fmt(p.get('stop_loss'))} NetRR={fmt(p.get('net_rr_tp1'))}")
+                body="\n".join(lines)
+        elif command=="/analyze":
+            if not args: body="Usage: /analyze SYMBOL (example: /analyze SOL/USDT)"
+            else:
+                r=A85MarketIntelligence.analyze_symbol(args[0])
+                if not r: body="Symbol is not in the latest shared market snapshots. It may be outside the current fair-rotation window."
+                else:
+                    p=r.get("plan") or {}; tf=r.get("timeframes") or {}; s=r.get("structure") or {}
+                    body=(f"<b>A85 ANALYSIS {r['symbol']}</b>\nStatus={r['status']} Quality={r.get('quality_score')}/100 Data={r.get('data_confidence')}\n"
+                          f"Regime={r.get('market_regime','UNKNOWN')} MTF={r.get('mtf_state')} RS-BTC={fmt(r.get('relative_strength_vs_btc_pct'))}%\n"
+                          f"1D={((tf.get('1D') or {}).get('trend','UNKNOWN'))} 4H={((tf.get('4H') or {}).get('trend','UNKNOWN'))} 1H={((tf.get('1H') or {}).get('trend','UNKNOWN'))} 15M={((tf.get('15M') or {}).get('trend','UNKNOWN'))}\n"
+                          f"Structure={s.get('structure')} BOS={s.get('bos')} CHoCH={s.get('choch')} SweepLow={s.get('liquidity_sweep_low')}\n"
+                          f"RSI1H={fmt((tf.get('1H') or {}).get('rsi14'))} VolRatio1H={fmt((tf.get('1H') or {}).get('volume_ratio'))}\n"
+                          f"Support={fmt((s.get('support') or {}).get('price'))} Resistance={fmt((s.get('resistance') or {}).get('price'))}\n"
+                          f"Entry={fmt(p.get('preferred_entry'))} SL={fmt(p.get('stop_loss'))} TP1={fmt(((p.get('targets') or [{}])[0]).get('price'))} NetRR={fmt(p.get('net_rr_tp1'))}\n"
+                          f"Reason={r.get('reason')}\nRead-only analysis; no order authority.")
+        elif command=="/chart":
+            if not args: body="Usage: /chart SYMBOL (example: /chart SOL/USDT)"
+            else:
+                token=args[0].upper().replace("_","/"); r=A85MarketIntelligence.analyze_symbol(token)
+                delivered=[]; failed=[]
+                for chart_tf in ("1H","15M"):
+                    png=await asyncio.to_thread(A85MarketIntelligence.render_chart,token,chart_tf,r)
+                    if png:
+                        ok=await A85MarketIntelligence.send_photo(chat_id,f"A85 {token} {chart_tf} closed-candle chart — analysis only; no execution authority.",png,f"{token.replace('/','_')}-{chart_tf.lower()}.png")
+                        (delivered if ok else failed).append(chart_tf)
+                    else:
+                        failed.append(chart_tf)
+                fallback=f"https://www.tradingview.com/chart/?symbol=MEXC%3A{token.replace('/','')}"
+                body=(f"PNG charts sent: {', '.join(delivered)}. " if delivered else "No PNG chart could be delivered. ")
+                if failed: body+=f"Unavailable/send failed: {', '.join(failed)}. "
+                body+=f"TradingView fallback: {fallback}"
+        elif command=="/portfolio":
+            rows=[]
+            for sym,tr in list(ACTIVE_TRADES.items())[:20]:
+                rows.append(f"{sym} · state={getattr(tr,'status','UNKNOWN')} · entry={fmt(getattr(tr,'entry',None))} · SL={fmt(getattr(tr,'current_sl',None))}")
+            body="<b>LOCAL POSITION STATE</b>\n"+("\n".join(rows) if rows else "No locally tracked open positions.")+"\nAccount balance is not fetched by this read-only command."
+        elif command=="/strategies":
+            rows=OpportunityHunter.snapshot(300); counts=defaultdict(int)
+            for r in rows: counts[str(r.get("family") or "UNKNOWN")]+=1
+            counters=[]
+            for key,val in STATS.items():
+                if any(t in str(key).lower() for t in ("a9_eval","micro_eval","strategy_eval")) and isinstance(val,(int,float)):
+                    counters.append(f"{key}={val}")
+            body="<b>OBSERVED STRATEGY FAMILIES</b>\n"+("\n".join(f"{k}: {v} active Hunter rows" for k,v in sorted(counts.items())) if counts else "No active Hunter family rows currently.")
+            body+="\nStrategy registry detail is limited to telemetry actually observed in this process; no fabricated roster."
+        else:  # /performance
+            report=A85MarketIntelligence.performance()
+            body=("<b>A85 SHADOW PERFORMANCE</b>\n"+json.dumps(report,ensure_ascii=False,default=str)[:3000])
+        await cls._reply(chat_id,body[:3500])
+        return True
+    except Exception as exc:
+        await cls._reply(chat_id,f"A85 read-only command failed safely: {type(exc).__name__}")
+        STATS["a85_telegram_command_errors"]=int(STATS.get("a85_telegram_command_errors",0) or 0)+1
+        return True
+
+# A85 self-test is pure and is included in release validation.
+STATS["v702_a85_self_test"] = A85MarketIntelligence.self_test()
+FINAL_CANONICAL_RUNTIME.update({
+    "active_a85_revision_current": V702_A85_REVISION,
+    "a85_uses_existing_market_data_map": True,
+    "a85_market_analysis_execution_authority": False,
+    "a85_selector_authority": False,
+    "a85_order_authority": False,
+    "a85_auto_png_chart_renderer": True,
+    "a85_telegram_read_only_commands": ["/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime"],
+    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+    "hard_gate_bypass": False,
+    "live_gates_relaxed": False,
+})
+
+
+def _v702_a85_self_test_terminal():
+    report=A85MarketIntelligence.self_test()
+    checks=dict(report.get("checks") or {})
+    checks["stablecoins_not_directional"] = A85MarketIntelligence._forbidden_or_stable("USDC/USDT")[0]
+    checks["hard_forbidden_still_blocked"] = A85MarketIntelligence._forbidden_or_stable("PUMP/USDT")[0]
+    checks["ordinary_asset_not_blocked"] = not A85MarketIntelligence._forbidden_or_stable("SOL/USDT")[0]
+    checks["telegram_commands_are_read_only"] = all(x in FINAL_CANONICAL_RUNTIME.get("a85_telegram_read_only_commands",[]) for x in ("/market","/chart","/performance"))
+    checks["no_a85_trade_path"] = not any(callable(getattr(A85MarketIntelligence, name, None)) for name in ("submit_order","create_order","select_for_execution"))
+    checks["core_liquidity_floor_preserved"] = float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)) >= 3_000_000.0
+    failed=[k for k,v in checks.items() if not v]
+    return {"pass":not failed,"revision":V702_A85_REVISION,"checks":checks,"failed":failed,"execution_authority":False}
+
+STATS["v702_a85_terminal_self_test"]=_v702_a85_self_test_terminal()
+FINAL_CANONICAL_RUNTIME["a85_self_test"]=STATS["v702_a85_terminal_self_test"]
+
+
+
 if __name__ == "__main__":
     try:
-        # Identity/fingerprint logging is read-only. The LIVE epoch is armed by
-        # main() only after the active canonical validator succeeds.
         logger.info(
             "[V702-BOOT] source_sha256=%s validator_revision=%s package_revision=%s "
             "audit_merge_revision=%s entrypoint_identity_revision=%s release=%s runtime=%s",
@@ -108316,16 +109865,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[V702-BOOT] fingerprint logging failed: {type(exc).__name__}: {exc}", flush=True)
     main()
-
-# A83 release marker: analytical primitives only; feature disabled and LIVE locked.
-V702_A83_REVISION = "A83-STABLECOIN-MARKET-MAKER-SHADOW-LIFECYCLE-2026-11-19"
-STATS["v702_a83_revision"] = V702_A83_REVISION
-FINAL_CANONICAL_RUNTIME.update({
-    "active_a83_revision_current": V702_A83_REVISION,
-    "stablecoin_mm_symbol_fixed": StablecoinMarketMaker.SYMBOL,
-    "stablecoin_mm_live_authorized": False,
-    "stablecoin_mm_scope": "ANALYTICAL_PRIMITIVES_ONLY",
-    "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
-    "hard_gate_bypass": False,
-    "live_gates_relaxed": False,
-})

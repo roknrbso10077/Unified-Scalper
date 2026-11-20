@@ -6,3 +6,6 @@ numpy==2.3.5
 pandas==2.2.3
 aiohttp==3.14.3
 aiosqlite==0.22.1
+
+# A85 bounded PNG chart rendering; Agg backend, no GUI/Qt dependency.
+matplotlib==3.10.8
