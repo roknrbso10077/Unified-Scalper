@@ -526,3 +526,29 @@ No files were added to or removed from the archive. The supplied inventory was a
 ## صلاحيات وأمور لم تُختبر خارجيًا
 
 `UNIFIED_LIVE_PILOT_ENABLE=0`، `UNIFIED_A55_LIVE_ARM=0`، و`MONITOR_ONLY_NO_NEW_BUYS`. A85 لا يملك سلطة Selector أو Order أو Execution. A83 محفوظ لكنه معطل افتراضيًا ويظل Shadow فقط عند تفعيله يدويًا. لم يُستخدم حساب MEXC حقيقي، ولم يُرسل أمر أو يُتحقق من Fill أو الرسوم الخاصة بالحساب؛ لم يتم اختبار تسليم Telegram الفعلي أو بناء Docker على منصة الاستهداف أو حمل Railway/Render أو تشغيل طويل. لا توجد نتيجة تثبت ربحية أو دخلًا يوميًا. الاعتماد `matplotlib==3.10.8` مثبت مباشرةً، لكن `requirements-lock.txt` هو direct-pin seed وليس lock كاملًا transitive/hash؛ لم يُختلق Hash ولم يُدّعَ بناء strict lock.
+
+# A85 final diagnostic closure — authoritative test results (2026-11-20)
+
+This section supersedes earlier A85 test totals and pending-status notes above.
+
+## Last-mile diagnostic fixes
+
+- `/market` now shows `A85 intermediate deep fetch selected/ok/failed` plus the actual shared A79 4-timeframe budget scope. This closes the observability gap where the daily Micro report showed zero signals but the operator could not distinguish no evaluations from failed/missing deep-fetch coverage.
+- `/market` includes BTC context reason, data confidence and separate closed 1H/4H candle-open timestamps where available. Numeric close equality is not used as a timeframe-collision test.
+- Legacy timestamp-less DataFrames retain their historical descriptive EMA regime for compatibility, but are labelled `UNKNOWN_LEGACY_NO_TIMESTAMPS`; they are not represented as verified timeframe cadence. Shared frame references and invalid/stale timestamped frames remain rejected for integrity validation.
+- Telegram regression coverage verifies the actual `/market` response text contains A85 deep-fetch counts, BTC context reason/confidence and separate 1H/4H timestamps.
+
+## Final test closure
+
+- All packaged test modules: **58 modules, 12 isolated runs, 647 collected, 646 passed, 1 skipped, 0 failed**. Per-run pass counts: **70, 31, 86, 102, 6, 6, 9, 12, 29, 34, 28, 233**. Each pytest process ran with an isolated `SCALPER_DB` to prevent SQLite state sharing between test groups.
+- `test_release_contracts.py`: **70 passed, 1 skipped, 0 failed**. The skip requires a historical A51 runtime log that is not packaged.
+- `test_v702_intraday_shadow.py`: **31 passed, 0 failed**.
+- Focused A85 and BTC timeframe regressions: **26 passed, 0 failed**.
+- Daily Micro diagnostic tests: **2 passed, 0 failed** (included in the full regression totals; do not add them again).
+- `py_compile` / `compileall`: **73/73 Python files passed**.
+- `--validate-only` from the clean extracted release: exit code 0, `bot_started=false`, `live_threads=[]`.
+- Archive inventory: exactly **99 paths**, identical to the input release path list; no archive path was added or removed. ZIP integrity, clean extraction, 98/98 SHA-256 ledger entries and Manifest agreement passed.
+
+## Not tested / limitations
+
+No authenticated MEXC private API, real order, Telegram network delivery, private fee retrieval, Docker build, Railway/Render resource load, long-duration soak or profitability was tested. Telegram photo ACK behavior is unit-tested with a mocked HTTP response, not a live Telegram delivery. A single skipped historical test depends on the missing A51 runtime log. These limitations are not presented as PASS.

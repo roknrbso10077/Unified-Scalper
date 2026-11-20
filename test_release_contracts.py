@@ -1456,16 +1456,27 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         from unittest.mock import AsyncMock, patch
         reply=AsyncMock()
         market={"status":"OK","timestamp":bot.WALL_NOW(),"regime":{
-            "regime":"UNKNOWN","btc":"UNKNOWN","eth":"UNKNOWN","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"},
+            "regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","closed_1h_open_ts":1790000000,"closed_4h_open_ts":1789990000},
+            "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},"reason":"BTC_CLOSED_HISTORY_PARTIAL",
+            "data_confidence":"LOW","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"},
             "breadth":{"sampled_symbols":0},"total_universe":500,"eligible_symbols":0,
             "analyzed_symbols":0,"fast_scan_eligible_symbols":0,"intermediate_scanned_symbols":0,
-            "intermediate_eligible_symbols":0,"research_coverage":{},"top_24h_movers":[],"top_24h_volume":[]}
+            "intermediate_eligible_symbols":0,"intermediate_deep_fetch_selected":16,
+            "intermediate_deep_fetch_ok":14,"intermediate_deep_fetch_failed":2,
+            "intermediate_deep_fetch_scope":"ROTATING_COHORT_WITHIN_TOP_100_150; SHARED_A79_4TF_BUDGET",
+            "research_coverage":{},"top_24h_movers":[],"top_24h_volume":[]}
         with patch.object(bot.A85MarketIntelligence,"market_snapshot",return_value=market), \
              patch.object(bot.TelegramCommandController,"_reply",new=reply):
             handled=asyncio.run(bot._v702_a85_readonly_dispatch(
                 bot.TelegramCommandController,None,{"text":"/market","chat":{"id":123}}))
         self.assertTrue(handled)
         reply.assert_awaited_once()
+        reply_text=str(reply.await_args.args[1])
+        self.assertIn("A85 intermediate deep fetch selected/ok/failed: 16/14/2",reply_text)
+        self.assertIn("BTC_CLOSED_HISTORY_PARTIAL",reply_text)
+        self.assertIn("confidence=LOW",reply_text)
+        self.assertIn("1H open=1790000000",reply_text)
+        self.assertIn("4H open=1789990000",reply_text)
 
 
     def test_a85_shadow_max_drawdown_is_computed_in_chronological_order(self):
@@ -1494,6 +1505,127 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
             self.assertEqual(report["status"],"OK")
             self.assertEqual(report["sample_count"],30)
             self.assertAlmostEqual(report["max_drawdown_r"],15.0,places=6)
+
+
+    def test_a85_intermediate_deep_fetch_rotation_is_fair_bounded_and_persistent(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a85-intermediate-rotation.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            symbols = [f"QX{i:03d}/USDT" for i in range(48)]
+            universe = list(symbols) + ["PUMP/USDT", "USDC/USDT"]
+            tickers = {sym: {"quoteVolume": 300_000 + i * 10_000, "percentage": float(i % 9)}
+                       for i, sym in enumerate(symbols)}
+            tickers["PUMP/USDT"] = {"quoteVolume": 99_000_000, "percentage": 90.0}
+            tickers["USDC/USDT"] = {"quoteVolume": 199_000_000, "percentage": 0.01}
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_INTERMEDIATE_SCAN_LIMIT": 150,
+                                        "A85_DEEP_FETCH_SYMBOLS_PER_CYCLE": 16}, clear=False):
+                first = bot.A85MarketIntelligence.select_intermediate_fetch_symbols(
+                    tickers, universe, already_scanned=(), limit=150, per_cycle=16)
+                first_offset = bot.A85MarketIntelligence.get_rotation_offset("A85_INTERMEDIATE")
+                second = bot.A85MarketIntelligence.select_intermediate_fetch_symbols(
+                    tickers, universe, already_scanned=(), limit=150, per_cycle=16)
+                second_offset = bot.A85MarketIntelligence.get_rotation_offset("A85_INTERMEDIATE")
+            self.assertEqual(len(first), 16)
+            self.assertEqual(len(second), 16)
+            self.assertEqual(len(set(first) & set(second)), 0)
+            self.assertEqual(first_offset, 16)
+            self.assertEqual(second_offset, 32)
+            self.assertNotIn("PUMP/USDT", first + second)
+            self.assertNotIn("USDC/USDT", first + second)
+            self.assertTrue(all(x in symbols for x in first + second))
+            state = bot.STATS.get("a85_intermediate_fetch_last") or {}
+            self.assertFalse(state.get("execution_authority", True))
+            broad = bot._v702_a79_select_supplemental_symbols(
+                universe, tickers, set(first), max_symbols=16, min_quote_volume=250_000.0,
+                offset=0, priority_symbols=(), forbidden_fn=bot._v587_is_forbidden_coin)
+            self.assertFalse(set(first) & set(broad), "A79 broad lane must exclude A85 intermediate fetch symbols")
+            source = (ROOT / "main.py").read_text(encoding="utf-8")
+            self.assertIn("_a79_rotation_excluded = set(market_data_map) | set(_a85_intermediate_selected)", source)
+
+    def test_btc_macro_verifies_real_1h_and_4h_cadence_and_never_substitutes_close_values(self):
+        import numpy as np
+        from unittest.mock import patch
+        now = float(bot.WALL_NOW())
+
+        def make(interval, count=260):
+            last_open = (int(now // interval) - 1) * interval
+            stamps = [last_open - (count - i - 1) * interval for i in range(count)]
+            index = bot.pd.to_datetime(stamps, unit="s", utc=True)
+            x = np.arange(count, dtype=float)
+            # Equal last close is intentionally possible on two different TFs.
+            close = 61810.13 + 0.02 * np.sin(x / 3.0)
+            close[-1] = 61810.13
+            return bot.pd.DataFrame({"open": close - 0.05, "high": close + 0.10,
+                                     "low": close - 0.10, "close": close,
+                                     "volume": 1000.0 + x}, index=index)
+
+        one, four = make(3600), make(14400)
+        with patch.object(bot, "WALL_NOW", return_value=now):
+            result = bot._v702_classify_btc_macro_context(one, four)
+            shared = bot._v702_classify_btc_macro_context(one, one)
+        self.assertEqual(result["timeframe_integrity"], "VERIFIED_DISTINCT_1H_4H_CADENCE")
+        self.assertAlmostEqual(result["btc_1h_cadence_sec"], 3600.0, delta=2.0)
+        self.assertAlmostEqual(result["btc_4h_cadence_sec"], 14400.0, delta=2.0)
+        self.assertTrue(result["btc_timeframes_close_values_equal"])
+        self.assertNotEqual(result["btc_1h_last_closed_open_ts"], result["btc_4h_last_closed_open_ts"])
+        self.assertEqual(shared["regime"], "UNKNOWN")
+        self.assertEqual(shared["timeframe_integrity"], "FAILED")
+        self.assertEqual(shared["reason"], "shared_1h_4h_frame_reference")
+
+    def test_a85_runtime_identity_and_new_deep_fetch_budget_are_documented(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        env = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn("A85-DEPLOY-IDENTITY", source)
+        self.assertIn("V702_A85_DIAGNOSTIC_CLOSURE_REVISION", source)
+        self.assertIn("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", source)
+        self.assertRegex(env, r"(?m)^A85_DEEP_FETCH_SYMBOLS_PER_CYCLE=16$")
+        self.assertFalse(bot.A85MarketIntelligence.execution_authority)
+        self.assertFalse(bot.A85MarketIntelligence.selector_authority)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+
+
+    def test_a85_send_photo_records_message_level_telegram_ack(self):
+        from unittest.mock import AsyncMock, patch
+
+        class FakeResponse:
+            status = 200
+            async def json(self, content_type=None):
+                return {"ok": True, "result": {"message_id": 901}}
+
+        class FakePostContext:
+            async def __aenter__(self):
+                return FakeResponse()
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def post(self, *args, **kwargs):
+                return FakePostContext()
+
+        keys = ("a85_telegram_photo_attempts", "a85_telegram_photo_ack_count",
+                "a85_telegram_photo_failure_count", "a85_telegram_photo_last_ack",
+                "a85_telegram_photo_last_message_id")
+        before = {key: bot.STATS.get(key) for key in keys}
+        png = b"\x89PNG\r\n\x1a\n" + b"offline-test"
+        try:
+            with (patch.object(bot, "_AIOHTTP_OK", True),
+                  patch.dict(bot.ENV, {"TELEGRAM_TOKEN": "offline-test-token", "TELEGRAM_CHAT": "123"}, clear=False),
+                  patch.dict(bot.CONFIG, {"TELEGRAM_ENABLED": True}, clear=False),
+                  patch.object(bot.TelegramDispatcher, "_ensure_session", new=AsyncMock(return_value=FakeSession()))):
+                ok = asyncio.run(bot.A85MarketIntelligence.send_photo(123, "test", png, "test.png"))
+            self.assertTrue(ok)
+            self.assertTrue(bot.STATS.get("a85_telegram_photo_last_ack"))
+            self.assertEqual(bot.STATS.get("a85_telegram_photo_last_message_id"), 901)
+            self.assertGreaterEqual(int(bot.STATS.get("a85_telegram_photo_attempts", 0)), int(before.get("a85_telegram_photo_attempts") or 0) + 1)
+            self.assertGreaterEqual(int(bot.STATS.get("a85_telegram_photo_ack_count", 0)), int(before.get("a85_telegram_photo_ack_count") or 0) + 1)
+        finally:
+            for key, value in before.items():
+                if value is None:
+                    bot.STATS.pop(key, None)
+                else:
+                    bot.STATS[key] = value
 
 
 if __name__ == "__main__":

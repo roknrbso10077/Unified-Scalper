@@ -367,7 +367,7 @@
   "a80_files_added": 0,
   "a80_files_changed": 9,
   "a80_files_removed": 0,
-  "a80_main_sha256": "dfa0f819f8dee801c56af0f65ddafc7e66f7b07223ad0c07d897e193c187d427",
+  "a80_main_sha256": "7090ca32e87c635b26ef97a154ac28886edb9c0a62f6f5379aff15bcedf41f62",
   "a80_modified_file_list": [
     "main.py",
     ".env.example",
@@ -609,6 +609,7 @@
   "a84_regression_tests_added": 6,
   "a84_revision": "A84-A79-SUPPLEMENT-FETCH-NAMEERROR-AND-A83-SHADOW-DATA-INTEGRITY-2026-11-19",
   "a84_validate_only_passed": true,
+  "a85_a79_a85_overlap_prevented": true,
   "a85_a83_default_off_shadow_only": true,
   "a85_a9_regime_matrix": {
     "cells": 63,
@@ -621,6 +622,15 @@
   "a85_bot_started_in_validate_only": false,
   "a85_btc_crash_context": "Closed 15m shock + 4h structural breakdown evidence; not a directional trend veto",
   "a85_btc_directional_policy": "OBSERVATIONAL_ONLY; UNKNOWN_FAIL_CLOSED; CONFIRMED_CRASH_EXTREME_HARD_REJECT_BLOCKED",
+  "a85_btc_macro_candle_clock_diagnostics": [
+    "1H_OPEN_UTC",
+    "1H_CLOSE_UTC",
+    "4H_OPEN_UTC",
+    "4H_CLOSE_UTC",
+    "CADENCE_SECONDS",
+    "INTERVAL_MATCH_PERCENT",
+    "FRESHNESS"
+  ],
   "a85_chart_png_renderer": true,
   "a85_chart_timeframes": [
     "1H",
@@ -632,9 +642,31 @@
   "a85_clean_extract_file_count": 99,
   "a85_clean_extract_validate_only": "PASS exit=0; bot_started=false; live_threads=[]",
   "a85_compileall_passed": true,
+  "a85_deep_fetch_symbols_per_cycle_default": 16,
+  "a85_deep_fetch_symbols_per_cycle_range": [
+    4,
+    24
+  ],
   "a85_default_deep_analysis_symbols": 60,
+  "a85_diagnostic_closure_modified_file_list": [
+    "main.py",
+    "v702_intraday_shadow.py",
+    "test_release_contracts.py",
+    "test_v702_intraday_shadow.py",
+    ".env.example",
+    "README.md",
+    "CHANGELOG.md",
+    "FINAL_AUDIT_REPORT.md",
+    "FINAL_MANIFEST.json",
+    "A66_RELEASE_MANIFEST.json",
+    "A66_SHA256SUMS.txt"
+  ],
+  "a85_diagnostic_closure_modified_files_count": 11,
+  "a85_diagnostic_closure_revision": "A85-DEPLOY-IDENTITY-MICRO-REJECTION-AND-ROTATED-DEEP-COVERAGE-CLOSURE-2026-11-20",
+  "a85_diagnostic_closure_status": "FINAL_VERIFIED_CLEAN_EXTRACT",
   "a85_docker_build_tested": false,
   "a85_effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
+  "a85_equal_1h_4h_close_is_not_timeframe_collision": true,
   "a85_execution_authority": false,
   "a85_extra_ohlcv_downloader_added": false,
   "a85_fair_rotation_persisted": true,
@@ -642,36 +674,159 @@
   "a85_fast_ticker_snapshot_up_to": 500,
   "a85_files_added": 0,
   "a85_files_removed": 0,
-  "a85_final_zip_crc": "PASS — independently verified after final archive extraction",
+  "a85_final_test_closure": {
+    "archive": {
+      "clean_extract": "PASS",
+      "files": 99,
+      "inventory_matches_manifest": true,
+      "sha256_entries_expected": 98,
+      "sha256_entries_verified": 98,
+      "zip_crc": "PASS"
+    },
+    "daily_micro_diagnostics": {
+      "failed": 0,
+      "passed": 2
+    },
+    "focused_a85": {
+      "failed": 0,
+      "passed": 26
+    },
+    "full_regression": {
+      "batch_pass_counts": [
+        70,
+        31,
+        86,
+        102,
+        6,
+        6,
+        9,
+        12,
+        29,
+        34,
+        28,
+        233
+      ],
+      "batches": 12,
+      "collected": 647,
+      "execution_note": "Twelve non-overlapping pytest processes/groups; each used an isolated SCALPER_DB. A larger combined invocation was split after one legacy suite stalled; all 58 modules subsequently completed successfully.",
+      "failed": 0,
+      "modules": 58,
+      "passed": 646,
+      "skip_reason": "test_release_contracts.py:375 requires a historical A51 runtime log not packaged in the clean release.",
+      "skipped": 1
+    },
+    "intraday_shadow": {
+      "failed": 0,
+      "passed": 31,
+      "skipped": 0
+    },
+    "python_compile": {
+      "files": 73,
+      "passed": 73
+    },
+    "release_contracts": {
+      "failed": 0,
+      "passed": 70,
+      "skipped": 1
+    },
+    "validate_only": {
+      "bot_started": false,
+      "exit_code": 0,
+      "live_threads": 0
+    }
+  },
+  "a85_final_zip_crc": "PASS",
+  "a85_focused_tests": {
+    "command": "pytest -q test_release_contracts.py -k 'A85 or btc_macro_verifies'",
+    "failed": 0,
+    "passed": 26
+  },
   "a85_full_suite": {
-    "modules": 58,
-    "batches": 5,
     "batch_pass_counts": [
       70,
-      84,
-      97,
-      157,
+      31,
+      86,
+      102,
+      6,
+      6,
+      9,
+      12,
+      29,
+      34,
+      28,
       233
     ],
-    "collected": 642,
-    "passed": 641,
-    "skipped": 1,
+    "batches": 12,
+    "collected": 647,
+    "execution_note": "Twelve non-overlapping pytest processes/groups; each used an isolated SCALPER_DB. A larger combined invocation was split after one legacy suite stalled; all 58 modules subsequently completed successfully.",
     "failed": 0,
+    "modules": 58,
+    "passed": 646,
     "skip_reason": "test_release_contracts.py:375 requires a historical A51 runtime log not packaged in the clean release.",
-    "execution_note": "Five non-overlapping module batches; each batch used an isolated SCALPER_DB to prevent cross-suite SQLite state interference."
+    "skipped": 1
   },
+  "a85_full_suite_collected": 647,
+  "a85_full_suite_failed": 0,
+  "a85_full_suite_modules": 58,
+  "a85_full_suite_pass_counts": [
+    70,
+    31,
+    86,
+    102,
+    6,
+    6,
+    9,
+    12,
+    29,
+    34,
+    28,
+    233
+  ],
+  "a85_full_suite_passed": 646,
+  "a85_full_suite_runs": 12,
+  "a85_full_suite_skipped": 1,
   "a85_hard_gate_bypass": false,
+  "a85_historical_pending_daily_payload_without_diagnostics": "LABELLED_UNAVAILABLE_NOT_ZERO",
+  "a85_intermediate_fetch_fair_rotation_persisted": true,
   "a85_intermediate_scan_range": [
     100,
     150
   ],
+  "a85_intraday_daily_diagnostic_tests": {
+    "command": "pytest -q test_v702_intraday_shadow.py -k daily_report",
+    "failed": 0,
+    "passed": 2
+  },
+  "a85_intraday_shadow_tests": {
+    "command": "pytest -q test_v702_intraday_shadow.py",
+    "failed": 0,
+    "passed": 31
+  },
+  "a85_latest_delivery_modified_files_count": 11,
+  "a85_legacy_untimestamped_frame_policy": "DESCRIPTIVE_REGIME_ONLY; UNKNOWN_LEGACY_NO_TIMESTAMPS; NOT_VERIFIED_ALIGNMENT",
   "a85_live_network_tested": false,
   "a85_live_orders_sent": false,
   "a85_live_threads_in_validate_only": 0,
   "a85_live_trading_default_off": true,
-  "a85_main_sha256": "769e242a090aa3fa7f8c4985d2d4e3db78dac94ba757ab27e4425a96c10ac314",
+  "a85_main_sha256": "7090ca32e87c635b26ef97a154ac28886edb9c0a62f6f5379aff15bcedf41f62",
   "a85_market_breadth_is_sampled": true,
+  "a85_market_command_btc_context_evidence": [
+    "reason",
+    "data_confidence",
+    "closed_1h_open_ts",
+    "closed_4h_open_ts"
+  ],
+  "a85_market_command_deep_fetch_diagnostics": true,
   "a85_max_deep_analysis_symbols": 60,
+  "a85_micro_daily_evaluation_diagnostics": [
+    "EVALUATED",
+    "SIGNALS",
+    "REJECTS",
+    "BLOCKED",
+    "SKIPPED",
+    "TOP_REJECTION_REASONS",
+    "NO_EVALUATION_ROWS_DIAGNOSIS"
+  ],
   "a85_modified_file_list": [
     "main.py",
     "test_release_contracts.py",
@@ -722,8 +877,14 @@
     "/help"
   ],
   "a85_real_exchange_tested": false,
-  "a85_regression_tests_added": 22,
+  "a85_regression_tests_added": 27,
   "a85_release_completion": "CORE_ANALYTICAL_PIPELINE_IMPLEMENTED_WITH_DECLARED_PROVIDER_AND_VALIDATION_LIMITATIONS",
+  "a85_release_contract_tests": {
+    "command": "pytest -q test_release_contracts.py",
+    "failed": 0,
+    "passed": 70,
+    "skipped": 1
+  },
   "a85_release_scope": "Read-only staged market radar over shared A79/A80 ticker/OHLCV snapshots; BTC/ETH regime; sampled breadth; partial static sector rotation; six-frame closed-candle technical/structure/SMC proxy analysis; Opportunity-Hunter family consensus; independent quality/ranking; best-Ask cost-aware trade plans with expiry/invalidation; Matplotlib 1H/15M PNG; Telegram read-only commands/sendPhoto; Shadow performance. No selector/order/execution authority.",
   "a85_revision": "A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20",
   "a85_router_confluence_max_bonus_points": 1.5,
@@ -748,6 +909,14 @@
   ],
   "a85_sector_rotation_taxonomy": "PARTIAL_STATIC_EXPLICIT_SYMBOL_MAP",
   "a85_selector_authority": false,
+  "a85_shared_frame_reference_fail_closed": true,
+  "a85_shared_supplemental_budget_symbols": 32,
+  "a85_shared_supplemental_timeframes": [
+    "4H",
+    "1H",
+    "15M",
+    "5M"
+  ],
   "a85_single_candidate_per_router_cycle": true,
   "a85_stablecoin_fallback_economically_eligible": false,
   "a85_stablecoin_fallback_maker_fee_rate_per_side": 0.001,
@@ -760,6 +929,15 @@
   "a85_status_notes": "No fabricated market-cap/dominance/OI/funding/CVD data; sector labels are partial/static; public L2 cannot establish exact queue position; win probability is not reported; no live exchange or Telegram connection was exercised.",
   "a85_telegram_delivery_tested": false,
   "a85_telegram_photo_endpoint": "sendPhoto",
+  "a85_telegram_photo_message_level_ack": [
+    "ATTEMPTS",
+    "HTTP_STATUS",
+    "ACK",
+    "MESSAGE_ID",
+    "ACK_TIMESTAMP",
+    "FAILURE_COUNT"
+  ],
+  "a85_text_outbox_admission_is_separate_from_delivery_ack": true,
   "a85_validate_only_exit_code": 0,
   "a85_validate_only_passed": true,
   "active_a85_revision_current": "A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20",
@@ -910,9 +1088,9 @@
     ],
     "telegram_operator_status_uses_current_audit_revision": true
   },
-  "canonical_main_sha256": "769e242a090aa3fa7f8c4985d2d4e3db78dac94ba757ab27e4425a96c10ac314",
+  "canonical_main_sha256": "7090ca32e87c635b26ef97a154ac28886edb9c0a62f6f5379aff15bcedf41f62",
   "canonical_revision": "V702-R40-SMALL-NET-PROFIT-COST-AWARE-TARGETS-2026-10-13-A21-LIVE-PILOT-RELEASE-TIA-SUBMIT-HOLD-CLOSURE-A22-PRE-REPRICE-TP1-STARVATION-OBSERVABILITY-CLOSURE-A23-LOCAL-HISTORY-PRE-RANK-CLOSURE-A24-TRUTHFUL-STARVATION-TELEMETRY-EXACT-ATTRIBUTION-CLOSURE-A25-STARTUP-VALIDATION-ORDER-DIAGNOSTICS-CLOSURE-A26-MONOTONIC-VALIDATION-REVISION-COMPATIBILITY-CLOSURE-A27-STARVATION-VALIDATION-CLOCK-DETERMINISM-CLOSURE-A28-CANDIDATE-REASON-AND-TELEGRAM-FUNNEL-COHERENCE-CLOSURE-A29-ADAPTIVE-REJECTION-RELIEF-AND-DATA-FUNNEL-CLOSURE-A30-REJECT-ONLY-HISTORY-PREFETCH-THROUGHPUT-CLOSURE-A31-BOUNDED-SHORT-HISTORY-REVALIDATION-AND-4H-PAGING-CLOSURE-A32-ADAPTIVE-LOCAL-4H-HISTORY-HTF-PROXY-AND-TRUTHFUL-SPREAD-DIAGNOSTICS-CLOSURE-A33-ADAPTIVE-1H-HISTORY-AND-ROOT-CAUSE-COHERENCE-CLOSURE-A34-HF2-MICRO-ALLOWLIST-SHADOW-PROGRESS-CACHE-TTL-AND-SPREAD-SHADOW-CLOSURE-A35-HTF-PROJECTION-BUILDER-PARITY-AND-FAIL-CLOSED-ATTRIBUTION-CLOSURE-A36-STRATEGY-AWARE-SCALP-HTF-RELIEF-AND-LOCAL-EVIDENCE-CLOSURE-A37-PRODUCTION-TELEMETRY-SHADOW-AND-HEALTH-CLOSURE-2026-10-16-A38-30M-DIGEST-HTF-OBSERVABILITY-SHADOW-CONSISTENCY-2026-10-16-A39-FREE-BALANCE-RECOVERY-AND-PENDING-ORDER-COHERENCE-2026-10-17-A40-LIVE-ENTRY-BLOCK-ROOT-AND-ORDER-RECONCILIATION-DIAGNOSTICS-2026-10-17-A41-EXECUTION-INTENT-RECONCILIATION-AND-VERIFIED-RECOVERY-2026-10-17-A42-SELFTEST-DB-ISOLATION-AND-MOCK-INTENT-QUARANTINE-2026-10-18-A43-HTF-CRASH-DISCRIMINATION-AND-DEPTH-RATIO-TRUTH-2026-10-18-A44-BALANCE-HYSTERESIS-ROOT-COHERENCE-STARVATION-GUARD-DIGEST-AND-CONFIG-GUARD-2026-10-18-A45-TELEMETRY-RETENTION-SCORE-FLOOR-ROOT-CLARITY-2026-10-18-A46-EVENT-TIME-TELEMETRY-AND-POLICY-EVIDENCE-2026-10-18-A47-COVERAGE-POLICY-REUSE-REJECT-ATTRIBUTION-EVIDENCE-CLOSURE-2026-10-18-A48-CANONICAL-REJECTION-TELEMETRY-CLOSURE-2026-10-19-A49-ELITE-HTF-RELIEF-CONSISTENCY-AND-REJECT-ATTRIBUTION-2026-10-19-A52-SAFETY-HARDENING-AND-CANONICAL-OUTCOME-COHERENCE-2026-10-21-A53-EXECUTION-TELEGRAM-SWING-CLOSURE-2026-10-21-A54-CANONICAL-MONITOR-PAPER-EDGE-SAFETY-2026-11-04-A55-FINAL-SHADOW-PRESEND-EDGE-GATE-2026-11-04-A56-LIVE-AUTH-SHADOW-TIME-PM-HEALTH-2026-11-06-A57-CAPABILITY-PM-FIRST-HEALTH-CLOSURE-2026-11-06-A58-PRODUCTION-AUDIT-CANONICAL-FINAL-2026-11-11-A59-BEARISH-POLICY-REJECT-SHADOW-OBSERVABILITY-CLOSURE-2026-11-13-A60-PAPER-LEDGER-MODEL-AND-EDGE-REPORT-COHERENCE-2026-11-14-A61-BUILDER-EDGE-ELIGIBILITY-TRUTH-2026-11-14-A62-TELEGRAM-STRUCTURED-BLOCK-WINDOW-RESET-2026-11-14-A63-SAFETY-EDGE-PAPER-TELEMETRY-2026-11-14-A64-TELEGRAM-DIGEST-DELIVERY-ACK-CLOSURE-2026-11-14-A65-ADAPTIVE-RS-PULLBACK-UNIFIED-COST-AND-CANDLE-CLOSURE-2026-11-15-A66-STARTUP-POSITION-PROTECTION-CONTINUITY-BOUNDED-UNIVERSE-RECOVERY-2026-11-15-A66-PRODUCTION-AUDIT-MERGED-CLOSURE-2026-11-15-A67-INTELLIGENT-OPPORTUNITY-HUNTER-READ-ONLY-2026-11-15-A68-CLOSED-CANDLE-TP-SL-OUTCOME-FOLLOWUP-2026-11-15-A73-CONFIRMED-ONLY-TRADINGVIEW-AND-MULTI-TF-OUTCOMES-2026-11-16-A69-DOTENV-CONFIG-LOAD-ORDER-CLOSURE-2026-11-15-A70-ENTRYPOINT-AUDIT-IDENTITY-CLOSURE-2026-11-16",
-  "canonical_source_sha256": "769e242a090aa3fa7f8c4985d2d4e3db78dac94ba757ab27e4425a96c10ac314",
+  "canonical_source_sha256": "7090ca32e87c635b26ef97a154ac28886edb9c0a62f6f5379aff15bcedf41f62",
   "canonical_zip_name": "FINAL_PRODUCTION_RELEASE.zip",
   "corrective_integration_scope": [
     "Replace whole-module inspect.getsource AST parsing in startup self-tests with bounded function source extraction; retain behavioral LONG_ONLY invariant test.",
@@ -2069,53 +2247,5 @@
     "transitive_hash_lock_in_packaged_archive": false,
     "validate_only": "PASS: exit=0; bot_started=false; live_threads=[]; active_env_aliases=[]; no MEXC/Telegram secrets; read-only validate-only path.",
     "zip_inventory": "PASS: 99 unique files; final ZIP extraction matches manifest inventory exactly."
-  },
-  "a85_focused_tests": {
-    "passed": 22,
-    "failed": 0,
-    "command": "pytest -q test_release_contracts.py -k A85"
-  },
-  "a85_release_contract_tests": {
-    "passed": 66,
-    "skipped": 1,
-    "failed": 0,
-    "command": "pytest -q test_release_contracts.py"
-  },
-  "a85_final_test_closure": {
-    "full_regression": {
-      "modules": 58,
-      "batches": 5,
-      "batch_pass_counts": [
-        70,
-        84,
-        97,
-        157,
-        233
-      ],
-      "collected": 642,
-      "passed": 641,
-      "skipped": 1,
-      "failed": 0,
-      "skip_reason": "test_release_contracts.py:375 requires a historical A51 runtime log not packaged in the clean release.",
-      "execution_note": "Five non-overlapping module batches; each batch used an isolated SCALPER_DB to prevent cross-suite SQLite state interference."
-    },
-    "focused_a85": {
-      "passed": 22,
-      "failed": 0
-    },
-    "release_contracts": {
-      "passed": 66,
-      "skipped": 1,
-      "failed": 0
-    },
-    "python_compile": {
-      "files": 73,
-      "passed": 73
-    },
-    "validate_only": {
-      "exit_code": 0,
-      "bot_started": false,
-      "live_threads": 0
-    }
   }
 }

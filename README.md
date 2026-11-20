@@ -34,9 +34,10 @@ A85 does not have a trusted configured provider for total crypto market cap, BTC
 
 ## A85 configuration
 
-The A85 controls are documented in `.env.example`: `A85_INTELLIGENCE_ENABLE`, `A85_MAX_ANALYSIS_SYMBOLS` (8–60; default 60), `A85_INTERMEDIATE_SCAN_LIMIT` (100–150; default 150), quality and alert thresholds, symbol cooldown, fresh-book age, net RR/profit floors, slippage assumption, chart bars/DPI, SQLite retention, minimum performance sample, chart/alert switches, sector taxonomy switch, book-depth multiplier, max chase and minimum order-book imbalance. All values are range-checked at startup; invalid input retains the fail-safe default and is visible in A85 validation.
+The A85 controls are documented in `.env.example`: `A85_INTELLIGENCE_ENABLE`, `A85_MAX_ANALYSIS_SYMBOLS` (8–60; default 60), `A85_INTERMEDIATE_SCAN_LIMIT` (100–150; default 150), `A85_DEEP_FETCH_SYMBOLS_PER_CYCLE` (4–24; default 16; shares the existing A79 maximum 32-symbol/four-timeframe budget and fair-rotates the top intermediate cohort), quality and alert thresholds, symbol cooldown, fresh-book age, net RR/profit floors, slippage assumption, chart bars/DPI, SQLite retention, minimum performance sample, chart/alert switches, sector taxonomy switch, book-depth multiplier, max chase and minimum order-book imbalance. All values are range-checked at startup; invalid input retains the fail-safe default and is visible in A85 validation.
 
 The A85 market analysis runs after the existing Opportunity Hunter research pass. `/ready` and `READY_NOW` do not grant any order authority. Live execution remains disabled independently of A85.
+The 2026-11-20 diagnostic closure adds `[A85-DEPLOY-IDENTITY]` with the active A85/diagnostic revisions, source SHA-256, validator state, entry policy and `live_authorized=0`. The intermediate top-100/150 candidate cohort receives a fair-rotated OHLCV allocation inside the existing A79 cap of 32 symbols per cycle; A79 broad rotation excludes the A85-selected symbols to avoid duplicate four-timeframe requests. The daily Micro report now shows per-strategy evaluation/signal/reject/blocked/skip counts and leading rejection reasons. BTC 1H/4H macro context records candle-open/close timestamps, cadence and freshness; equal numeric closes alone are not treated as a timeframe collision, but a shared frame object or invalid cadence is UNKNOWN/fail-closed. Telegram photo delivery records Telegram's message-level `sendPhoto` ACK/message_id separately from text outbox admission.
 
 ## Validation and deployment limits
 
@@ -51,7 +52,7 @@ The release report records the exact compile, regression, focused A85, manifest,
 
 ## Validation and scope honesty
 
-- The clean recovery source passed `compileall`, `--validate-only`, and the 58-module regression suite (619 passed, 1 historical-fixture skip, 0 failed) in this environment.
+- The earlier recovery-stage suite recorded 619 passed, 1 historical-fixture skip, 0 failed. The later A85 diagnostic closure supersedes that historical count: 646 passed, 1 historical-fixture skip, 0 failed across all 58 modules in 12 isolated runs (see the final A85 closure in `FINAL_AUDIT_REPORT.md`).
 - No authenticated MEXC session, live order, real Telegram delivery acknowledgement, Docker target build, long-duration soak, or profitability validation was performed.
 - This release includes the A85 core analytical pipeline described above. Its provider, sample-coverage, network-integration and deployment limits remain explicitly listed; it does not claim full-market candle coverage on every cycle, verified queue position, authenticated private fee retrieval, live Telegram delivery, profitability or a calibrated win probability.
 
@@ -506,3 +507,9 @@ A84 regression coverage includes scan authorization, research-map isolation, non
 - Fee fallback remains 0.1% per side until the exact account/pair rate has been verified. This means the default quote edge is intentionally non-viable versus the configured 12 bps spread cap; the worker now reports this instead of appearing silently disabled. Never set the override to zero solely because a consumer-facing promotion advertises zero fees.
 - New detector confluence is an advisory score modifier only. Micro 1m strategies and all intraday research engines remain Shadow-only because the supplied outcomes were net-negative; no daily income or positive expectancy is inferred.
 - Live entries remain under the existing `MONITOR_ONLY_NO_NEW_BUYS` release policy; no API keys are introduced and no live orders are submitted.
+
+### A85 diagnostic closure follow-up (2026-11-20)
+
+- `/market` now reports A85 intermediate deep-fetch `selected/ok/failed` counts and the shared A79 budget scope alongside A79 attempt/success/failure/timeout counts. It also reports the BTC context reason, confidence and independent 1H/4H candle-open timestamps when the frames are available. This is diagnostic evidence; equal close prices are not interpreted as equal timeframes.
+- BTC 1H/4H frames with verified timestamp cadence are checked independently. Legacy untimestamped frames may still produce a descriptive EMA regime for backward compatibility, but are explicitly marked `UNKNOWN_LEGACY_NO_TIMESTAMPS`; they are not evidence of verified timeframe alignment. Missing/invalid timestamped cadence, stale data, or reuse of the same frame object remains fail-closed for verified macro integrity.
+- The `/market` Telegram message distinguishes intermediate cohort selection from actual deep-fetch successes and failures. A displayed `0` is a true counter only when the current market snapshot contains that field; unavailable legacy snapshots display `UNAVAILABLE` rather than implying that no request was attempted.

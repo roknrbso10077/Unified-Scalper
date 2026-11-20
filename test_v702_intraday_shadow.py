@@ -363,6 +363,43 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertTrue(self.study.mark_daily_telegram_report_queued("2026-11-17"))
         self.assertIsNone(self.study.ensure_daily_telegram_report(now_ts=due))
 
+    def test_daily_report_exposes_per_strategy_evaluation_and_rejection_diagnostics(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        cairo = ZoneInfo("Africa/Cairo")
+        report_due = datetime(2026, 11, 18, 0, 10, tzinfo=cairo).timestamp()
+        report_day_start = datetime(2026, 11, 17, 0, 0, tzinfo=cairo).timestamp()
+        with self.connect() as conn:
+            rows = [
+                ("eval-micro-reject", "DOT/USDT", "MICRO_MOMENTUM_1M", "1m", 1_800_000_000_000,
+                 report_day_start + 60, "REJECT", "liquidity.spread", 0.31, 0, 2_000_000.0, "{}"),
+                ("eval-micro-skip", "ADA/USDT", "MICRO_MOMENTUM_1M", "1m", 1_800_000_060_000,
+                 report_day_start + 120, "SKIP", "closed_candle_unavailable", None, 0, 2_500_000.0, "{}"),
+                ("eval-sweep-block", "SOL/USDT", "MICRO_SWEEP_RECLAIM_1M", "1m", 1_800_000_120_000,
+                 report_day_start + 180, "BLOCKED", "volume_ratio_below_floor", 0.22, 0, 4_000_000.0, "{}"),
+            ]
+            conn.executemany("""INSERT INTO v702_intraday_shadow_evaluations
+                (evaluation_id,symbol,strategy_mode,timeframe,bar_ts_ms,evaluated_ts,outcome,reason,cost_pct,
+                 post_cost_viable,quote_volume_24h,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+        report = self.study.ensure_daily_telegram_report(now_ts=report_due)
+        self.assertIsNotNone(report)
+        self.assertEqual(report["payload"].get("schema_version"), 2)
+        micro = report["payload"]["strategies"]["MICRO_MOMENTUM_1M"]
+        self.assertEqual(micro["evaluations"], 2)
+        self.assertEqual(micro["evaluation_rejections"], 1)
+        self.assertEqual(micro["skipped_evaluations"], 1)
+        self.assertEqual(micro["evaluation_diagnosis"], "EVALUATED_ZERO_SIGNALS")
+        self.assertEqual(micro["evaluation_rejection_reasons"].get("liquidity.spread"), 1)
+        sweep = report["payload"]["strategies"]["MICRO_SWEEP_RECLAIM_1M"]
+        self.assertEqual(sweep["evaluation_blocked"], 1)
+        self.assertEqual(sweep["evaluation_rejection_reasons"].get("volume_ratio_below_floor"), 1)
+        empty = report["payload"]["strategies"]["MICRO_PULLBACK_RECLAIM_1M"]
+        self.assertEqual(empty["evaluation_diagnosis"], "NO_EVALUATION_ROWS_FOR_REPORT_DAY")
+        totals = report["payload"]["totals"]
+        self.assertEqual(totals["evaluations"], 3)
+        self.assertEqual(totals["evaluation_rejections"], 1)
+        self.assertEqual(totals["skipped_evaluations"], 1)
+
     def test_same_bar_sl_tp_resolves_sl_first(self):
         signal_ts = 1_800_000_000_000
         sample_id = hashlib.sha256(b"test-same-bar").hexdigest()[:32]

@@ -1663,18 +1663,49 @@ class V702IntradayShadow:
                                 for key in ("TP1", "SL", "TIMEOUT", "TRAILING_EXIT", "AMBIGUOUS_DATA_GAP")}
                     valid_net = [float(row[1]) for row in outcome_rows if row[1] is not None]
                     valid_pct = [float(row[2]) for row in outcome_rows if row[2] is not None]
+                    # Evaluation rows explain zero-signal days. A zero signal count
+                    # without an evaluation count cannot distinguish no setup from
+                    # a lane that was never scheduled or lacked valid data.
+                    eval_rows = conn.execute("""SELECT outcome,reason,COUNT(*) FROM v702_intraday_shadow_evaluations
+                        WHERE strategy_mode=? AND evaluated_ts>=? AND evaluated_ts<?
+                        GROUP BY outcome,reason""", (mode, day_start, day_end)).fetchall()
+                    eval_counts = {"SIGNAL": 0, "REJECT": 0, "BLOCKED": 0, "SKIP": 0}
+                    eval_reasons = {}
+                    for eval_outcome, eval_reason, eval_count in eval_rows:
+                        key = str(eval_outcome or "UNKNOWN").upper()
+                        eval_counts[key] = int(eval_counts.get(key, 0) or 0) + int(eval_count or 0)
+                        if key in {"REJECT", "BLOCKED", "SKIP"}:
+                            reason = str(eval_reason or "unspecified")[:120]
+                            eval_reasons[reason] = int(eval_reasons.get(reason, 0) or 0) + int(eval_count or 0)
+                    eval_total = sum(eval_counts.values())
+                    top_reasons = dict(sorted(eval_reasons.items(), key=lambda item: (-item[1], item[0]))[:5])
+                    if eval_total <= 0:
+                        diagnosis = "NO_EVALUATION_ROWS_FOR_REPORT_DAY"
+                    elif eval_counts.get("SIGNAL", 0) <= 0:
+                        diagnosis = "EVALUATED_ZERO_SIGNALS"
+                    else:
+                        diagnosis = "SIGNALS_EVALUATED"
                     strategy_rows[mode] = {
                         "signals_created": created, "resolved": len(outcome_rows), "outcomes": outcomes,
+                        "evaluations": int(eval_total), "evaluation_signals": int(eval_counts.get("SIGNAL", 0)),
+                        "evaluation_rejections": int(eval_counts.get("REJECT", 0)),
+                        "evaluation_blocked": int(eval_counts.get("BLOCKED", 0)),
+                        "skipped_evaluations": int(eval_counts.get("SKIP", 0)),
+                        "evaluation_rejection_reasons": top_reasons, "evaluation_diagnosis": diagnosis,
                         "net_positive": sum(1 for value in valid_net if value > 0),
                         "net_negative": sum(1 for value in valid_net if value < 0),
                         "avg_net_r": statistics.fmean(valid_net) if valid_net else None,
                         "avg_net_pct": statistics.fmean(valid_pct) if valid_pct else None,
                         "ambiguous_excluded_from_net": outcomes["AMBIGUOUS_DATA_GAP"],
                     }
-                payload = {"report_date": report_day.isoformat(), "timezone": tz_name,
+                payload = {"schema_version": 2, "report_date": report_day.isoformat(), "timezone": tz_name,
                            "mode": "SHADOW_ONLY_NO_ORDERS", "strategies": strategy_rows,
                            "totals": {"signals_created": sum(x["signals_created"] for x in strategy_rows.values()),
                                       "resolved": sum(x["resolved"] for x in strategy_rows.values()),
+                                      "evaluations": sum(x["evaluations"] for x in strategy_rows.values()),
+                                      "evaluation_signals": sum(x["evaluation_signals"] for x in strategy_rows.values()),
+                                      "evaluation_rejections": sum(x["evaluation_rejections"] for x in strategy_rows.values()),
+                                      "skipped_evaluations": sum(x["skipped_evaluations"] for x in strategy_rows.values()),
                                       "tp1": sum(x["outcomes"]["TP1"] for x in strategy_rows.values()),
                                       "sl": sum(x["outcomes"]["SL"] for x in strategy_rows.values()),
                                       "timeouts": sum(x["outcomes"]["TIMEOUT"] for x in strategy_rows.values()),

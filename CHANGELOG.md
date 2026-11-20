@@ -2699,3 +2699,28 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - `compileall` and explicit `py_compile`: all **73/73** packaged Python files passed. `python main.py --validate-only`: exit 0; `bot_started=false`, `live_threads=[]`.
 - Inventory remains 99 files, 0 added, 0 removed. Twelve existing files are modified; all original archive paths and protection/lifecycle modules remain.
 - Tests were offline/deterministic. No authenticated MEXC session, actual Telegram delivery, live order, profitability, Docker target build, Railway/Render load test or long-duration soak was exercised.
+
+
+# A85 diagnostic closure — 2026-11-20
+
+- Add a bounded fair-rotated intermediate OHLCV cohort (default 16, configurable 4–24) inside the existing A79 maximum 32-symbol/four-timeframe supplemental request budget. A79 broad rotation excludes the A85-selected cohort to prevent duplicate symbol fetches. These snapshots remain research-only and are not injected into the canonical MSE/PreQual map.
+- Add A85 deployment identity logging: A85 revision, diagnostic closure revision, source SHA-256, self-validation result, entry policy and an explicit `live_authorized=0`.
+- Add independent BTC 1H/4H candle-open/close timestamps, measured cadence, interval-match and freshness diagnostics. Equal numeric closes are permitted; shared 1H/4H frame identity or invalid/stale cadence becomes UNKNOWN/fail-closed.
+- Extend the previous-Cairo-day Micro Shadow report with per-strategy evaluated/signal/reject/blocked/skip counters, top rejection reasons and a distinct no-evaluation diagnosis. Historical already-persisted payloads without these fields are labelled unavailable, not misreported as zero.
+- Record Telegram sendPhoto attempt, HTTP status, message-level ACK, message_id, timestamp and failures separately from durable text-outbox acceptance. No real Telegram network send is claimed by offline tests.
+- Add regression tests for fair intermediate rotation, no overlap with the A79 broad batch, BTC timeframe cadence, Micro rejection diagnostics and Telegram photo ACK handling. Live order authority and all existing protection gates remain unchanged.
+
+## A85 diagnostic closure — Telegram market coverage and BTC timeframe evidence (2026-11-20)
+
+- Added `/market` fields for A85 intermediate deep-fetch selected/ok/failed and the shared A79 four-timeframe budget scope, alongside existing A79 attempted/ok/failed/timeouts.
+- Added BTC macro reason/data-confidence and separate 1H/4H closed-candle open timestamps to the market overview when available; do not infer timeframe identity from equal numeric closes.
+- Added a Telegram command regression asserting the rendered market report exposes the deep-fetch counts and BTC data-quality evidence.
+- Preserved the legacy untimestamped-frame descriptive regime for backward compatibility while labelling its timeframe integrity `UNKNOWN_LEGACY_NO_TIMESTAMPS`; verified cadence and freshness remain required before claiming timestamp integrity.
+- No scanner, selector, order, execution or risk-gate authority changed. Live trading remains disabled and all additions remain read-only diagnostics.
+
+
+### Final A85 regression closure — 2026-11-20
+
+- Full packaged regression: 58 test modules, 12 isolated runs, 647 collected, **646 passed, 1 skipped, 0 failed**. Run pass counts: 70, 31, 86, 102, 6, 6, 9, 12, 29, 34, 28, 233. Each pytest process used its own SQLite test database.
+- Release contracts: 70 passed, 1 historical A51 fixture skipped, 0 failed. Intraday shadow module: 31 passed. A85/BTC focused regressions: 26 passed; daily Micro diagnostics: 2 passed (these focused subsets are included in the full-suite counts).
+- The one skip needs an A51 runtime log not bundled in the release. No live MEXC API, real Telegram delivery, private account fee lookup, live order, Docker/host load or profitability claim was tested.

@@ -8132,16 +8132,22 @@ def _v702_monitor_only_scan_authorized() -> bool:
 
 
 def _v702_classify_btc_macro_context(df_1h: Any, df_4h: Any) -> Dict[str, Any]:
-    """Describe BTC macro regime from closed 1H/4H candles; never gate discovery.
+    """Describe BTC macro regime from independently validated closed 1H/4H candles.
 
-    Direction is informational (BULLISH/BEARISH/NEUTRAL/UNKNOWN). Existing
-    strategy-specific crash, regime and execution safety gates remain authoritative.
+    Direction is informational (BULLISH/BEARISH/NEUTRAL/UNKNOWN). The function
+    additionally verifies each frame's timestamp cadence and freshness so a 1H
+    frame accidentally reused as 4H cannot produce a misleading macro report.
+    Existing strategy-specific crash, regime and execution safety gates remain authoritative.
     """
     result: Dict[str, Any] = {
         "regime": "UNKNOWN", "source": "BTC_USDT_CLOSED_1H_4H_EMA_CONTEXT",
         "informational_only": True, "discovery_direction_gate": False,
         "reason": "insufficient_or_unavailable_closed_history",
         "closed_1h": 0, "closed_4h": 0, "asof_ts": float(WALL_NOW()),
+        "timeframe_integrity": "UNKNOWN", "btc_1h_last_closed_open_ts": None,
+        "btc_4h_last_closed_open_ts": None, "btc_1h_last_closed_ts": None,
+        "btc_4h_last_closed_ts": None, "btc_1h_cadence_sec": None,
+        "btc_4h_cadence_sec": None, "btc_timeframes_close_values_equal": None,
     }
     try:
         if not (_PDNP_OK and pd is not None):
@@ -8158,10 +8164,76 @@ def _v702_classify_btc_macro_context(df_1h: Any, df_4h: Any) -> Dict[str, Any]:
                 return None
             return frame.iloc[:idx + 1].copy()
 
+        def _frame_clock(frame: Any, interval_sec: int, now_ts: float):
+            """Return verifiable candle timing; never infer cadence from the label alone."""
+            try:
+                raw_index = getattr(frame, "index", None)
+                if raw_index is None or isinstance(raw_index, pd.RangeIndex) or pd.api.types.is_numeric_dtype(getattr(raw_index, "dtype", None)):
+                    return {"ok": False, "timestamped": False, "reason": "legacy_timestamp_index_unavailable"}
+                index = pd.DatetimeIndex(pd.to_datetime(raw_index, utc=True, errors="coerce"))
+                if len(index) < 3 or index.isna().any():
+                    return {"ok": False, "reason": "timestamp_index_missing_or_short"}
+                ns = index.asi8
+                deltas = np.diff(ns).astype("float64") / 1_000_000_000.0
+                if not len(deltas) or not np.isfinite(deltas).all():
+                    return {"ok": False, "reason": "timestamp_deltas_invalid"}
+                tolerance = max(2.0, float(interval_sec) * 0.01)
+                cadence = float(np.median(deltas))
+                matching = float(np.mean(np.abs(deltas - float(interval_sec)) <= tolerance))
+                last_open = index[-1]
+                last_close_epoch = float(last_open.timestamp()) + float(interval_sec)
+                age_sec = float(now_ts) - last_close_epoch
+                cadence_ok = abs(cadence - float(interval_sec)) <= tolerance and matching >= 0.90
+                fresh_ok = -60.0 <= age_sec <= float(interval_sec) * 2.5
+                return {"ok": bool(cadence_ok and fresh_ok), "timestamped": True,
+                        "cadence_ok": bool(cadence_ok), "fresh_ok": bool(fresh_ok), "cadence_sec": cadence,
+                        "interval_match_pct": round(matching * 100.0, 2),
+                        "last_open_epoch": float(last_open.timestamp()),
+                        "last_open_iso": last_open.isoformat(),
+                        "last_close_epoch": last_close_epoch,
+                        "last_close_iso": pd.Timestamp(last_close_epoch, unit="s", tz="UTC").isoformat(),
+                        "age_sec": age_sec,
+                        "reason": "ok" if cadence_ok and fresh_ok else ("cadence_mismatch" if not cadence_ok else "stale_or_future_closed_candle")}
+            except Exception as exc:
+                return {"ok": False, "reason": f"clock_error:{type(exc).__name__}"}
+
         one = _closed(df_1h, 60 * 60 * 1000)
         four = _closed(df_4h, 4 * 60 * 60 * 1000)
         if one is None or four is None:
             return result
+        now_ts = float(WALL_NOW())
+        clock1 = _frame_clock(one, 3600, now_ts)
+        clock4 = _frame_clock(four, 14400, now_ts)
+        result.update({
+            "btc_1h_last_closed_open_ts": clock1.get("last_open_iso"),
+            "btc_4h_last_closed_open_ts": clock4.get("last_open_iso"),
+            "btc_1h_last_closed_ts": clock1.get("last_close_iso"),
+            "btc_4h_last_closed_ts": clock4.get("last_close_iso"),
+            "btc_1h_cadence_sec": clock1.get("cadence_sec"),
+            "btc_4h_cadence_sec": clock4.get("cadence_sec"),
+            "btc_1h_timeframe_integrity": clock1,
+            "btc_4h_timeframe_integrity": clock4,
+        })
+        if df_1h is df_4h:
+            result["timeframe_integrity"] = "FAILED"
+            result["reason"] = "shared_1h_4h_frame_reference"
+            return result
+        timestamped_1h = bool(clock1.get("timestamped"))
+        timestamped_4h = bool(clock4.get("timestamped"))
+        if timestamped_1h != timestamped_4h:
+            result["timeframe_integrity"] = "FAILED"
+            result["reason"] = "timeframe_integrity_failed:one_frame_missing_timestamps"
+            return result
+        if timestamped_1h and (not clock1.get("ok") or not clock4.get("ok")):
+            result["timeframe_integrity"] = "FAILED"
+            result["reason"] = f"timeframe_integrity_failed:1h={clock1.get('reason')}:4h={clock4.get('reason')}"
+            return result
+        if timestamped_1h and timestamped_4h:
+            result["timeframe_integrity"] = "VERIFIED_DISTINCT_1H_4H_CADENCE"
+        else:
+            # Legacy/test frames can still produce descriptive EMA direction, but
+            # cannot prove candle freshness or timeframe cadence. Keep integrity UNKNOWN.
+            result["timeframe_integrity"] = "UNKNOWN_LEGACY_NO_TIMESTAMPS"
         c1 = pd.to_numeric(one["close"], errors="coerce").dropna()
         c4 = pd.to_numeric(four["close"], errors="coerce").dropna()
         result["closed_1h"] = int(len(c1))
@@ -8190,6 +8262,10 @@ def _v702_classify_btc_macro_context(df_1h: Any, df_4h: Any) -> Dict[str, Any]:
         if not all(math.isfinite(v) and v > 0 for v in values.values()):
             result["reason"] = "invalid_macro_indicator_values"
             return result
+        result["btc_timeframes_close_values_equal"] = bool(
+            abs(values["btc_1h_close"] - values["btc_4h_close"])
+            <= max(1e-12, max(values["btc_1h_close"], values["btc_4h_close"]) * 1e-10)
+        )
         bullish = (
             values["btc_4h_close"] > values["btc_4h_ema50"] > values["btc_4h_ema200"]
             and values["btc_4h_ema50"] > values["btc_4h_ema50_3bars_ago"]
@@ -8202,7 +8278,8 @@ def _v702_classify_btc_macro_context(df_1h: Any, df_4h: Any) -> Dict[str, Any]:
         )
         regime = "BULLISH" if bullish else "BEARISH" if bearish else "NEUTRAL"
         result.update(values)
-        result.update({"regime": regime, "reason": "closed_1h_4h_ema_context_evaluated"})
+        result.update({"regime": regime, "reason": ("closed_1h_4h_ema_context_evaluated" if timestamped_1h else
+                                                         "closed_1h_4h_ema_context_evaluated_timestamp_unverified")})
         return result
     except Exception as exc:
         result["reason"] = f"macro_classification_error:{type(exc).__name__}"
@@ -8243,6 +8320,9 @@ async def _v702_notify_btc_macro_context(context: Dict[str, Any]) -> bool:
             f"1H close / EMA50: {_fmt('btc_1h_close')} / {_fmt('btc_1h_ema50')}\n"
             f"4H close / EMA50 / EMA200: {_fmt('btc_4h_close')} / {_fmt('btc_4h_ema50')} / {_fmt('btc_4h_ema200')}\n"
             f"Closed candles: 1H={int(context.get('closed_1h', 0) or 0)} 4H={int(context.get('closed_4h', 0) or 0)}\n"
+            f"Candle opens UTC: 1H={str(context.get('btc_1h_last_closed_open_ts') or 'unknown')} | 4H={str(context.get('btc_4h_last_closed_open_ts') or 'unknown')}\n"
+            f"Cadence sec: 1H={context.get('btc_1h_cadence_sec')} | 4H={context.get('btc_4h_cadence_sec')} | integrity={context.get('timeframe_integrity','UNKNOWN')}\n"
+            f"Close-value-equal={context.get('btc_timeframes_close_values_equal','unknown')}\n"
             f"Status: {str(context.get('reason') or 'unknown')}\n\n"
             "This is market context only. Macro direction does not switch off discovery; "
             "existing strategy-specific risk/crash gates remain unchanged.\n"
@@ -24334,10 +24414,14 @@ async def _v649_tg_bootstrap(cls) -> bool:
             f"<b>Unified Scalper {SCRIPT_VERSION}</b>\n"
             f"Package: {V702_PACKAGE_AUDIT_REVISION}\n"
             f"Post-audit patch: {_post_audit_patch_revision}\n"
+            f"A85 revision: {globals().get('V702_A85_REVISION', 'UNAVAILABLE')}\n"
+            f"A85 diagnostic closure: {globals().get('V702_A85_DIAGNOSTIC_CLOSURE_REVISION', 'UNAVAILABLE')}\n"
             f"Entry policy: {STATS.get('v702_runtime_entry_policy', 'MONITOR_ONLY_NO_NEW_BUYS')}\n"
-            "Telegram command polling verified; startup outbound test follows separately."
+            "Telegram inbound polling verified; this message is the separate outbound startup probe."
         )
         STATS["v649_telegram_startup_send_ok"] = bool(ok)
+        STATS["v649_telegram_startup_send_ack_ts"] = float(WALL_NOW()) if ok else None
+        STATS["v649_telegram_startup_outbound_state"] = "ACKED" if ok else "DEGRADED_OR_RETRYING"
         if not ok:
             STATS["v649_telegram_bootstrap_state"] = "VERIFIED_READY_OUTBOUND_DEGRADED"
             STATS["v649_telegram_outbound_degraded"] = True
@@ -27807,24 +27891,42 @@ async def run_bot(universe: List[str]):
                         and str(_r.get("status") or "").upper() in {"WATCH", "CONFIRMED", "TRADEABLE"}
                     ]
                     _a79_offset = (A85MarketIntelligence.get_rotation_offset("A79") if globals().get("A85MarketIntelligence") else int(getattr(run_bot, "_v702_a79_supplement_offset", 0) or 0))
-                    _a79_selected = _v702_a79_select_supplemental_symbols(
-                        list(_a80_research_universe), _a79_tickers, set(market_data_map),
-                        max_symbols=max(16, min(32, int(CONFIG.get("V702_A79_SUPPLEMENT_SYMBOLS_PER_CYCLE", 32)))),
+                    _a85_intermediate_selected = await asyncio.to_thread(
+                        A85MarketIntelligence.select_intermediate_fetch_symbols,
+                        _a79_tickers, list(_a80_research_universe), set(market_data_map),
+                        max(100, min(150, int(CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT", 150)))),
+                        max(4, min(24, int(CONFIG.get("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16)))),
+                    ) if globals().get("A85MarketIntelligence") else []
+                    # Keep one shared A79 fetch budget (at most 32 symbols x four TFs).
+                    # Split it between a fair-rotated top-150 A85 intermediate cohort
+                    # and the broader A79 500-symbol research rotation. Active Hunter
+                    # Swing follow-ups occupy at most eight of the A79 slots.
+                    _a79_target_slots = max(8, min(32, 32 - len(_a85_intermediate_selected)))
+                    _a79_rotation_excluded = set(market_data_map) | set(_a85_intermediate_selected)
+                    _a79_base_selected = _v702_a79_select_supplemental_symbols(
+                        list(_a80_research_universe), _a79_tickers, _a79_rotation_excluded,
+                        max_symbols=_a79_target_slots,
                         min_quote_volume=max(250_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 250_000.0))),
-                        offset=_a79_offset, priority_symbols=_a79_active_priority,
+                        offset=_a79_offset, priority_symbols=_a79_active_priority[:8],
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
+                    _a79_selected = list(dict.fromkeys(list(_a85_intermediate_selected) + list(_a79_base_selected)))[:32]
                     _a79_pool_count = _v702_a79_supplement_pool_size(
-                        list(_a80_research_universe), _a79_tickers, set(market_data_map),
+                        list(_a80_research_universe), _a79_tickers, _a79_rotation_excluded,
                         min_quote_volume=max(250_000.0, float(CONFIG.get("V702_A79_SUPPLEMENT_MIN_QUOTE_VOLUME_USDT", 250_000.0))),
                         forbidden_fn=globals().get("_v587_is_forbidden_coin"),
                     )
                     if _a79_pool_count:
-                        setattr(run_bot, "_v702_a79_supplement_offset", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
+                        _a79_advance = max(1, len(_a79_base_selected))
+                        setattr(run_bot, "_v702_a79_supplement_offset", (_a79_offset + _a79_advance) % _a79_pool_count)
                         if globals().get("A85MarketIntelligence"):
-                            A85MarketIntelligence.set_rotation_offset("A79", (_a79_offset + max(1, len(_a79_selected))) % _a79_pool_count)
+                            A85MarketIntelligence.set_rotation_offset("A79", (_a79_offset + _a79_advance) % _a79_pool_count)
                     _a79_supplement_summary.update({"universe": int(len(_a80_research_universe)), "core_universe": int(len(scan_universe)),
                                                      "eligible": int(_a79_pool_count), "attempted": int(len(_a79_selected)),
+                                                     "a85_intermediate_pool": int((STATS.get("a85_intermediate_fetch_last") or {}).get("pool", 0)),
+                                                     "a85_intermediate_selected": int(len(_a85_intermediate_selected)),
+                                                     "a85_intermediate_symbols": list(_a85_intermediate_selected),
+                                                     "a79_broad_selected": int(len(_a79_base_selected)),
                                                      "symbols": list(_a79_selected)})
                     if _a79_selected:
                         _a79_extra, _a79_fetch_diag = await _v702_a79_fetch_supplemental_snapshots(
@@ -27839,6 +27941,18 @@ async def run_bot(universe: List[str]):
                         _a79_supplement_summary.update(_a79_fetch_diag)
                         _a79_supplement_summary["ok"] = int(len(_a79_extra))
                         _a79_supplement_summary["failed"] = max(0, int(len(_a79_selected)) - len(_a79_extra))
+                        _a85_deep_ok = sum(1 for _sym in _a85_intermediate_selected if _sym in _a79_extra)
+                        _a79_supplement_summary["a85_intermediate_fetch_ok"] = int(_a85_deep_ok)
+                        _a79_supplement_summary["a85_intermediate_fetch_failed"] = max(0, len(_a85_intermediate_selected) - _a85_deep_ok)
+                        _a85_state = dict(STATS.get("a85_intermediate_fetch_last") or {})
+                        _a85_state.update({"attempted": len(_a85_intermediate_selected), "ok": int(_a85_deep_ok),
+                                           "failed": max(0, len(_a85_intermediate_selected) - _a85_deep_ok),
+                                           "budget_total_symbols": len(_a79_selected)})
+                        STATS["a85_intermediate_fetch_last"] = _a85_state
+                        logger.info("[A85-DEEP-FETCH] pool=%d selected=%d ok=%d failed=%d total_supplement_budget=%d rotation=%s execution_authority=0",
+                                    int(_a85_state.get("pool", 0)), len(_a85_intermediate_selected), int(_a85_deep_ok),
+                                    max(0, len(_a85_intermediate_selected) - _a85_deep_ok), len(_a79_selected),
+                                    f"{_a85_state.get('offset_before',0)}->{_a85_state.get('offset_after',0)}")
                         logger.info(
                             "[A80-RESEARCH-COVERAGE] research_universe=%d core_universe=%d base=%d eligible=%d attempted=%d ok=%d failed=%d offset=%d symbols=%s canonical_map_unchanged=1",
                             int(len(_a80_research_universe)), int(len(scan_universe)), int(len(market_data_map)), int(_a79_pool_count), int(len(_a79_selected)),
@@ -28129,15 +28243,32 @@ async def run_bot(universe: List[str]):
                                     _avg_r = _dr.get("avg_net_r")
                                     _avg_pct = _dr.get("avg_net_pct")
                                     _avg_text = "n/a" if _avg_r is None else f"{float(_avg_r):+.2f}R / {float(_avg_pct or 0.0):+.3f}%"
+                                    _has_eval_diagnostics = all(k in _dr for k in ("evaluations", "evaluation_signals", "evaluation_rejections", "evaluation_diagnosis"))
+                                    _evals=int(_dr.get("evaluations",0) or 0) if _has_eval_diagnostics else None
+                                    _signals_eval=int(_dr.get("evaluation_signals",0) or 0) if _has_eval_diagnostics else None
+                                    _rejects=int(_dr.get("evaluation_rejections",0) or 0) if _has_eval_diagnostics else None
+                                    _blocked=int(_dr.get("evaluation_blocked",0) or 0) if _has_eval_diagnostics else None
+                                    _skipped=int(_dr.get("skipped_evaluations",0) or 0) if _has_eval_diagnostics else None
+                                    _reason_map=_dr.get("evaluation_rejection_reasons",{}) or {}
+                                    _reason_text=", ".join(f"{k}:{v}" for k,v in list(_reason_map.items())[:3]) or "none"
+                                    _diagnosis=str(_dr.get("evaluation_diagnosis") or ("HISTORICAL_PENDING_PAYLOAD_WITHOUT_EVALUATION_DIAGNOSTICS" if not _has_eval_diagnostics else "NO_EVALUATION_ROWS_FOR_REPORT_DAY"))
+                                    _eval_text = (f"Evaluated {_evals} (signals {_signals_eval}, rejects {_rejects}, blocked {_blocked}, skipped {_skipped})"
+                                                  if _has_eval_diagnostics else "Evaluation counters unavailable in stored historical payload")
                                     _dlines.append(
                                         f"\n<b>{OpportunityTelegramNotifier._escape(_dmode)}</b>"
-                                        f" · Signals {_dr.get('signals_created', 0)} · Resolved {_dr.get('resolved', 0)}"
+                                        f" · {_eval_text}"
+                                        f" · Signal records {_dr.get('signals_created', 0)} · Resolved {_dr.get('resolved', 0)}"
                                         f" · TP {int(_do.get('TP1', 0))} / SL {int(_do.get('SL', 0))}"
                                         f" · Timeout {int(_do.get('TIMEOUT', 0))} / Ambiguous {int(_do.get('AMBIGUOUS_DATA_GAP', 0))}"
                                         f" · Avg net {_avg_text}"
+                                        f" · Diagnosis {OpportunityTelegramNotifier._escape(_diagnosis)}"
+                                        f" · Top rejection: {OpportunityTelegramNotifier._escape(_reason_text)}"
                                     )
                                 _dtot = _dp.get("totals", {}) or {}
-                                _dlines.append(f"\nTotals: signals={int(_dtot.get('signals_created', 0))} resolved={int(_dtot.get('resolved', 0))} TP={int(_dtot.get('tp1', 0))} SL={int(_dtot.get('sl', 0))} timeout={int(_dtot.get('timeouts', 0))} ambiguous={int(_dtot.get('ambiguous', 0))}")
+                                if int(_dp.get("schema_version", 0) or 0) >= 2 and "evaluations" in _dtot:
+                                    _dlines.append(f"\nTotals: evaluated={int(_dtot.get('evaluations',0))} signals_eval={int(_dtot.get('evaluation_signals',0))} rejected={int(_dtot.get('evaluation_rejections',0))} skipped={int(_dtot.get('skipped_evaluations',0))} signal_records={int(_dtot.get('signals_created', 0))} resolved={int(_dtot.get('resolved', 0))} TP={int(_dtot.get('tp1', 0))} SL={int(_dtot.get('sl', 0))} timeout={int(_dtot.get('timeouts', 0))} ambiguous={int(_dtot.get('ambiguous', 0))}")
+                                else:
+                                    _dlines.append(f"\nEvaluation counters: unavailable in historical stored report · signal_records={int(_dtot.get('signals_created',0))} · resolved={int(_dtot.get('resolved',0))}")
                                 try:
                                     _accepted_daily = await TelegramDispatcher.enqueue("\n".join(_dlines))
                                 except Exception as _daily_tg_exc:
@@ -30612,6 +30743,23 @@ def main():
     if not _a85_validation_report.get("pass"):
         logger.critical("[A85-BOOT-STOP] A85 validation failed: %s", _a85_validation_report.get("failed"))
         raise SystemExit("a85_validation_failed")
+    try:
+        _a85_main_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except Exception:
+        _a85_main_sha256 = "UNAVAILABLE"
+    STATS["a85_deployment_identity"] = {
+        "revision": V702_A85_REVISION,
+        "diagnostic_closure_revision": V702_A85_DIAGNOSTIC_CLOSURE_REVISION,
+        "main_sha256": _a85_main_sha256,
+        "validated": bool(_a85_validation_report.get("pass")),
+        "entry_policy": str(FINAL_CANONICAL_RUNTIME.get("effective_entry_policy", "UNKNOWN")),
+        "live_authorized": False,
+        "logged_at": float(WALL_NOW()),
+    }
+    FINAL_CANONICAL_RUNTIME["a85_deployment_identity"] = dict(STATS["a85_deployment_identity"])
+    logger.info("[A85-DEPLOY-IDENTITY] revision=%s diagnostics=%s main_sha256=%s validated=%d entry_policy=%s live_authorized=0",
+                V702_A85_REVISION, V702_A85_DIAGNOSTIC_CLOSURE_REVISION, _a85_main_sha256,
+                int(bool(_a85_validation_report.get("pass"))), FINAL_CANONICAL_RUNTIME.get("effective_entry_policy", "UNKNOWN"))
     if not _cfg_ok:
         # Report the *active* terminal validators. Older deployments printed only
         # R23/V704 fields here, which can be empty when the A7-A24 terminal layer
@@ -108359,9 +108507,12 @@ FINAL_CANONICAL_RUNTIME.update({
 # It has no order, selector, queue, or execution authority.
 # =============================================================================
 V702_A85_REVISION = "A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20"
+V702_A85_DIAGNOSTIC_CLOSURE_REVISION = "A85-DEPLOY-IDENTITY-MICRO-REJECTION-AND-ROTATED-DEEP-COVERAGE-CLOSURE-2026-11-20"
+STATS["v702_a85_diagnostic_closure_revision"] = V702_A85_DIAGNOSTIC_CLOSURE_REVISION
 CONFIG.setdefault("A85_INTELLIGENCE_ENABLE", True)
 CONFIG.setdefault("A85_MAX_ANALYSIS_SYMBOLS", 60)
 CONFIG.setdefault("A85_INTERMEDIATE_SCAN_LIMIT", 150)
+CONFIG.setdefault("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16)
 CONFIG.setdefault("A85_MIN_QUALITY_SCORE", 68.0)
 CONFIG.setdefault("A85_ALERT_MIN_QUALITY", 82.0)
 CONFIG.setdefault("A85_MAX_ALERTS_PER_CYCLE", 3)
@@ -108411,6 +108562,7 @@ for _a85_spec in (
     ("A85_INTELLIGENCE_ENABLE", "A85_INTELLIGENCE_ENABLE", "bool", True, None, None),
     ("A85_MAX_ANALYSIS_SYMBOLS", "A85_MAX_ANALYSIS_SYMBOLS", "int", 60, 8, 60),
     ("A85_INTERMEDIATE_SCAN_LIMIT", "A85_INTERMEDIATE_SCAN_LIMIT", "int", 150, 100, 150),
+    ("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", "A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", "int", 16, 4, 24),
     ("A85_MIN_QUALITY_SCORE", "A85_MIN_QUALITY_SCORE", "float", 68.0, 0.0, 100.0),
     ("A85_ALERT_MIN_QUALITY", "A85_ALERT_MIN_QUALITY", "float", 82.0, 0.0, 100.0),
     ("A85_MAX_ALERTS_PER_CYCLE", "A85_MAX_ALERTS_PER_CYCLE", "int", 3, 0, 5),
@@ -108538,6 +108690,64 @@ class A85MarketIntelligence:
             STATS["a85_rotation_write_errors"] = int(STATS.get("a85_rotation_write_errors", 0) or 0) + 1
             logger.debug("[A85] rotation state write failed: %s", type(exc).__name__)
             return False
+
+    @classmethod
+    def select_intermediate_fetch_symbols(cls, ticker_snapshot, universe, already_scanned=(),
+                                          limit=None, per_cycle=None):
+        """Fair-rotate a bounded cohort from the top 100-150 research candidates.
+
+        This helper only selects read-only supplemental OHLCV fetches. The A79
+        fetch helper remains the sole network/caching/retry authority, and the
+        returned snapshots stay outside the canonical MSE/PreQual map.
+        """
+        if not isinstance(ticker_snapshot, dict) or not ticker_snapshot:
+            STATS["a85_intermediate_fetch_last"] = {
+                "pool": 0, "selected": 0, "attempted": 0, "reason": "ticker_snapshot_unavailable",
+                "execution_authority": False,
+            }
+            return []
+        allowed_universe = {str(x).upper().strip() for x in (universe or []) if str(x).upper().endswith("/USDT")}
+        scanned = {str(x).upper().strip() for x in (already_scanned or [])}
+        research_floor = max(250_000.0, float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT", 250_000.0)))
+        candidate_rows = []
+        for raw_symbol, ticker in ticker_snapshot.items():
+            symbol = str(raw_symbol or "").upper().strip()
+            if allowed_universe and symbol not in allowed_universe:
+                continue
+            if symbol in scanned or cls._forbidden_or_stable(symbol)[0] or not isinstance(ticker, dict):
+                continue
+            try:
+                qv = _v702_a80_ticker_quote_volume(ticker)
+                qv = cls._safe(qv)
+                change = cls._safe(ticker.get("percentage", ticker.get("change_pct_24h", ticker.get("change_24h_pct"))), 0.0)
+                if qv is None or qv < research_floor:
+                    continue
+                candidate_rows.append({"symbol": symbol, "quote_volume": qv, "abs_change": abs(float(change or 0.0))})
+            except Exception:
+                continue
+        candidate_rows.sort(key=lambda row: (row["quote_volume"], row["abs_change"], row["symbol"]), reverse=True)
+        pool_limit = max(100, min(150, int(limit if limit is not None else CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT", 150))))
+        pool = candidate_rows[:pool_limit]
+        if not pool:
+            STATS["a85_intermediate_fetch_last"] = {
+                "pool": 0, "selected": 0, "attempted": 0, "reason": "no_eligible_intermediate_candidates",
+                "research_floor_usdt": research_floor, "execution_authority": False,
+            }
+            return []
+        budget = max(4, min(24, int(per_cycle if per_cycle is not None else CONFIG.get("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16))))
+        offset = cls.get_rotation_offset("A85_INTERMEDIATE") % len(pool)
+        rotated = pool[offset:] + pool[:offset]
+        selected = [row["symbol"] for row in rotated[:min(budget, len(pool))]]
+        next_offset = (offset + len(selected)) % len(pool)
+        cls.set_rotation_offset("A85_INTERMEDIATE", next_offset)
+        STATS["a85_intermediate_fetch_last"] = {
+            "pool": len(pool), "pool_limit": pool_limit, "selected": len(selected),
+            "attempted": 0, "offset_before": offset, "offset_after": next_offset,
+            "research_floor_usdt": research_floor, "selected_symbols": selected[:24],
+            "coverage_pct_per_cycle": round(len(selected) / max(1, len(pool)) * 100.0, 2),
+            "execution_authority": False,
+        }
+        return selected
 
     @classmethod
     def _safe(cls, value, default=None):
@@ -109156,7 +109366,8 @@ class A85MarketIntelligence:
                                        "close_4h":i4["close"],"ema50_4h":i4["ema"][50],"ema200_4h":i4["ema"][200],"atr_pct_4h":vol,
                                        "structure_4h":structure4.get("structure"),"bos_4h":structure4.get("bos"),
                                        "liquidity_sweep_low_4h":structure4.get("liquidity_sweep_low"),
-                                       "closed_candle_ts":ts4,"closed_15m_ts":ts15},
+                                       "closed_candle_ts":ts4,"closed_1h_open_ts":ts1,"closed_4h_open_ts":ts4,
+                                       "closed_1d_open_ts":tsD or None,"closed_15m_ts":ts15 or None},
                 "eth":{"1H":eth_trend,"relative_strength_vs_btc_pct":eth_rs},
                 "reason":f"BTC 4H={i4['trend']}; BTC 1H={i1['trend']}; 4H ATR={vol:.2f}%",
                 "data_confidence":"HIGH" if iD and i15 else "MEDIUM" if iD or i15 else "LOW",
@@ -109314,7 +109525,13 @@ class A85MarketIntelligence:
                 "total_universe":total_universe,"fast_scan_ticker_symbols":len(ticker_rows),
                 "fast_scan_eligible_symbols":len(eligible_tickers),"fast_scan_scope":"AVAILABLE_SHARED_TICKER_SNAPSHOT_NOT_GUARANTEED_ALL_EXCHANGE_LISTINGS",
                 "intermediate_eligible_symbols":len(intermediate_pool),"intermediate_scan_limit":intermediate_limit,
-                "intermediate_scanned_symbols":len(intermediate_selected),"intermediate_candidates":[x["symbol"] for x in intermediate_selected[:20]],
+                "intermediate_scanned_symbols":len(intermediate_selected),"intermediate_candidates_selected":len(intermediate_selected),
+                "intermediate_data_covered_symbols":sum(1 for x in intermediate_selected if x["symbol"] in market_map),
+                "intermediate_deep_fetch_selected":int((research_summary or {}).get("a85_intermediate_selected",0) or 0),
+                "intermediate_deep_fetch_ok":int((research_summary or {}).get("a85_intermediate_fetch_ok",0) or 0),
+                "intermediate_deep_fetch_failed":int((research_summary or {}).get("a85_intermediate_fetch_failed",0) or 0),
+                "intermediate_deep_fetch_scope":"ROTATING_COHORT_WITHIN_TOP_100_150; SHARED_A79_4TF_BUDGET",
+                "intermediate_candidates":[x["symbol"] for x in intermediate_selected[:20]],
                 "top_24h_movers":top24,"top_24h_volume":topvol,
                 "total_map_symbols":len(market_map),"eligible_symbols":len(symbols),"eligible_snapshot_symbols":len(symbols),
                 "scanned_symbols":len(chosen),"deep_analyzed_symbols":len(rows),
@@ -109593,17 +109810,31 @@ class A85MarketIntelligence:
         form.add_field("parse_mode","HTML")
         form.add_field("photo",bytes(png),filename=filename,content_type="image/png")
         url=f"https://api.telegram.org/bot{ENV['TELEGRAM_TOKEN']}/sendPhoto"
+        STATS["a85_telegram_photo_attempts"] = int(STATS.get("a85_telegram_photo_attempts",0) or 0) + 1
         try:
             async with session.post(url,data=form,timeout=aiohttp.ClientTimeout(total=20)) as response:
                 body=await response.json(content_type=None)
                 ok=response.status==200 and isinstance(body,dict) and body.get("ok") is True
                 STATS["a85_telegram_photo_last_ack"]=bool(ok)
                 STATS["a85_telegram_photo_last_status"]=int(response.status)
-                if not ok: STATS["a85_telegram_photo_last_error"]=str((body or {}).get("description") or f"HTTP_{response.status}")[:160]
+                STATS["a85_telegram_photo_last_ts"]=float(WALL_NOW())
+                result=(body or {}).get("result") if isinstance(body,dict) else None
+                STATS["a85_telegram_photo_last_message_id"]=(result or {}).get("message_id") if isinstance(result,dict) else None
+                if ok:
+                    STATS["a85_telegram_photo_ack_count"] = int(STATS.get("a85_telegram_photo_ack_count",0) or 0) + 1
+                    STATS["a85_telegram_photo_last_error"] = None
+                else:
+                    STATS["a85_telegram_photo_failure_count"] = int(STATS.get("a85_telegram_photo_failure_count",0) or 0) + 1
+                    STATS["a85_telegram_photo_last_error"]=str((body or {}).get("description") or f"HTTP_{response.status}")[:160]
+                logger.info("[A85-TELEGRAM-PHOTO] ack=%d status=%d message_id=%s filename=%s",
+                            int(bool(ok)), int(response.status), STATS.get("a85_telegram_photo_last_message_id"), str(filename)[:80])
                 return bool(ok)
         except Exception as exc:
             STATS["a85_telegram_photo_last_ack"]=False
+            STATS["a85_telegram_photo_failure_count"] = int(STATS.get("a85_telegram_photo_failure_count",0) or 0) + 1
+            STATS["a85_telegram_photo_last_ts"]=float(WALL_NOW())
             STATS["a85_telegram_photo_last_error"]=f"{type(exc).__name__}:{str(exc)[:140]}"
+            logger.warning("[A85-TELEGRAM-PHOTO] ack=0 error=%s", STATS["a85_telegram_photo_last_error"])
             return False
 
     @classmethod
@@ -109690,6 +109921,9 @@ async def _v702_a85_publish_alerts(rows):
         # Queue the complete text plan first. A slow/failed sendPhoto request
         # must never delay or suppress the primary opportunity notification.
         queued=await TelegramDispatcher.enqueue(message)
+        STATS["a85_text_alert_outbox_accepted"] = int(STATS.get("a85_text_alert_outbox_accepted",0) or 0) + int(bool(queued))
+        STATS["a85_text_alert_outbox_rejected"] = int(STATS.get("a85_text_alert_outbox_rejected",0) or 0) + int(not bool(queued))
+        STATS["a85_text_alert_last_enqueue_ts"] = float(WALL_NOW())
         photo_acks={}
         if queued:
             sent+=1
@@ -109704,7 +109938,7 @@ async def _v702_a85_publish_alerts(rows):
                     png=await asyncio.to_thread(A85MarketIntelligence.render_chart,symbol,chart_tf,row)
                     if png:
                         photo_acks[chart_tf]=await A85MarketIntelligence.send_photo(
-                            chat_id,f"A85 {symbol} {chart_tf} closed-candle analysis chart. Full plan is in the text message; no order authority.",
+                            chat_id,f"A85 {symbol} {chart_tf} closed-candle analysis chart. Full plan text was accepted by the durable Telegram outbox; no order authority.",
                             png,f"{symbol.replace('/','_')}-{chart_tf.lower()}.png")
                     else:
                         photo_acks[chart_tf]=False
@@ -109740,6 +109974,8 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
                   f"Fast eligible (>=3M): {m.get('fast_scan_eligible_symbols',0)} | Intermediate: {m.get('intermediate_scanned_symbols',0)}/{m.get('intermediate_eligible_symbols',0)} | Deep: {m.get('deep_analyzed_symbols',0)}\n"
                   f"Analyzed: {m.get('analyzed_symbols',0)} / eligible snapshots {m.get('eligible_symbols',0)} / universe {m.get('total_universe',0)} | skipped {m.get('skipped_symbols',0)}\n"
                   f"A79 research attempted/ok/failed/timeouts: {((m.get('research_coverage') or {}).get('attempted',0))}/{((m.get('research_coverage') or {}).get('ok',0))}/{((m.get('research_coverage') or {}).get('failed',0))}/{((m.get('research_coverage') or {}).get('timed_out',0))}\n"
+                  f"A85 intermediate deep fetch selected/ok/failed: {m.get('intermediate_deep_fetch_selected',0)}/{m.get('intermediate_deep_fetch_ok',0)}/{m.get('intermediate_deep_fetch_failed',0)} | {m.get('intermediate_deep_fetch_scope','UNAVAILABLE')}\n"
+                  f"BTC context evidence: {reg.get('reason','UNKNOWN')} | confidence={reg.get('data_confidence','UNKNOWN')} | 1H open={btc.get('closed_1h_open_ts') or 'n/a'} | 4H open={btc.get('closed_4h_open_ts') or 'n/a'} (UTC epoch)\n"
                   f"Breadth: above EMA20 {breadth.get('above_ema20','n/a')} | above EMA50 {breadth.get('above_ema50','n/a')} | volume expansion {breadth.get('volume_expansion_symbols','n/a')}\n"
                   f"Top movers 24H: {', '.join(m.get('top_24h_movers') or []) or 'unavailable'}\n"
                   f"Top 24H volume: {', '.join(m.get('top_24h_volume') or []) or 'unavailable'}\n"
@@ -109820,6 +110056,8 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
 STATS["v702_a85_self_test"] = A85MarketIntelligence.self_test()
 FINAL_CANONICAL_RUNTIME.update({
     "active_a85_revision_current": V702_A85_REVISION,
+    "active_a85_diagnostic_closure_revision_current": V702_A85_DIAGNOSTIC_CLOSURE_REVISION,
+    "a85_intermediate_rotating_deep_fetch_symbols_per_cycle": int(CONFIG.get("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16)),
     "a85_uses_existing_market_data_map": True,
     "a85_market_analysis_execution_authority": False,
     "a85_selector_authority": False,
