@@ -1916,7 +1916,7 @@ def test_a82_supplement_outer_failure_reconciles_failed_and_redacts_diagnostics(
     assert "private.example" not in row["error"]
 
 
-def test_a82_higher_low_structure_is_discovered_as_watch_under_bearish_btc(monkeypatch):
+def test_a82_higher_low_local_structure_is_independent_of_bearish_btc_label(monkeypatch):
     now = time.time()
     md = {
         "df_1h": _a74_trending_frame(now, 3600, breakout=False),
@@ -1938,7 +1938,7 @@ def test_a82_higher_low_structure_is_discovered_as_watch_under_bearish_btc(monke
     assert item["status"] == "WATCH"
     assert item["evidence"]["higher_low"] is True
     assert item["evidence"]["higher_high"] is True
-    assert item["evidence"]["bearish_local_confirm"] is False
+    assert item["evidence"]["bearish_local_confirm"] is True
     assert item["timeframe"] == "1H+4H"
     assert item["evidence"]["outcome_interval_sec"] == 3600
     assert item["tp1"] > item["entry_ref"] > item["sl_price"]
@@ -2555,3 +2555,71 @@ def test_a83_trade_processor_ignores_future_and_nonfinite_prints():
     ], now_ms=now_ms)
     assert changes == []
     assert cycle["buy_filled_qty"] == 0.0
+
+
+def test_a85_btc_direction_is_observational_but_crash_and_missing_context_are_hard_blocks():
+    assert bot.CONFIG["V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE"] is False
+    ok, reason, ctx = bot.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "BEARISH", strategy_mode="PULLBACK", local_regime="LOCAL_RECOVERY",
+        market_phase="PULLBACK", severity="BEARISH_NORMAL", strategy_style="SCALP")
+    assert ok and reason == "allow" and ctx["macro_context_role"] == "OBSERVATIONAL_ONLY"
+    crash, crash_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "BEARISH", strategy_mode="PULLBACK", local_regime="LOCAL_RECOVERY",
+        market_phase="PULLBACK", severity="BEARISH_CRASH", strategy_style="SCALP")
+    assert not crash and crash_reason == "severity"
+    missing, missing_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "UNKNOWN", strategy_mode="PULLBACK", local_regime="LOCAL_RECOVERY",
+        market_phase="PULLBACK", severity="NORMAL", strategy_style="SCALP")
+    assert not missing and missing_reason == "macro_context_unavailable"
+
+
+def test_a85_router_confluence_bonus_is_independent_deduplicated_and_bounded(monkeypatch):
+    bonus, meta = bot._v702_router_confluence_bonus({
+        "router_confluence_groups": ["PULLBACK", "PULLBACK", "BREAKOUT", "SWEEP", "MOMENTUM"]})
+    assert bonus == pytest.approx(1.5)
+    assert meta["group_count"] == 4
+    assert set(meta["groups"]) == {"PULLBACK", "BREAKOUT", "SWEEP", "MOMENTUM"}
+    monkeypatch.setitem(bot.CONFIG, "ROUTER_MULTI_STRATEGY_CONFLUENCE_ENABLE", False)
+    bonus_off, meta_off = bot._v702_router_confluence_bonus({"router_confluence_groups": ["PULLBACK", "BREAKOUT"]})
+    assert bonus_off == 0.0 and meta_off["group_count"] == 2
+
+
+def test_a85_router_runs_all_nine_detectors_and_returns_one_corroborated_candidate(monkeypatch):
+    specs = (
+        ("detect_mtf_pullback", "MTF_PULLBACK"), ("detect_pullback", "PULLBACK"),
+        ("detect_measured_move_breakout", "MEASURED_MOVE_BREAKOUT"),
+        ("detect_breakout_retest", "BREAKOUT_RETEST"),
+        ("detect_breakout_continuation", "BREAKOUT_CONTINUATION"),
+        ("detect_liquidity_sweep", "LIQUIDITY_SWEEP_REVERSAL"),
+        ("detect_momentum_expansion", "MOMENTUM_EXPANSION"),
+        ("detect_mean_reversion", "MEAN_REVERSION"),
+        ("detect_trend_continuation_soft", "TREND_CONTINUATION"),
+    )
+    called = []
+    for method, name in specs:
+        def _detector(*args, _name=name, **kwargs):
+            called.append(_name)
+            return True, {"family": _name, "detector": _name, "dist_atr": 0.2}
+        monkeypatch.setattr(bot.OpportunityDetectors, method, staticmethod(_detector))
+    result = bot.OpportunityRouter.classify({"symbol": "ROUTER-A85/USDT", "df_1d": object(),
+                                              "df_4h": object(), "df_15m": object(), "df_5m": object()})
+    assert len(called) == 9 and len(set(called)) == 9
+    assert result and result["family"] == "MTF_PULLBACK"
+    assert len(result["router_detector_hits"]) == 9
+    assert result["router_confluence_group_count"] == 6
+    assert "BREAKOUT" in result["router_confluence_groups"]
+
+
+def test_a85_stablecoin_lane_is_opt_in_shadow_only_and_reports_economic_block():
+    assert bot.CONFIG["STABLECOIN_MM_ENABLE"] is False
+    assert bot.CONFIG["STABLECOIN_MM_MODE"] == "SHADOW"
+    assert bot.StablecoinMarketMaker.live_is_armed() is False
+    fee = float(bot.CONFIG["STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE"])
+    now_ms = int(time.time() * 1000)
+    book = {"bids": [[0.9998, 2000.0]], "asks": [[1.0002, 2000.0]], "timestamp": now_ms}
+    trades = [{"id": "a85-buy", "timestamp": now_ms - 100, "side": "buy",
+               "price": 1.0002, "amount": 10.0}]
+    eligible, reason, metrics = bot.StablecoinMarketMaker.assess_quote(book, trades, fee, now_ms=now_ms)
+    assert not eligible and reason == "net_edge_below_floor"
+    assert metrics["fee_cost_bps"] == pytest.approx(20.0)
+    assert metrics["estimated_net_bps"] < metrics["required_net_bps"]

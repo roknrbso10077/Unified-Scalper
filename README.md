@@ -1,4 +1,37 @@
-# UNIFIED SCALPER V702 — A82 HIGHER-LOW SWING DISCOVERY + RESEARCH DIAGNOSTICS
+# UNIFIED SCALPER V702 — VERIFIED A84 RECOVERY / PARTIAL A85 SAFETY CORRECTION
+
+**Recovery revision:** `A84-RECOVERY-A85-PARTIAL-2026-11-20`  
+**Canonical executable:** `main.py` · **Archive limit:** 99 files  
+**Entry authority:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`
+
+## What is actually included
+
+- Preserves the A84 source package, its 99-file inventory, the original strategy engines, risk controls, lifecycle, SQLite telemetry, reconciliation, protection and Telegram text/outbox paths.
+- The existing BTC directional macro gate is observational by default (`V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE=0`); missing/unknown context and confirmed crash/extreme/hard-reject conditions remain fail-closed. Symbol-local HTF, structure, volume, liquidity, fee, spread, risk and PreSend gates are retained.
+- The existing Strategy Router evaluates nine built-in detectors, collapses correlated hits into six confluence groups, returns one candidate and caps the confluence bonus at 1.5 ranking points. This is a bounded Router enhancement, not a newly implemented full-market consensus system.
+- A83 stablecoin `USDC/USDT` research code is retained but **disabled by default** (`STABLECOIN_MM_ENABLE=0`). When explicitly enabled it remains `SHADOW` only, `STABLECOIN_MM_LIVE_ARM=0`, with no exchange order authority. The fallback fee assumption remains 0.1% per side, so the default 12 bps spread ceiling cannot satisfy the positive net-edge rule.
+- The two live arming switches remain explicitly off: `UNIFIED_LIVE_PILOT_ENABLE=0` and `UNIFIED_A55_LIVE_ARM=0`.
+
+## A85 scope not yet implemented in this package
+
+The following requested A85 deliverables are **not present** and are not claimed as complete: the dedicated `A85_MARKET_INTELLIGENCE_ENGINE`; full staged 500-pair radar/fair-rotation service beyond existing A79/A80 research paths; new complete BTC/ETH breadth and sector-rotation dashboard; end-to-end unified technical/SMC feature catalogue and cross-strategy statistical consensus beyond the existing Router confluence; the complete A85 trade-plan authority and expiry state machine; automatic multi-timeframe PNG chart renderer with Telegram `sendPhoto`; the expanded `/market`, `/top`, `/ready`, `/waiting`, `/analyze`, `/chart` and related read-only intelligence command suite; and the complete A85 walk-forward performance/adaptive research layer. Existing project capabilities remain, but they are not substitutes for those new A85 deliverables.
+
+## A83 stablecoin monitor — explicit opt-in
+
+- Default: `STABLECOIN_MM_ENABLE=0`, `STABLECOIN_MM_MODE=SHADOW`, `STABLECOIN_MM_LIVE_ARM=0`.
+- To start the read-only monitor intentionally, set `STABLECOIN_MM_ENABLE=1` in the deployment environment and retain `STABLECOIN_MM_MODE=SHADOW` and `STABLECOIN_MM_LIVE_ARM=0`. An existing `.env`, Railway or Render variable overrides the package default.
+- The 0.1%/side fallback fee equals 20 bps round trip before estimated slippage. The maximum permitted spread is 12 bps. Therefore the economic gate should reject quotes under the fallback assumption; do not set a zero-fee override unless the exact account/API/pair fee is independently confirmed.
+- Telegram queueing is not delivery acknowledgement. Shadow results are not actual exchange fills or realized PnL.
+
+## Validation and scope honesty
+
+- The clean recovery source passed `compileall`, `--validate-only`, and the 58-module regression suite (619 passed, 1 historical-fixture skip, 0 failed) in this environment.
+- No authenticated MEXC session, live order, real Telegram delivery acknowledgement, Docker target build, long-duration soak, or profitability validation was performed.
+- This is a verified recovery release of the existing code with an A83 safe-default correction. It is **not a completed A85 Market Intelligence & Visual Analyst release**.
+
+---
+
+## Historical A82 — Higher-low Swing discovery and research diagnostics
 
 **Current feature revision:** `A82-CLOSED-CANDLE-HIGHER-LOW-SWING-AND-RESEARCH-ERROR-TRUTH-2026-11-18` (historical A66 canonical distribution identity retained).
 **Canonical executable:** `main.py` · **Archive limit:** 99 files · **Mode:** `MONITOR_ONLY_NO_NEW_BUYS` / `NO_GO_UNATTENDED_LIVE`.
@@ -416,15 +449,15 @@ A81 final validation: 595 passed, 1 historical fixture skipped, 0 failed (596 co
 
 ## A83 — USDC/USDT Shadow spread-capture lane (2026-11-19)
 
-A83 adds an independent, read-only MEXC Spot research lane for `USDC/USDT`. It is **disabled by default** (`STABLECOIN_MM_ENABLE=0`) and runs only when explicitly enabled in `SHADOW` mode. It reads the public order book and public trade prints through CCXT; it does not require wallet access for the Shadow lane and does not submit exchange orders. Where the normalized trade aggressor side is missing, it can derive the taker side from MEXC raw `isBuyerMaker` metadata. `STABLECOIN_MM_LIVE_ARM` is informational only and cannot arm execution.
+A83 adds an independent, read-only MEXC Spot research lane for `USDC/USDT`. It is **disabled by default** (`STABLECOIN_MM_ENABLE=0`) and can be intentionally enabled in read-only `SHADOW` mode by setting `STABLECOIN_MM_ENABLE=1`. An existing deployment `.env` or platform variable overrides the package default. It reads the public order book and public trade prints through CCXT; it does not require wallet access for the Shadow lane and does not submit exchange orders. Where the normalized trade aggressor side is missing, it can derive the taker side from MEXC raw `isBuyerMaker` metadata. `STABLECOIN_MM_LIVE_ARM` is informational only and cannot arm execution.
 
 The Shadow lifecycle is persisted in SQLite (`stablecoin_mm_cycles` and `stablecoin_mm_events`) and restores an active cycle after restart. It tracks a simulated passive BUY quote, partial market-print fills, a cost-aware SELL quote, partial exits and a closed-cycle net estimate. A price touching a limit is **not** counted as a fill: public trade prints must cross the simulated price, or execute at the exact price after the visible queue-ahead estimate has been consumed. This remains an L2 approximation, not exchange-confirmed execution or a full queue-position reconstruction.
 
-Eligibility checks include valid non-crossed book, spread ceiling, USDC/USDT depeg band around 1.00, minimum depth on both sides, recent trade-flow evidence, estimated maker fees, slippage allowance, and a minimum net-edge / minimum-dollar-profit floor. The default fee model is a conservative fallback of `0.001` (0.1%) per side. A public `market.maker` value from CCXT is deliberately **not** treated as proof of the account-specific fee, because public market metadata may expose a generic/default rate. `STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE=0` is accepted only as an operator-supplied assumption after verifying the exact account, pair, and current fee terms; the code does not verify that promotion itself. With the default 0.1%/side fallback, 20 bps of round-trip fees exceed the default 12 bps spread ceiling, so no quote should pass until a verified lower maker-fee assumption is configured. This fail-closed behavior is intentional. The daily report is UTC and is queued through the existing durable Telegram Outbox.
+Eligibility checks include valid non-crossed book, spread ceiling, USDC/USDT depeg band around 1.00, minimum depth on both sides, recent trade-flow evidence, estimated maker fees, slippage allowance, and a minimum net-edge / minimum-dollar-profit floor. The default fee model is a deliberately conservative fallback of `0.001` (0.1%) per side. A public `market.maker` value from CCXT is deliberately **not** treated as proof of the account-specific fee, because public market metadata may expose a generic/default rate. `STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE=0` is accepted only as an operator-supplied assumption after verifying the exact account, pair, and current fee terms; the code does not verify that promotion itself. With the default 0.1%/side fallback, 20 bps of round-trip fees exceed the default 12 bps spread ceiling, so no quote should pass until a verified lower maker-fee assumption is configured. This fail-closed behavior is intentional. The daily report is UTC and is queued through the existing durable Telegram Outbox.
 
 The current implementation is a **Shadow research engine**, not a live market-making bot. The following are not claimed: actual exchange fills, realized wallet PnL, verified personal fee rate, historical profitability, or 24/7 MEXC/Telegram soak. A83 live order submission is intentionally absent; the existing canonical `MONITOR_ONLY_NO_NEW_BUYS` policy and all other live risk gates are unchanged.
 
-See `.env.example` for A83 settings. For a first shadow run, enable only `STABLECOIN_MM_ENABLE=1`, keep `STABLECOIN_MM_MODE=SHADOW`, retain a durable `SCALPER_DB` mount, and leave `STABLECOIN_MM_LIVE_ARM=0`. The lane remains disabled until the operator explicitly enables Shadow.
+See `.env.example` for A83 settings. For an intentional shadow run, set `STABLECOIN_MM_ENABLE=1`, keep `STABLECOIN_MM_MODE=SHADOW`, retain a durable `SCALPER_DB` mount, and leave `STABLECOIN_MM_LIVE_ARM=0`. Shadow monitoring starts automatically when `STABLECOIN_MM_ENABLE=1`; the task now retries transient market-metadata failures, and sends periodic Telegram status with the last reject reason plus observed spread/net-edge/required-edge metrics. It still will not fabricate trades: with a 0.1%/side fallback (20 bps round-trip) and a 12 bps spread ceiling, it correctly rejects every quote as economically unviable until a verified account/pair fee assumption is configured.
 
 
 ## A84 — A79 research fetch and A83 data-integrity closure (2026-11-19)
@@ -436,3 +469,14 @@ The A83 Shadow stablecoin simulator now fails closed on non-finite top-of-book v
 The supplied 2026-11-18 Micro Shadow report was negative across the reported strategies. Accordingly, no Micro engine was promoted to live execution and no bearish family-policy gate was weakened. The broader A79 data collection is for additional read-only research and WATCH-level discovery only. It is not a promise of frequent opportunities or daily income.
 
 A84 regression coverage includes scan authorization, research-map isolation, non-finite book/print rejection, timestamp freshness and future-print handling. See `FINAL_AUDIT_REPORT.md` for the full evidence and final test totals.
+
+
+## A85 — BTC directional policy removal, multi-detector confluence and A83 auto-monitor (2026-11-19)
+
+- BTC BULLISH/NEUTRAL/BEARISH is now **observational** in the canonical family policy by default (`V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE=0`). This removes the prior family-wide directional veto, not market safety: missing macro context still fails closed; confirmed `CRASH`/`EXTREME`/`HARD_REJECT` severity remains an unconditional blocker; each coin must still pass its own closed-candle HTF/local structure, liquidity, spread, fee, scoring, queue and pre-send gates. The old BTC directional veto can be restored explicitly with the environment key set to `1`.
+- BTC macro values remain reported for context. The scanner's 4H structural / 15m shock assessment remains as a systemic crash guard; it is not used as a blanket bearish regime veto. Symbol-local 1H/4H and intraday confirmation are retained.
+- The router continues evaluating all nine registered technical detectors in one scan and chooses one canonical candidate. Independent detector groups (pullback, breakout, sweep, momentum, mean reversion and trend) add only a small, capped corroboration score; correlated variants collapse into one group. This does not create duplicate orders or bypass any hard gate.
+- A83 is disabled by default in `.env.example`. When `STABLECOIN_MM_ENABLE=1` is explicitly configured, it runs in `SHADOW`, reports startup/periodic status and detailed cost diagnostics, and retries transient data failures. It never calls order endpoints. Existing `.env` values take precedence.
+- Fee fallback remains 0.1% per side until the exact account/pair rate has been verified. This means the default quote edge is intentionally non-viable versus the configured 12 bps spread cap; the worker now reports this instead of appearing silently disabled. Never set the override to zero solely because a consumer-facing promotion advertises zero fees.
+- New detector confluence is an advisory score modifier only. Micro 1m strategies and all intraday research engines remain Shadow-only because the supplied outcomes were net-negative; no daily income or positive expectancy is inferred.
+- Live entries remain under the existing `MONITOR_ONLY_NO_NEW_BUYS` release policy; no API keys are introduced and no live orders are submitted.

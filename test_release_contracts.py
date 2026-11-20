@@ -91,7 +91,7 @@ class CanonicalReleaseContracts(unittest.TestCase):
 
     def test_a59_bearish_recovery_has_explicit_fail_closed_canonical_policy(self):
         # The dedicated V425 route may pass only with its own Bearish local
-        # confirmation and non-crash severity; ordinary PULLBACK stays blocked.
+        # confirmation and non-crash severity; BTC direction is observational for ordinary families.
         ok, reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
             "PULLBACK", "BEARISH", strategy_mode="BEARISH_RECOVERY",
             local_regime="RECOVERY", market_phase="PULLBACK",
@@ -121,10 +121,10 @@ class CanonicalReleaseContracts(unittest.TestCase):
 
         ordinary, ordinary_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
             "PULLBACK", "BEARISH", strategy_mode="PULLBACK",
-            local_regime="RECOVERY", market_phase="PULLBACK",
+            local_regime="LOCAL_BULLISH", market_phase="PULLBACK",
             severity="BEARISH_NORMAL", strategy_style="SCALP")
-        self.assertFalse(ordinary)
-        self.assertEqual(ordinary_reason, "macro")
+        self.assertTrue(ordinary, ordinary_reason)
+        self.assertEqual(ordinary_reason, "allow")
 
     def test_a59_prequal_hook_observes_bearish_pullback_reject_without_changing_verdict(self):
         from types import SimpleNamespace

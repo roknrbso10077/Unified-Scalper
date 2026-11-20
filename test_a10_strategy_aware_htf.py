@@ -70,15 +70,19 @@ def test_mean_reversion_allowed_in_bullish_only_with_local_confirmation():
     assert not ok and reason == "local"
 
 
-def test_mean_reversion_bearish_macro_requires_local_recovery():
+def test_mean_reversion_uses_local_confirmation_not_btc_direction():
     ok, reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
         "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION",
         local_regime="LOCAL_BULLISH", market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP")
-    assert not ok and reason == "local"
+    assert ok and reason == "allow"
     ok, reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
         "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION",
         local_regime="LOCAL_RECOVERY", market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP")
     assert ok and reason == "allow"
+    missing, missing_reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
+        "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION",
+        local_regime="", market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP")
+    assert not missing and missing_reason == "local"
 
 
 def test_soft_htf_relief_requires_a_known_state_strength_and_local_confirmation():
@@ -105,7 +109,7 @@ def test_bearish_htf_allows_only_proven_local_recovery_for_reversal_families():
         family="PULLBACK", strategy_mode="PULLBACK", regime="BULLISH", local_regime="LOCAL_BULLISH",
         htf_state="BEARISH", htf_strength=48.0,
         snapshot={"macro_regime":"BULLISH", "local_regime":"LOCAL_BULLISH", "htf_state":"BEARISH", "htf_strength":48.0}))
-    assert not ok and ctx["reason"] == "bearish_htf_requires_reversal_confirmation"
+    assert not ok and ctx["reason"] == "bearish_symbol_htf_requires_local_recovery"
 
 
 def test_spot_long_only_size_slots_and_forbidden_assets_are_unchanged():

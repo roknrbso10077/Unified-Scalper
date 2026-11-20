@@ -51,7 +51,7 @@ def test_a51_integer_second_window_edges_do_not_create_false_retention_mismatch(
             setattr(cls, name, value)
 
 
-def test_a51_bearish_family_rejection_short_circuits_expensive_downstream_checks(monkeypatch):
+def test_a51_confirmed_crash_rejection_short_circuits_expensive_downstream_checks(monkeypatch):
     candidate = SimpleNamespace(
         symbol="ABC/USDT",
         side="long",
@@ -70,7 +70,7 @@ def test_a51_bearish_family_rejection_short_circuits_expensive_downstream_checks
         "tier": "LARGE",
         "spread_pct": 0.01,
         "macro_regime": "BEARISH",
-        "macro_severity": "BEARISH_NORMAL",
+        "macro_severity": "BEARISH_CRASH",
         "local_regime": "LOCAL_RECOVERY",
         "market_phase": "PULLBACK",
         "htf_strength": 70.0,
@@ -87,14 +87,21 @@ def test_a51_bearish_family_rejection_short_circuits_expensive_downstream_checks
     old_count = int(bot.STATS.get("v702_a51_regime_policy_prefilter_blocks", 0) or 0)
 
     result = bot._orig_v453_prequalify(ranked, {"ABC/USDT": snap})
-    assert result == (False, "family_regime_disallowed.macro")
+    assert result == (False, "family_regime_disallowed.severity")
     assert int(bot.STATS.get("v702_a51_regime_policy_prefilter_blocks", 0) or 0) == old_count + 1
     assert int(bot.STATS.get("v702_a51_regime_policy_prefilter_saved_checks", 0) or 0) >= 2
 
 
-def test_a51_crash_guard_and_live_regime_policy_contracts_remain_unchanged():
-    pullback_meta = bot.CanonicalStrategyPolicyRegistry.get("PULLBACK") or {}
-    assert "BEARISH" not in {str(x).upper() for x in pullback_meta.get("allowed_regimes", ())}
+def test_a51_crash_guard_remains_hard_while_btc_direction_gate_is_observational():
+    assert bot.CONFIG["V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE"] is False
+    allowed, reason, ctx = bot.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "BEARISH", strategy_mode="PULLBACK", local_regime="LOCAL_RECOVERY",
+        market_phase="PULLBACK", severity="BEARISH_NORMAL", strategy_style="SCALP")
+    assert allowed and reason == "allow" and ctx["macro_context_role"] == "OBSERVATIONAL_ONLY"
+    crash, crash_reason, _ = bot.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "BEARISH", strategy_mode="PULLBACK", local_regime="LOCAL_RECOVERY",
+        market_phase="PULLBACK", severity="BEARISH_CRASH", strategy_style="SCALP")
+    assert not crash and crash_reason == "severity"
     assert bot.CONFIG["V702_A48_BEARISH_V518_LIVE_ENABLE"] is False
     assert bot.CONFIG["V702_A48_BEARISH_NORMAL_SHADOW_ONLY"] is True
     assert bot.FINAL_CANONICAL_RUNTIME["hard_gate_bypass"] is False

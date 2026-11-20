@@ -250,10 +250,11 @@ CONFIG: Dict[str, Any] = {
     "ENABLE_LIVE_TRADING": False,    # Fail-closed default; LIVE requires explicit env confirmation
     "PAPER_TRADING_MODE": True,      # Fail-closed default; V621 explicit opt-in can disable this
     # A83 dedicated stablecoin spread-capture research lane. Public-data Shadow only.
-    "STABLECOIN_MM_ENABLE": False,
+    "STABLECOIN_MM_ENABLE": False,  # Explicit opt-in; SHADOW only, never live.
     "STABLECOIN_MM_MODE": "SHADOW",
     "STABLECOIN_MM_SYMBOL": "USDC/USDT",
     "STABLECOIN_MM_POLL_SEC": 15.0,
+    "STABLECOIN_MM_STATUS_INTERVAL_SEC": 900.0,
     "STABLECOIN_MM_MAX_CAPITAL_USDT": 100.0,
     "STABLECOIN_MM_RESERVE_USDT": 5.0,
     "STABLECOIN_MM_MAX_COMPLETED_CYCLES_PER_DAY": 100,
@@ -628,6 +629,9 @@ CONFIG: Dict[str, Any] = {
     "FAMILY_VOLUME_FLOOR_PENALTY_MAX": 4.0,
     # v4.2.2 - composite-aware router tie-break (within priority class).
     "ROUTER_COMPOSITE_TIEBREAK_ENABLE": True,
+    "ROUTER_MULTI_STRATEGY_CONFLUENCE_ENABLE": True,
+    "ROUTER_MULTI_STRATEGY_CONFLUENCE_POINTS_PER_GROUP": 0.5,
+    "ROUTER_MULTI_STRATEGY_CONFLUENCE_MAX_BONUS": 1.5,
     # v4.2.2 - canonical net-RR floor + risk-capture coherence (sizing).
     "SIZING_MIN_NET_RR_FLOOR": 0.30,
     "SIZING_MIN_RISK_CAPTURE": 0.0,
@@ -1380,7 +1384,8 @@ def _apply_loaded_environment_config() -> None:
         "STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE",
         "STABLECOIN_MM_ESTIMATED_SLIPPAGE_BPS", "STABLECOIN_MM_QUEUE_SAFETY_MULTIPLIER",
         "STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE",
-        "STABLECOIN_MM_TRADE_LOOKBACK_SEC", "STABLECOIN_MM_FETCH_TIMEOUT_SEC")
+        "STABLECOIN_MM_TRADE_LOOKBACK_SEC", "STABLECOIN_MM_FETCH_TIMEOUT_SEC",
+        "STABLECOIN_MM_STATUS_INTERVAL_SEC")
     for _key in _a83_float_keys:
         _raw = _env_first(_key)
         if _raw is not None:
@@ -5531,6 +5536,24 @@ class OpportunityRouter:
                 logger.debug(f"[Router] detector error {det_name}: {e}")
         if not results:
             return None
+        # A85: merge detector evidence without creating parallel candidates. Correlated
+        # detectors collapse into one family group, so corroboration is independent.
+        detector_groups = {
+            "MTF_PULLBACK": "PULLBACK", "PULLBACK": "PULLBACK",
+            "MEASURED_MOVE_BREAKOUT": "BREAKOUT", "BREAKOUT_RETEST": "BREAKOUT",
+            "BREAKOUT_CONTINUATION": "BREAKOUT",
+            "LIQUIDITY_SWEEP_REVERSAL": "SWEEP", "MOMENTUM_EXPANSION": "MOMENTUM",
+            "MEAN_REVERSION": "MEAN_REVERSION", "TREND_CONTINUATION": "TREND",
+        }
+        _router_hits = []
+        _router_groups = set()
+        for _hit in results:
+            _detector = str(_hit.get("detector") or _hit.get("family") or "").upper()
+            if _detector and _detector not in _router_hits:
+                _router_hits.append(_detector)
+            _group = detector_groups.get(_detector, detector_groups.get(str(_hit.get("family") or "").upper()))
+            if _group:
+                _router_groups.add(_group)
         # Priority order (higher = preferred):
         #   PULLBACK > BREAKOUT_RETEST > CONTINUATION > SWEEP > MOMENTUM >
         #   MEAN_REVERSION > TREND_CONTINUATION (soft, tail catch-all).
@@ -5552,7 +5575,12 @@ class OpportunityRouter:
             results.sort(key=lambda x:(detector_priority.get(x.get("detector",""),priority.get(x.get("family",""),0)),_router_quality(x)),reverse=True)
         else:
             results.sort(key=lambda x:detector_priority.get(x.get("detector",""),priority.get(x.get("family",""),0)),reverse=True)
-        return results[0]
+        winner = dict(results[0])
+        winner["router_detector_hits"] = list(_router_hits)
+        winner["router_corroborating_detectors"] = [x for x in _router_hits if x != str(winner.get("detector") or winner.get("family") or "").upper()]
+        winner["router_confluence_groups"] = sorted(_router_groups)
+        winner["router_confluence_group_count"] = len(_router_groups)
+        return winner
 
 
 # =============================================================================
@@ -5561,6 +5589,21 @@ class OpportunityRouter:
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def _v702_router_confluence_bonus(opp: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+    """Tiny bounded score bonus for independent same-cycle detector agreement."""
+    try:
+        groups = sorted({str(x).upper() for x in (opp.get("router_confluence_groups") or []) if str(x).strip()})
+        count = len(groups)
+        if not bool(CONFIG.get("ROUTER_MULTI_STRATEGY_CONFLUENCE_ENABLE", True)) or count < 2:
+            return 0.0, {"groups": groups, "group_count": count}
+        per_group = max(0.0, min(1.0, float(CONFIG.get("ROUTER_MULTI_STRATEGY_CONFLUENCE_POINTS_PER_GROUP", 0.5))))
+        cap = max(0.0, min(2.0, float(CONFIG.get("ROUTER_MULTI_STRATEGY_CONFLUENCE_MAX_BONUS", 1.5))))
+        bonus = min(cap, max(0, count - 1) * per_group)
+        return bonus, {"groups": groups, "group_count": count}
+    except Exception:
+        return 0.0, {"groups": [], "group_count": 0, "error": "confluence_unavailable"}
 
 
 class CompositeScorer:
@@ -7278,6 +7321,8 @@ CONFIG.update({
     # Master rollback switches
     "V410_MASTER_ENABLE": True,
     "V410_FAMILY_POLICY_ENABLE": True,
+    # BTC direction is observational; confirmed systemic crash remains a hard block.
+    "V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE": False,
     "V410_MICROSTRUCTURE_ENABLE": True,
     "V410_CONFLUENCE_ENABLE": True,
     "V410_EXECUTION_RESCUE_ENABLE": True,
@@ -7344,6 +7389,12 @@ CONFIG.update({
     "MTF_PULLBACK_REQUIRE_4H_TREND": True,
     "MTF_PULLBACK_REQUIRE_15M_STACK": True,
 })
+
+# A85: directional BTC regime is diagnostic by default, never a family-wide
+# long-entry veto. An operator can restore the historical gate explicitly.
+_macro_direction_gate_env = _env_first("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE")
+if _macro_direction_gate_env is not None:
+    CONFIG["V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE"] = str(_macro_direction_gate_env).strip().lower() in {"1", "true", "yes", "on"}
 
 _FAMILY_RANK = {"BELOW": 0, "MICRO": 1, "MID": 2, "LARGE": 3, "MAJORS": 4}
 
@@ -7419,8 +7470,9 @@ class FamilyPolicyLayer:
         ph = str(market_phase or "").upper()
         sev = str(severity or "").upper()
         sty = str(strategy_style or "").upper()
-        # R36: missing macro context is not NEUTRAL and cannot enter any neutral
-        # recovery/bridge path. Make the policy rejection explicit and fail-closed.
+        macro_direction_gate = bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
+        # Missing context remains fail-closed even though a known BTC direction is
+        # observational only. This prevents an unavailable snapshot masquerading as permission.
         if r in {"", "UNKNOWN", "NONE", "UNAVAILABLE", "DATA_MISSING", "N/A", "NA"}:
             return False, "macro_context_unavailable", {
                 "family": fam, "regime": r, "reason": "macro_context_unavailable",
@@ -7500,6 +7552,8 @@ class FamilyPolicyLayer:
             "allowed_regimes": (), "allowed_local_regimes": (),
             "allowed_severity": (), "allowed_phases": (), "allowed_styles": (),
             "policy_source": "legacy_family_policy",
+            "macro_direction_gate_enabled": macro_direction_gate,
+            "macro_context_role": "GATE" if macro_direction_gate else "OBSERVATIONAL_ONLY",
         }
 
         # Canonical strategy-mode registry takes precedence when present.
@@ -7519,9 +7573,9 @@ class FamilyPolicyLayer:
             })
             if bool(strategy_meta.get("enabled", True)) is False:
                 return False, "disabled", ctx
-            if r == "BEARISH" and sev in {"BEARISH_CRASH","CRASH"}:
+            if any(token in sev for token in ("CRASH", "EXTREME", "HARD_REJECT")):
                 return False, "severity", ctx
-            if regimes and r not in regimes:
+            if macro_direction_gate and regimes and r not in regimes:
                 return False, "macro", ctx
             # Dedicated recovery routes must carry their positive local and
             # severity evidence all the way into canonical Prequal.  Empty
@@ -7534,21 +7588,16 @@ class FamilyPolicyLayer:
             if bool(strategy_meta.get("require_severity", False)) and not sev:
                 ctx["required_severity_missing"] = True
                 return False, "severity", ctx
-            if sevs and sev and sev not in sevs:
+            if macro_direction_gate and sevs and sev and sev not in sevs:
                 return False, "severity", ctx
             if phases and ph and ph not in phases:
                 return False, "phase", ctx
             if styles and sty and sty not in styles:
                 return False, "style", ctx
-            # A10: mean-reversion is valid in BULLISH/NEUTRAL only with a known
-            # local setup state. In BEARISH macro, LONG_ONLY entries require a
-            # positively classified LOCAL_RECOVERY; this is not an HTF bypass.
+            # Mean reversion is local-first on every BTC regime: an actual local
+            # recovery/bullish/neutral setup is required; BTC direction is not a veto.
             if (fam == "MEAN_REVERSION" or sm == "MEAN_REVERSION") and not bool(globals().get("_V702_A9_BUILDING_REGIME_MATRIX", False)):
-                if r == "BEARISH" and lr != "LOCAL_RECOVERY":
-                    ctx.update({"v702_mr_bearish_local_recovery_required": True,
-                                "observed_local_regime": lr})
-                    return False, "local", ctx
-                if r in {"BULLISH", "NEUTRAL"} and lr not in {"LOCAL_RECOVERY", "LOCAL_BULLISH", "LOCAL_NEUTRAL"}:
+                if lr not in {"LOCAL_RECOVERY", "RECOVERY", "LOCAL_BULLISH", "LOCAL_NEUTRAL"}:
                     ctx.update({"v702_mr_local_confirmation_required": True,
                                 "observed_local_regime": lr})
                     return False, "local", ctx
@@ -7563,25 +7612,25 @@ class FamilyPolicyLayer:
                 "allowed_phases": tuple(sorted(phases)),
                 "allowed_styles": tuple(sorted(styles)),
             })
-            if r == "BEARISH" and sev in {"BEARISH_CRASH","CRASH"}:
+            if any(token in sev for token in ("CRASH", "EXTREME", "HARD_REJECT")):
                 return False, "severity", ctx
-            if r not in regimes:
+            if macro_direction_gate and r not in regimes:
                 return False, "macro", ctx
             if lr and lr not in locals_ok:
                 return False, "local", ctx
-            if sev and sev not in sevs:
+            if macro_direction_gate and sev and sev not in sevs:
                 return False, "severity", ctx
             if ph and ph not in phases:
                 return False, "phase", ctx
             if sty and sty not in styles:
                 return False, "style", ctx
-            if sm == "LOCAL_STRENGTH_BREAKOUT" and r == "BEARISH" and lr != "LOCAL_BULLISH":
+            if sm == "LOCAL_STRENGTH_BREAKOUT" and lr != "LOCAL_BULLISH":
                 return False, "local", ctx
             return True, "allow", ctx
         allowed = tuple(str(x).upper() for x in FamilyPolicyLayer.get_family_policy(fam).get(
             "allowed_regimes", ("NEUTRAL",)))
         ctx["allowed_regimes"] = allowed
-        if r not in set(allowed):
+        if macro_direction_gate and r not in set(allowed):
             return False, "macro", ctx
         return True, "allow", ctx
 
@@ -18412,7 +18461,7 @@ class SignalBuilder:
         except Exception:
             _v647_record_suppressed_exception()
         # v4.2.5 — Crash Guard hard gate: BEARISH_CRASH => zero new longs.
-        if regime == "BEARISH" and not V425BearishSeverity.allows_new_long(macro_severity):
+        if not V425BearishSeverity.allows_new_long(macro_severity):
             STATS['bearish_recovery_crash_blocks'] = STATS.get('bearish_recovery_crash_blocks', 0) + 1
             record_rejection(trace_id, symbol, "htf", "bearish_crash_guard", "regime",
                              ctx={"severity": macro_severity, "regime": regime})
@@ -18446,7 +18495,7 @@ class SignalBuilder:
         # non-crash severity), the candidate proceeds on LOCAL evidence with
         # strategy_mode='BEARISH_RECOVERY'. Any failure => original reject.
         _v425_recovery_opp = None
-        if not htf_pass and regime == "BEARISH" and htf_state == "BEARISH":
+        if not htf_pass and htf_state == "BEARISH":
             try:
                 _v425_rs = None
                 if df_btc_15m is not None and len(df_btc_15m) >= 21 and len(df_5m) >= 21:
@@ -19082,7 +19131,7 @@ class SignalBuilder:
             _v43_meta = CanonicalStrategyPolicyRegistry.get(str(_v425_mode).upper())
             if _v43_meta is not None:
                 _sev_up = str(macro_severity or "").upper()
-                if regime == "BEARISH" and _sev_up in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
+                if bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)) and regime == "BEARISH" and _sev_up in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
                     _htf_floor = None
                 else:
                     _htf_floor = float(_v43_meta.get("min_htf_strength_non_bearish", 55.0))
@@ -19153,7 +19202,7 @@ class SignalBuilder:
             # --- BEARISH structural compensation for sweep / mean-reversion --
             # Lowered bearish volume floor / MID tier are ONLY permitted with
             # extra structural evidence. Fail-closed: missing features => reject.
-            if regime == "BEARISH":
+            if local_regime != V425LocalRegime.LOCAL_BULLISH:
                 _v425_feats = V425LocalRegime._features(df_15m, df_5m)
                 if _v410_family == "LIQUIDITY_SWEEP_REVERSAL":
                     if not V425FamilyPolicyAdj.sweep_bearish_structural_ok(_v425_feats):
@@ -19951,8 +20000,12 @@ class SignalBuilder:
         _v410_boost, _v410_confluence = confluence_boost_v410(df_5m, bool(bos_confirmed), float(df_5m["close"].iloc[-2])) if CONFIG.get("V410_MASTER_ENABLE", True) else (0.0, {})
         _d1_adj, _d1_label = d1_bias_score_v410(market_data.get("df_1d"))
         _breadth_adj, _breadth_label = breadth_adjustment_v410(market_data)
-        score = _clamp(float(score) + _v410_boost + _d1_adj + _breadth_adj, 0.0, 100.0)
+        _router_bonus, _router_confluence_meta = _v702_router_confluence_bonus(opp)
+        score = _clamp(float(score) + _v410_boost + _d1_adj + _breadth_adj + _router_bonus, 0.0, 100.0)
         breakdown["v410_confluence"] = _v410_boost
+        breakdown["router_independent_confluence"] = _router_bonus
+        breakdown["router_confluence_groups"] = _router_confluence_meta.get("groups", [])
+        breakdown["router_confluence_group_count"] = int(_router_confluence_meta.get("group_count", 0))
         # v4.2.6 — bounded MTF confluence bonus. Hard MTF conditions have
         # already been proven by the detector; this only rewards the confluence
         # inside the existing composite score and never substitutes for it.
@@ -20058,19 +20111,15 @@ class SignalBuilder:
         is_live = bool(CONFIG.get("ENABLE_LIVE_TRADING", True)) and \
                   not bool(CONFIG.get("PAPER_TRADING_MODE", False))
         min_score = float(CONFIG["MIN_LIVE_SCORE"]) if is_live else float(CONFIG["MIN_PAPER_SCORE"])
-        # v4.0.7 TWEAK — BEARISH soft-gate score penalty. In BEARISH regime
-        # (family already restricted above), require a higher effective
-        # min_score instead of blocking outright. Bounded +8 so it never
-        # drifts into the general threshold policy.
-        if regime == "BEARISH":
-            min_score = min_score + 8.0
-        # v4.2.2 ENHANCEMENT (3) — regime-adaptive score floor. Adds a small
+        # A85: BTC directional regime is not an entry tax. Per-symbol trend,
+        # structure and execution quality are scored below; crash remains a hard gate.
+        # v4.2.2 ENHANCEMENT (3) — optional legacy regime-adaptive score floor. Adds a small
         # bounded per-regime offset ON TOP of the existing min_score (the
         # BEARISH +8 hard add above stays intact). Total drift is hard-clamped
         # to ±6 score points so it can never drift into general threshold
         # policy. Fail-closed: on any error the offset defaults to 0 (no-op).
         try:
-            if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True):
+            if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True) and bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)):
                 _offs = CONFIG.get("REGIME_SCORE_FLOOR_OFFSETS", {}) or {}
                 _off = float(_offs.get(str(regime), 0.0) or 0.0)
                 _off = max(-6.0, min(6.0, _off))  # hard bound
@@ -30283,6 +30332,7 @@ class StablecoinMarketMaker:
             return {"ok": True, "reason": "daily_cycle_cap_reached"}
         eligible, reason, assessed = cls.assess_quote(book, trades, fee_rate, now_ms)
         assessed["asks_levels"] = snap["asks_levels"]
+        assessed["fee_source"] = fee_source
         if not eligible:
             STATS["v702_a83_rejected_" + str(reason)] = int(STATS.get("v702_a83_rejected_" + str(reason), 0) or 0) + 1
             return {"ok": True, "reason": reason, "metrics": assessed}
@@ -30364,24 +30414,21 @@ class StablecoinMarketMaker:
             STATS["v702_a83_startup_state"] = "BLOCKED_SYMBOL_NOT_WHITELISTED"
             logger.critical("[A83-MM] refusing non-whitelisted symbol=%s", symbol)
             return
-        try:
-            if not (getattr(exchange, "markets", None) or {}):
-                await exchange.load_markets()
-            market = (getattr(exchange, "markets", {}) or {}).get(symbol)
-            if not isinstance(market, dict) or market.get("active") is False or not bool(market.get("spot")):
-                raise RuntimeError("MEXC spot market metadata not active/available")
-            if str(market.get("base") or "").upper() != "USDC" or str(market.get("quote") or "").upper() != "USDT":
-                raise RuntimeError("MEXC market base/quote mismatch")
-        except Exception as exc:
-            STATS["v702_a83_startup_state"] = "MARKET_METADATA_UNAVAILABLE"
-            STATS["v702_a83_last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
-            logger.error("[A83-MM] Shadow engine not started: %s", exc)
-            return
+        # Market metadata is validated by every tick. A temporary startup/API
+        # failure must not permanently disable this read-only lane; retry with
+        # bounded backoff below while every failed snapshot remains fail-closed.
         STATS["v702_a83_startup_state"] = "SHADOW_RUNNING"
         STATS["v702_a83_live_enabled"] = False
         logger.warning("[A83-MM] SHADOW only enabled for %s; virtual capital cap=%.2f USDT; no create_order calls",
                        symbol, float(CONFIG.get("STABLECOIN_MM_MAX_CAPITAL_USDT", 100.0)))
+        await cls._notify(
+            "<b>A83 STABLECOIN MM — SHADOW MONITOR STARTED</b>\n"
+            f"Pair: {symbol} · virtual capital cap: {float(CONFIG.get('STABLECOIN_MM_MAX_CAPITAL_USDT', 100.0)):.2f} USDT\n"
+            f"Fee assumption: {float(CONFIG.get('STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE', 0.001))*100:.4f}% per side unless a verified operator override is configured.\n"
+            "Read-only public market data; no live orders or wallet access."
+        )
         consecutive_errors = 0
+        last_status_notify = 0.0
         while _SHUTDOWN is None or not _SHUTDOWN.is_set():
             try:
                 result = await cls.tick(exchange)
@@ -30391,14 +30438,37 @@ class StablecoinMarketMaker:
                     consecutive_errors += 1
                 STATS["v702_a83_consecutive_errors"] = consecutive_errors
                 STATS["v702_a83_last_tick"] = {"ts": float(WALL_NOW()), "reason": result.get("reason"),
-                                               "state": result.get("state"), "ok": bool(result.get("ok"))}
+                                               "state": result.get("state"), "ok": bool(result.get("ok")),
+                                               "metrics": dict(result.get("metrics") or {})}
                 await cls._daily_report_tick()
+                status_interval = max(60.0, float(CONFIG.get("STABLECOIN_MM_STATUS_INTERVAL_SEC", 900.0)))
+                now_status = float(WALL_NOW())
+                if now_status - last_status_notify >= status_interval:
+                    last = STATS.get("v702_a83_last_tick", {}) or {}
+                    fee_rate = float(CONFIG.get("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE")
+                                      if CONFIG.get("STABLECOIN_MM_MAKER_FEE_RATE_OVERRIDE") is not None
+                                      else CONFIG.get("STABLECOIN_MM_FALLBACK_MAKER_FEE_RATE", 0.001))
+                    round_trip_fee_bps = fee_rate * 20000.0
+                    await cls._notify(
+                        "<b>A83 STABLECOIN MM — SHADOW STATUS</b>\n"
+                        f"Pair: {symbol} · state: {STATS.get('v702_a83_startup_state', 'SHADOW_RUNNING')}\n"
+                        f"Last tick: {str(last.get('reason') or 'no_result')} · ok={bool(last.get('ok'))}\n"
+                        f"Fee model: {fee_rate*100:.4f}%/side ({round_trip_fee_bps:.2f} bps round trip) + slippage\n"
+                        f"Spread ceiling: {float(CONFIG.get('STABLECOIN_MM_MAX_SPREAD_BPS', 12.0)):.2f} bps · minimum net: {float(CONFIG.get('STABLECOIN_MM_MIN_NET_BPS', 2.0)):.2f} bps\n"
+                        f"Observed spread/net/required: {float((last.get('metrics') or {}).get('spread_bps', 0.0)):.2f}/{float((last.get('metrics') or {}).get('estimated_net_bps', 0.0)):.2f}/{float((last.get('metrics') or {}).get('required_net_bps', 0.0)):.2f} bps\n"
+                        f"Reject details: {str(last.get('reason') or 'n/a')} · fee source: {str((last.get('metrics') or {}).get('fee_source') or 'configured_model')}\n"
+                        "No live orders. A quote is simulated only when the measured net edge passes all gates."
+                    )
+                    last_status_notify = now_status
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 consecutive_errors += 1
                 STATS["v702_a83_tick_errors"] = int(STATS.get("v702_a83_tick_errors", 0) or 0) + 1
                 STATS["v702_a83_last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
+                STATS["v702_a83_last_tick"] = {"ts": float(WALL_NOW()), "reason": "exception",
+                                               "state": "ERROR", "ok": False,
+                                               "error": STATS["v702_a83_last_error"], "metrics": {}}
                 logger.warning("[A83-MM] Shadow tick failed closed (%d): %s", consecutive_errors, exc)
             STATS["v702_a83_consecutive_errors"] = consecutive_errors
             max_errors = max(1, int(CONFIG.get("STABLECOIN_MM_MAX_API_ERRORS", 3)))
@@ -32473,9 +32543,12 @@ class V425LocalRegime:
 
     @classmethod
     def classify(cls, macro_regime: str, df_15m, df_5m) -> str:
+        """Classify the traded symbol from its own closed 15m/5m structure.
+
+        The BTC regime argument is retained for API compatibility and diagnostics;
+        it does not override symbol-local evidence.
+        """
         try:
-            if str(macro_regime).upper() != "BEARISH":
-                return "NON_BEARISH"
             f = cls._features(df_15m, df_5m)
             if f is None:
                 return cls.BEARISH  # fail-closed
@@ -32881,20 +32954,38 @@ def _v702_soft_htf_alignment_allowed(candidate=None, *, family: str = "", strate
             local_evidence = loc in {"LOCAL_BULLISH", "LOCAL_RECOVERY", "LOCAL_NEUTRAL", "BULLISH", "NEUTRAL", "NON_BEARISH"}
         if bool(CONFIG.get("V702_HTF_SOFT_CONTEXT_REQUIRE_LOCAL_CONFIRMATION", True)) and not local_evidence:
             ctx["reason"] = "local_confirmation_missing"; return False, ctx
-        if reg == "BEARISH":
-            if fam not in {"MEAN_REVERSION", "LIQUIDITY_SWEEP_REVERSAL", "EXTREME_FLUSH_REVERSAL", "FAILED_BREAKOUT_RECLAIM"}:
+        macro_gate = bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
+        reversal_families = {"MEAN_REVERSION", "LIQUIDITY_SWEEP_REVERSAL", "EXTREME_FLUSH_REVERSAL", "FAILED_BREAKOUT_RECLAIM"}
+        locally_positive = {"LOCAL_BULLISH", "LOCAL_RECOVERY", "RECOVERY", "LOCAL_NEUTRAL", "BULLISH", "NEUTRAL", "NON_BEARISH"}
+        locally_bearish = {"LOCAL_BEARISH", "BEARISH", "LOCAL_DISTRIBUTION"}
+        if macro_gate and reg == "BEARISH":
+            if fam not in reversal_families:
                 ctx["reason"] = "bearish_macro_not_allowed_for_soft_family"; return False, ctx
-            if loc != "LOCAL_RECOVERY" or sev not in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
+            if loc not in {"LOCAL_RECOVERY", "RECOVERY"} or sev not in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
                 ctx["reason"] = "bearish_macro_requires_local_recovery"; return False, ctx
-            # Existing family-native reversal and risk gates still run afterward.
+        elif not macro_gate:
+            # BTC up/down/neutral is observational. Weak symbol HTF still needs a
+            # real symbol-local reclaim/recovery; a directional BTC label cannot
+            # rescue a weak coin or block a strong one.
+            if state in {"BEARISH", "STRONG_BEARISH"}:
+                if fam not in reversal_families or loc not in {"LOCAL_RECOVERY", "RECOVERY"} or not local_evidence:
+                    ctx["reason"] = "bearish_symbol_htf_requires_local_recovery"; return False, ctx
+            elif loc in locally_bearish and not (fam in reversal_families and loc in {"LOCAL_RECOVERY", "RECOVERY"} and local_evidence):
+                ctx["reason"] = "symbol_local_regime_not_supportive"; return False, ctx
+            if policy == "CONTEXTUAL_FLOOR":
+                hard_floor = float(CONFIG.get("V702_HTF_PULLBACK_CONTEXT_FLOOR", 45.0))
+                if strength < hard_floor:
+                    ctx.update({"reason": "contextual_htf_floor_not_met", "strength": strength, "minimum": hard_floor}); return False, ctx
+                if loc not in locally_positive:
+                    ctx["reason"] = "pullback_requires_local_support"; return False, ctx
         elif reg in {"BULLISH", "NEUTRAL"}:
-            if loc in {"LOCAL_BEARISH", "BEARISH", "LOCAL_DISTRIBUTION"} and not local_evidence:
+            if loc in locally_bearish and not local_evidence:
                 ctx["reason"] = "local_reversal_confirmation_missing"; return False, ctx
             if policy == "CONTEXTUAL_FLOOR":
                 hard_floor = float(CONFIG.get("V702_HTF_PULLBACK_CONTEXT_FLOOR", 45.0))
                 if strength < hard_floor:
                     ctx.update({"reason": "contextual_htf_floor_not_met", "strength": strength, "minimum": hard_floor}); return False, ctx
-                if loc not in {"LOCAL_BULLISH", "LOCAL_RECOVERY", "LOCAL_NEUTRAL", "BULLISH", "NEUTRAL", "NON_BEARISH"}:
+                if loc not in locally_positive:
                     ctx["reason"] = "pullback_requires_local_support"; return False, ctx
         else:
             ctx["reason"] = "macro_context_unavailable"; return False, ctx
@@ -32929,6 +33020,8 @@ class V425FamilyPolicyAdj:
         """
         try:
             r = str(regime).upper()
+            if not bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)):
+                return FamilyPolicyLayer.htf_min_strength(family)
             if r == "NEUTRAL" and str(family).upper() == "PULLBACK":
                 floor = float(CONFIG.get("FAMILY_POLICY_PULLBACK_NEUTRAL_HTF_MIN", 33.0))
                 lo = float(CONFIG.get("FAMILY_POLICY_PULLBACK_NEUTRAL_HTF_MIN_ALLOWED", 30.0))
@@ -32955,6 +33048,8 @@ class V425FamilyPolicyAdj:
         try:
             r = str(regime).upper()
             base = FamilyPolicyLayer.volume_floor_ratio(family)
+            if not bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)):
+                return base
             if r == "BEARISH" and str(family).upper() == "LIQUIDITY_SWEEP_REVERSAL":
                 return float(CONFIG.get("V425_SWEEP_BEARISH_VOLUME_FLOOR", 1.1))
             return base
@@ -32965,8 +33060,9 @@ class V425FamilyPolicyAdj:
     def liquidity_acceptable(family: str, tier: str, regime: str) -> bool:
         try:
             r = str(regime).upper()
-            if r == "BEARISH" and str(family).upper() == "MEAN_REVERSION" and \
-                    bool(CONFIG.get("V425_MR_BEARISH_ALLOW_MID_TIER", True)):
+            if (bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
+                    and r == "BEARISH" and str(family).upper() == "MEAN_REVERSION"
+                    and bool(CONFIG.get("V425_MR_BEARISH_ALLOW_MID_TIER", True))):
                 return _FAMILY_RANK.get(str(tier), -1) >= _FAMILY_RANK.get("MID", 2)
             return FamilyPolicyLayer.liquidity_acceptable(family, tier)
         except Exception:
@@ -37539,8 +37635,9 @@ def _v453_prequalify(r: "RankedCandidate", snap_by_symbol: Dict[str, Dict[str, A
         try:
             _a51_regime = str(snap.get("macro_regime", snap.get("regime", "")) or "")
             _a51_severity = str(snap.get("bearish_severity", snap.get("macro_severity", "")) or "")
-            if (_a51_regime.upper() == "BEARISH"
-                    and _a51_severity.upper() not in {"BEARISH_CRASH", "CRASH"}
+            _a51_severity_hard = any(token in _a51_severity.upper() for token in ("CRASH", "EXTREME", "HARD_REJECT"))
+            _a51_macro_gate_enabled = bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
+            if ((_a51_severity_hard or (_a51_regime.upper() == "BEARISH" and _a51_macro_gate_enabled))
                     and bool(CONFIG.get("V410_MASTER_ENABLE", True))
                     and bool(CONFIG.get("V410_FAMILY_POLICY_ENABLE", True))):
                 _a51_family = str(getattr(c, "family", "") or getattr(c, "strategy_mode", "") or "").upper()
@@ -37561,24 +37658,30 @@ def _v453_prequalify(r: "RankedCandidate", snap_by_symbol: Dict[str, Dict[str, A
                     _a51_early_policy_decision = _a51_decision
                     _a51_policy_ok, _a51_policy_reason, _a51_policy_ctx = _a51_decision
                     if not _a51_policy_ok:
-                        _a51_recovered, _a51_recovery_reason, _a51_recovery_ctx = FamilyPolicyLayer.bounded_neutral_recovery_allowed(
-                            _a51_family, _a51_regime, strategy_mode=_a51_mode,
-                            local_regime=_a51_local, market_phase=str(_a51_phase or ""),
-                            severity=_a51_severity, strategy_style=_a51_style,
-                            candidate_features=feats, snapshot=snap,
-                            htf_strength=snap.get("htf_strength"))
+                        _a51_recovered = False
+                        _a51_recovery_reason = "not_applicable"
+                        _a51_recovery_ctx = {}
+                        # The legacy neutral-recovery helper is relevant only
+                        # when an operator explicitly restores the BTC direction gate.
+                        if _a51_policy_reason == "macro" and _a51_macro_gate_enabled:
+                            _a51_recovered, _a51_recovery_reason, _a51_recovery_ctx = FamilyPolicyLayer.bounded_neutral_recovery_allowed(
+                                _a51_family, _a51_regime, strategy_mode=_a51_mode,
+                                local_regime=_a51_local, market_phase=str(_a51_phase or ""),
+                                severity=_a51_severity, strategy_style=_a51_style,
+                                candidate_features=feats, snapshot=snap,
+                                htf_strength=snap.get("htf_strength"))
                         if not _a51_recovered:
                             _a51_reject_reason = f"family_regime_disallowed.{_a51_policy_reason}"
                             _a51_ctx = dict(_a51_policy_ctx or {})
                             _a51_ctx.update({
                                 "policy_reason": _a51_policy_reason,
-                                "recovery_attempted": True,
+                                "recovery_attempted": _a51_policy_reason == "macro" and _a51_macro_gate_enabled,
                                 "recovery_reason": _a51_recovery_reason,
                                 "recovery_active": bool(_v457_policy_recovery_active()),
                                 "htf_strength": snap.get("htf_strength"),
                                 "tier": tier,
-                                "policy_prefilter": "BEARISH_NON_CRASH_TERMINAL_DENIAL",
-                                "policy_prefilter_telemetry_only": False,
+                                "policy_prefilter": "CONFIRMED_CRASH_OR_EXPLICIT_MACRO_GATE",
+                                "macro_direction_gate_enabled": _a51_macro_gate_enabled,
                                 "downstream_checks_skipped": ["orderbook_depth", "htf_strength_resolution"],
                             })
                             STATS["v702_a51_regime_policy_prefilter_blocks"] = int(
@@ -37743,7 +37846,7 @@ def _v453_prequalify(r: "RankedCandidate", snap_by_symbol: Dict[str, Dict[str, A
             STATS["v45_last_local_regime"] = _local_for_hb
         regime = str(snap.get("macro_regime", snap.get("regime", "")) or "")
         severity = str(snap.get("bearish_severity", snap.get("macro_severity", "")) or "")
-        if regime == "BEARISH" and severity.upper() == "BEARISH_CRASH":
+        if "CRASH" in severity.upper():
             try:
                 _v702_a38_record_htf_crash_guard(sym, snap, c, reason="htf.bearish_crash_guard", stage="prequal",
                                                 details={"severity":severity,"regime":regime,"local_regime":_local_for_hb,
@@ -37875,7 +37978,7 @@ def _v453_prequalify(r: "RankedCandidate", snap_by_symbol: Dict[str, Dict[str, A
                     if not bool(meta.get("enabled", True)):
                         return False, "policy.strategy_disabled"
                     sev_up = severity.upper()
-                    if regime == "BEARISH" and sev_up in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
+                    if bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)) and regime == "BEARISH" and sev_up in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
                         htf_floor = None
                     else:
                         htf_floor = float(meta.get("min_htf_strength_non_bearish", 55.0))
@@ -40878,7 +40981,7 @@ def _v570_strategy_aware_canonical_floor(candidate, regime: str, family: str) ->
         if reg == "BEARISH":
             floor += 8.0
         try:
-            if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True):
+            if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True) and bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)):
                 offs = CONFIG.get("REGIME_SCORE_FLOOR_OFFSETS", {}) or {}
                 off = float(offs.get(reg, 0.0) or 0.0)
                 floor += max(-6.0, min(6.0, off))
@@ -44004,7 +44107,7 @@ def _v519_bridge_indicator_selftest() -> Dict[str, Any]:
             "SWING_PULLBACK", "BEARISH", strategy_mode="SWING_PULLBACK",
             local_regime="LOCAL_BULLISH", market_phase="TREND", severity="BEARISH_NORMAL", strategy_style="SWING"
         )
-        results["macro_policy_reason_is_explicit"] = (not _okm) and _rm == "macro"
+        results["macro_direction_is_observational"] = bool(_okm and _rm == "allow" and not _cm.get("macro_direction_gate_enabled", True) and _cm.get("macro_context_role") == "OBSERVATIONAL_ONLY")
         _okl, _rl, _cl = FamilyPolicyLayer.regime_policy_detail(
             "SWING_PULLBACK", "NEUTRAL", strategy_mode="SWING_PULLBACK",
             local_regime="LOCAL_BEARISH", market_phase="TREND", severity="NORMAL", strategy_style="SWING"
@@ -47306,7 +47409,7 @@ def _v542_exact_policy_precheck(symbol: str, candidate: Any, snapshot: Dict[str,
                 if not bool(_v43_meta.get("enabled", True)):
                     _v542_record_preflight(symbol, False, "policy.strategy_disabled", ctx)
                     return False, "policy.strategy_disabled", ctx
-                if regime == "BEARISH" and severity in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
+                if bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)) and regime == "BEARISH" and severity in {"BEARISH_NORMAL", "BEARISH_STRESSED", "NORMAL", "STRESSED"}:
                     _htf_floor = None
                 else:
                     _htf_floor = float(_v43_meta.get("min_htf_strength_non_bearish", 55.0))
@@ -61734,7 +61837,7 @@ def _v702_pb_elite_regime_safe(fs):
         macro = str(fs.get("macro_regime", fs.get("regime", "")) or "").upper()
         local = str(fs.get("local_regime", "") or "").upper()
         severity = str(fs.get("bearish_severity", fs.get("macro_severity", "")) or "").upper()
-        if macro == "BEARISH" or "CRASH" in severity or "EXTREME" in severity:
+        if "CRASH" in severity or "EXTREME" in severity or "HARD_REJECT" in severity:
             return False
         if "BEARISH" in local and local not in {"NON_BEARISH", "LOCAL_BULLISH"}:
             return False
@@ -68809,7 +68912,7 @@ def _v692_hard_bearish(snapshot):
             return True
         if bool(s.get("crash", False)) or severity in {"CRASH", "BEARISH_CRASH"}:
             return True
-        if regime == "BEARISH" and severity in {"BEARISH_STRESSED", "CRASH", "BEARISH_CRASH"}:
+        if severity in {"CRASH", "BEARISH_CRASH", "HARD_REJECT"}:
             return True
         return bool(s.get("genuine_bearish_displacement", False))
     except Exception:
@@ -68832,7 +68935,7 @@ def _v692_htf_recovery_snapshot(candidate, snapshot):
         local = str(snap.get("local_regime", "") or "").upper()
         if _v692_hard_bearish(snap):
             return None
-        if regime not in {"BULLISH", "NEUTRAL"}:
+        if regime not in {"BULLISH", "NEUTRAL", "BEARISH"}:
             return None
         if local not in {"LOCAL_BULLISH", "LOCAL_RECOVERY", "NON_BEARISH", ""}:
             return None
@@ -69459,7 +69562,7 @@ def _v693_native_context_recovery(candidate, snapshot, prior_reason: str):
         snap = dict(snapshot or {})
         regime = str(snap.get("regime", snap.get("macro_regime", "")) or "").upper()
         local = str(snap.get("local_regime", "") or "").upper()
-        if regime != "BULLISH" or local not in {"NON_BEARISH", "LOCAL_NEUTRAL", "", "NEUTRAL"}:
+        if regime not in {"BULLISH", "NEUTRAL", "BEARISH"} or local not in {"NON_BEARISH", "LOCAL_NEUTRAL", "LOCAL_BULLISH", "LOCAL_RECOVERY", "RECOVERY", "NEUTRAL"}:
             return None
         if _v692_hard_bearish(snap):
             return None
@@ -78966,10 +79069,9 @@ def _v702_projected_builder_score_floors(candidate: Any, snapshot: Optional[Dict
     regime = str(snap.get("regime", snap.get("macro_regime", getattr(candidate, "macro_regime", "") or
                   STATS.get("regime", STATS.get("v684_regime", "NEUTRAL")) or "NEUTRAL")) or "NEUTRAL").upper()
     base_min = float(CONFIG.get("MIN_LIVE_SCORE", 70.0) if is_live else CONFIG.get("MIN_PAPER_SCORE", 55.0))
-    if regime == "BEARISH":
-        base_min += 8.0
+    # BTC direction is informational unless the legacy macro gate is explicitly enabled.
     try:
-        if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True):
+        if CONFIG.get("REGIME_SCORE_FLOOR_ENABLE", True) and bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False)):
             offs = CONFIG.get("REGIME_SCORE_FLOOR_OFFSETS", {}) or {}
             base_min += max(-6.0, min(6.0, float(offs.get(regime, 0.0) or 0.0)))
     except Exception:
@@ -92996,6 +93098,7 @@ def _v702_a9_regime_compatibility_matrix() -> Dict[str, Any]:
     matrix: Dict[str, Any] = {}
     mismatches = []
     checked = 0
+    macro_direction_gate = bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
     data = CanonicalStrategyPolicyRegistry.data() if callable(getattr(CanonicalStrategyPolicyRegistry, "data", None)) else {}
     data = data if isinstance(data, dict) else {}
     globals()["_V702_A9_BUILDING_REGIME_MATRIX"] = True
@@ -93023,21 +93126,26 @@ def _v702_a9_regime_compatibility_matrix() -> Dict[str, Any]:
                     if not enabled:
                         continue
                     expected_allowed = (not allowed) or macro in allowed
-                    # Empty severity/local/phase isolates the macro-regime contract.
-                    if expected_allowed and str(reason).lower() == "macro":
-                        mismatches.append({"mode": mode_n, "regime": macro, "expected": "ALLOW", "actual": actual, "allowed": sorted(allowed)})
-                    elif not expected_allowed and bool(ok):
-                        mismatches.append({"mode": mode_n, "regime": macro, "expected": "BLOCK_MACRO", "actual": actual, "allowed": sorted(allowed)})
+                    # In observational mode this matrix records macro context but
+                    # does not enforce the registry directional allowlist.
+                    if macro_direction_gate:
+                        if expected_allowed and str(reason).lower() == "macro":
+                            mismatches.append({"mode": mode_n, "regime": macro, "expected": "ALLOW", "actual": actual, "allowed": sorted(allowed)})
+                        elif not expected_allowed and bool(ok):
+                            mismatches.append({"mode": mode_n, "regime": macro, "expected": "BLOCK_MACRO", "actual": actual, "allowed": sorted(allowed)})
                 except Exception as exc:
                     mode_row["actual"][macro] = "MATRIX_ERROR:" + type(exc).__name__
                     mismatches.append({"mode": mode_n, "regime": macro, "expected": "DECISION", "actual": "ERROR:" + type(exc).__name__})
             matrix[mode_n] = mode_row
     finally:
         globals()["_V702_A9_BUILDING_REGIME_MATRIX"] = False
+    macro_gate_enabled = bool(CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
     result = {
         "checked_mode_regime_cells": checked, "mode_count": len(matrix),
         "mismatch_count": len(mismatches), "mismatches": mismatches[:40],
         "matrix": matrix, "policy_authority": "CanonicalStrategyPolicyRegistry",
+        "macro_direction_gate_enabled": macro_gate_enabled,
+        "macro_context_role": "GATE" if macro_gate_enabled else "OBSERVATIONAL_ONLY",
         "trend_filter_disabled": False, "unknown_macro_fails_closed": True,
         "checked_at": float(WALL_NOW()),
     }
@@ -101837,9 +101945,9 @@ def _v702_a49_elite_htf_relief_decision(opp, htf_strength, *, regime="", severit
         current_regime = str(regime or fs.get("macro_regime") or fs.get("regime") or opp.get("macro_regime") or binding.get("regime") or "").upper()
         current_local_regime = str(fs.get("local_regime") or opp.get("local_regime") or binding.get("local_regime") or "").upper()
         current_severity = str(severity or fs.get("macro_severity") or fs.get("bearish_severity") or opp.get("macro_severity") or binding.get("severity") or "").upper()
-        if current_regime not in {"BULLISH", "NEUTRAL"}:
-            return {**base, "reason": "macro_regime_not_eligible", "regime": current_regime}
-        if any(token in current_severity for token in ("CRASH", "EXTREME", "HARD_REJECT", "STRESSED")):
+        if current_regime not in {"BULLISH", "NEUTRAL", "BEARISH"}:
+            return {**base, "reason": "macro_context_unavailable", "regime": current_regime}
+        if any(token in current_severity for token in ("CRASH", "EXTREME", "HARD_REJECT")):
             return {**base, "reason": "severity_not_eligible", "severity": current_severity}
         if (str(binding.get("regime", "")).upper() != current_regime
                 or str(binding.get("severity", "")).upper() != current_severity
@@ -106679,7 +106787,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
         _mr_bear_bad_ok, _mr_bear_bad_reason, _mr_bear_bad_ctx = FamilyPolicyLayer.regime_policy_detail("MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION", local_regime="LOCAL_BULLISH", market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP")
         _mr_bear_recovery_ok, _mr_bear_recovery_reason, _mr_bear_recovery_ctx = FamilyPolicyLayer.regime_policy_detail("MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION", local_regime="LOCAL_RECOVERY", market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP")
         _v702_a10_htf_checks["mean_reversion_bullish_requires_local_confirmation"] = bool(_mr_bull_ok and not _mr_no_local_ok and _mr_no_local_reason == "local")
-        _v702_a10_htf_checks["mean_reversion_bearish_requires_recovery"] = bool(not _mr_bear_bad_ok and _mr_bear_bad_reason == "local" and _mr_bear_recovery_ok)
+        _v702_a10_htf_checks["mean_reversion_uses_local_confirmation_not_btc_direction"] = bool(_mr_bear_bad_ok and _mr_bear_bad_reason == "allow" and _mr_bear_recovery_ok and _mr_no_local_reason == "local")
         _soft_ok, _soft_ctx = _v702_soft_htf_alignment_allowed(family="MEAN_REVERSION", strategy_mode="MEAN_REVERSION", regime="BULLISH", local_regime="LOCAL_RECOVERY", severity="NORMAL", htf_state="NEUTRAL", htf_strength=40.0, snapshot={"macro_regime":"BULLISH", "local_regime":"LOCAL_RECOVERY", "htf_state":"NEUTRAL", "htf_strength":40.0, "reclaim":True, "higher_low":True})
         _soft_missing_ok, _soft_missing_ctx = _v702_soft_htf_alignment_allowed(family="MEAN_REVERSION", strategy_mode="MEAN_REVERSION", regime="BULLISH", local_regime="", severity="NORMAL", htf_state="NEUTRAL", htf_strength=40.0, snapshot={"macro_regime":"BULLISH", "htf_state":"NEUTRAL", "htf_strength":40.0})
         _soft_weak_ok, _soft_weak_ctx = _v702_soft_htf_alignment_allowed(family="MEAN_REVERSION", strategy_mode="MEAN_REVERSION", regime="BULLISH", local_regime="LOCAL_RECOVERY", severity="NORMAL", htf_state="NEUTRAL", htf_strength=20.0, snapshot={"macro_regime":"BULLISH", "local_regime":"LOCAL_RECOVERY", "htf_state":"NEUTRAL", "htf_strength":20.0, "reclaim":True})
@@ -107729,12 +107837,12 @@ def _v702_a79_swing_items(cls, symbol, md, now=None):
                 btc_ret = (btc_now / btc_base - 1.0) * 100.0
                 rs_diff = abs_ret - btc_ret
         macro = str(STATS.get("v702_btc_macro_context_last_regime", "UNKNOWN")).upper()
-        bearish_context = macro == "BEARISH"
+        bearish_context = bool(macro == "BEARISH" and CONFIG.get("V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE", False))
         min_recovery_abs = float(CONFIG.get("V702_A79_SWING_RECOVERY_MIN_ABS_RETURN_PCT", 0.20))
         min_recovery_rs = float(CONFIG.get("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", 0.75))
-        # In a bearish BTC regime, Swing ideas may still be discovered, but a
-        # CONFIRMED long requires positive local trend and measurable leadership
-        # over BTC. Otherwise retain the setup as WATCH, never as a buy signal.
+        # BTC direction is observational by default. Swing confirmation requires
+        # the traded asset's own closed 1H/4H trend; relative BTC strength is a
+        # recorded metric, not a universal gate.
         bearish_local_confirm = bool(not bearish_context or (
             trend1 and trend4 and abs_ret is not None and rs_diff is not None
             and abs_ret >= min_recovery_abs and rs_diff >= min_recovery_rs

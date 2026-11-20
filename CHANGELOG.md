@@ -1,3 +1,19 @@
+# Changelog — Verified A84 recovery / partial A85 correction
+
+## 2026-11-20 — Recovery closeout and A83 opt-in safety default
+
+- Reconciled the shipped artifact against its actual source: the previous A85 draft contained the BTC directional-policy change and bounded Router confluence, but did **not** contain the requested full A85 market-intelligence engine or PNG chart delivery. Documentation was corrected so it no longer claims those missing features are implemented.
+- Changed `STABLECOIN_MM_ENABLE` to `False` in the canonical code defaults and `0` in `.env.example`, as required by the latest A85 safety specification. The A83 code, SQLite journal, fee checks and Shadow-only invariant remain in place. Explicit opt-in is required to run Shadow monitoring.
+- Kept `STABLECOIN_MM_MODE=SHADOW`, `STABLECOIN_MM_LIVE_ARM=0`, `UNIFIED_LIVE_PILOT_ENABLE=0`, `UNIFIED_A55_LIVE_ARM=0`, and `MONITOR_ONLY_NO_NEW_BUYS`.
+- Retained BTC directional macro as observational by default with crash/unknown fail-closed controls, and retained the existing nine-detector Router confluence capped at +1.5 ranking points.
+- Updated the A83 regression contract to assert disabled-by-default behavior while continuing to test fee economics and permanent no-live authority.
+- Preserved every original package path: 99 files, no added or removed files. Updated the manifest and SHA-256 ledger after final verification.
+- **Explicit non-delivery:** A85 full-market radar, advanced SMC/market breadth/sector engine, complete opportunity/plan authority, PNG chart renderer/Telegram photo delivery, full A85 command dashboard, and A85 adaptive/walk-forward analytics are not implemented in this recovery package.
+
+---
+
+---
+
 # A77 — Micro Shadow outcome Telegram follow-up and daily strategy reporting (2026-11-17)
 
 - Added a durable SQLite outcome outbox written atomically with the Micro sample transition. Once a 1m Micro sample that had an initial Telegram alert resolves, a unique follow-up event is persisted for `TP1`, `SL`, `TIMEOUT`, or `AMBIGUOUS_DATA_GAP`; a unique `sample_id` prevents duplicate result notifications and failed enqueue attempts remain retryable.

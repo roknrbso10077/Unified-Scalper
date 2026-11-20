@@ -117,13 +117,15 @@ def test_a9_micro_handoff_requires_a_timestamped_book_and_preserves_hard_fails()
     assert not ok and reason == "orderbook_stale"
 
 
-def test_a9_regime_matrix_matches_canonical_policy_and_does_not_open_bearish_pullback():
+def test_a9_regime_matrix_treats_btc_direction_as_observational_but_unknown_fails_closed():
     matrix = main.STATS["v702_a9_regime_compatibility_matrix"]
     assert matrix["checked_mode_regime_cells"] > 0
     assert matrix["mismatch_count"] == 0, matrix.get("mismatches")
     pullback = matrix["matrix"]["PULLBACK"]["actual"]
     assert pullback["NEUTRAL"] == "ALLOW"
-    assert pullback["BEARISH"] == "MACRO"
+    assert pullback["BEARISH"] == "ALLOW"
+    assert matrix["macro_context_role"] == "OBSERVATIONAL_ONLY"
+    assert matrix["macro_direction_gate_enabled"] is False
     ok, reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
         " PULLBACK ", " NEUTRAL ", strategy_mode=" PULLBACK ", local_regime="", market_phase="", severity="", strategy_style=""
     )
@@ -131,11 +133,11 @@ def test_a9_regime_matrix_matches_canonical_policy_and_does_not_open_bearish_pul
     ok, reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
         "PULLBACK", "BEARISH", strategy_mode="PULLBACK", local_regime="", market_phase="", severity="", strategy_style=""
     )
-    assert not ok and reason == "macro"
-    ok, reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
-        "PULLBACK", "NON_BEARISH", strategy_mode="PULLBACK", local_regime="", market_phase="", severity="", strategy_style=""
+    assert ok and reason == "allow"
+    ok, reason, ctx = main.FamilyPolicyLayer.regime_policy_detail(
+        "PULLBACK", "UNKNOWN", strategy_mode="PULLBACK", local_regime="", market_phase="", severity="", strategy_style=""
     )
-    assert not ok and reason == "macro"  # noncanonical macro remains fail-closed
+    assert not ok and reason == "macro_context_unavailable" and ctx["policy_context"] == "FAIL_CLOSED"
 
 
 def test_a9_shadow_skip_and_report_keep_all_four_independent_engines():
@@ -239,7 +241,12 @@ def test_a10_mean_reversion_macro_policy_uses_local_confirmation_and_bearish_rec
         "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION", local_regime="LOCAL_BULLISH",
         market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP"
     )
-    assert not bearish_without_recovery and bearish_reason == "local"
+    assert bearish_without_recovery and bearish_reason == "allow"
+    no_local, no_local_reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
+        "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION", local_regime="",
+        market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP"
+    )
+    assert not no_local and no_local_reason == "local"
     bearish_recovery, recovery_reason, _ = main.FamilyPolicyLayer.regime_policy_detail(
         "MEAN_REVERSION", "BEARISH", strategy_mode="MEAN_REVERSION", local_regime="LOCAL_RECOVERY",
         market_phase="REVERSAL", severity="BEARISH_NORMAL", strategy_style="SCALP"

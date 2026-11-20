@@ -1,3 +1,49 @@
+# FINAL AUDIT REPORT — VERIFIED RECOVERY RELEASE (2026-11-20)
+
+## Release identity
+
+- Base source: the supplied 99-file Unified Scalper V702 A84 archive.
+- Recovery revision: `A84-RECOVERY-A85-PARTIAL-2026-11-20`.
+- Final artifact: `FINAL_PRODUCTION_RELEASE_A85_RECOVERY.zip`.
+- Inventory: 99 files retained; no files added or removed.
+- Trading authority: `MONITOR_ONLY_NO_NEW_BUYS`; `UNIFIED_LIVE_PILOT_ENABLE=0`; `UNIFIED_A55_LIVE_ARM=0`.
+
+## Root cause of repeated incomplete A85 delivery
+
+A binary comparison of the previously named A84 and A85-provisional ZIPs showed that their `main.py` files were byte-for-byte identical (SHA-256 `4068a8aca7c83e16c2c592dc2161ae7f2e9bc80dda4ab667d78ba0a732bf0525`). Their `.env.example` files were also identical. The provisional archive had changed documentation/manifest metadata that described features not present in the executable. The full A85 market-intelligence engine and PNG chart renderer were absent. This is why repeated packaging did not produce the requested A85 behavior: staged documentation was updated without the corresponding runtime implementation being persisted into the release archive.
+
+## Actual changes in this recovery closeout
+
+1. Changed the stablecoin feature's canonical default from enabled to disabled (`STABLECOIN_MM_ENABLE=False`) and `.env.example` from `1` to `0`, matching the latest explicit A85 safe-default requirement.
+2. Kept the A83 `USDC/USDT` research engine and its fee/market-data validation. When manually enabled, it remains `SHADOW` only and has no live order authority.
+3. Kept BTC directional macro observational by default (`V410_FAMILY_MACRO_DIRECTION_GATE_ENABLE=0`) while retaining unknown/crash/extreme/hard-reject protections and all local symbol/market-risk gates.
+4. Kept the existing nine-detector Router confluence behavior, six deduplicated groups, and maximum +1.5 ranking-point contribution. It is not a full cross-strategy statistical consensus engine.
+5. Rewrote README/CHANGELOG and this report to distinguish implemented features from requested but missing A85 scope.
+6. Updated existing regression assertion, release manifests and SHA-256 ledger. No new file paths were added.
+
+## A85 items not implemented in this package
+
+The following must not be considered delivered: dedicated 500-pair staged A85 market radar/fair rotation; full BTC/ETH regime, breadth and sector-rotation intelligence service; complete multi-timeframe OHLCV feature fusion beyond the existing runtime; new full SMC/price-action/structure engine beyond the existing SMC capabilities; cross-engine statistical Strategy Consensus beyond the Router confluence; full top-3-to-5 opportunity ranking authority; complete A85 trade-plan/expiry/invalidation authority; automated 1H/15M/4H PNG chart rendering; Telegram `sendPhoto` workflow and complete new `/market`, `/top`, `/ready`, `/waiting`, `/analyze`, `/chart` command dashboard; full walk-forward/out-of-sample adaptive performance engine. These capabilities are not present as an integrated and tested A85 path in the delivered code.
+
+## Verification performed on the exact final ZIP extraction
+
+- `python -m compileall -q .`: PASS for the 73 Python files.
+- `SCALPER_DB=/tmp/a85_recovery_final_extract_validate.db python main.py --validate-only`: exit 0; `bot_started=false`; `live_threads=[]`; `active_env_aliases=[]`; no exchange credentials or Telegram credentials were present.
+- Full regression suite: **619 passed, 1 skipped, 0 failed** across 58 modules (32.76 seconds) on a clean extraction whose 73 Python files, `.env.example`, README, CHANGELOG and release manifests were byte-for-byte identical to this final build. The skipped test requires a historical A51 runtime log not packaged in the clean source ZIP.
+- Final-build extraction re-ran the release-contract and live-switch documentation tests: **45 passed, 1 historical-fixture skip, 0 failed**. The only later changes between the full-suite extraction and this final archive were the audit-report wording and checksum ledger.
+- `sha256sum -c A66_SHA256SUMS.txt`: 98/98 entries matched after final extraction. ZIP CRC and clean extraction passed; archive inventory is 99 paths (73 Python files).
+- A83 configuration contract updated to assert `STABLECOIN_MM_ENABLE is False`; fee economics remains tested using the fallback 0.1% maker fee per side (20 bps round trip) and 12 bps maximum spread, so the default quote remains economically blocked.
+- No authenticated MEXC session, wallet query, live order, real fill, real Telegram send/ACK, Docker image build, long soak, or profitability test was performed.
+
+## Operational notes
+
+- To keep A83 off: retain `STABLECOIN_MM_ENABLE=0`.
+- To intentionally run A83 Shadow: set `STABLECOIN_MM_ENABLE=1`, keep `STABLECOIN_MM_MODE=SHADOW` and `STABLECOIN_MM_LIVE_ARM=0`; check for overriding `.env`/Railway/Render values.
+- Do not force zero fees. The fallback is 0.1% per side and is not an account-specific fee guarantee.
+- Start with `python main.py --validate-only`; this checks configuration only and deliberately does not run background workers.
+
+---
+
 # FINAL PRODUCTION RELEASE — A84 Executive Audit Summary (2026-11-19)
 
 **Artifact:** `FINAL_PRODUCTION_RELEASE.zip`  
