@@ -1,10 +1,36 @@
-# UNIFIED SCALPER V702 — A85 MARKET INTELLIGENCE & VISUAL TRADE ANALYST
+# UNIFIED SCALPER V702 — A86 FULL MARKET BRAIN & ADAPTIVE OPPORTUNITY ENGINE
 
-**Active analytical revision:** `A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20`  
+## أحدث مراجعة وإصدار — A86 (2026-11-20)
+
+**A86 مدمج داخل `main.py` الحالي وليس برنامجًا بديلًا.** تم الحفاظ على 99 مسارًا بالضبط، مع تعديل وحدتي Python (`main.py` و`test_release_contracts.py`) وملفات الإعداد والتوثيق والـManifest. الاختبارات: **657 جُمعت، 656 ناجحًا، اختبار تاريخي واحد متخطّى، صفر إخفاقات** عبر 58 وحدة في عمليات معزولة؛ و`compileall` يغطي 73/73 ملف Python.
+
+**قرار التشغيل:** تحليل A86 ودفتر Paper للقياس فقط. تبقى `MONITOR_ONLY_NO_NEW_BUYS` و`UNIFIED_LIVE_PILOT_ENABLE=0` و`UNIFIED_A55_LIVE_ARM=0`. لا يوجد إثبات ربحية ولا اتصال خاص بـMEXC ولا أوامر حقيقية. لا تُعرض احتمالات BTC رقمية قبل اكتمال عينة معايرة لا تقل عن 30 نتيجة مستقبلية محلولة لكل أفق/فئة.
+
+**Active analytical revision:** `A86-FULL-MARKET-BRAIN-ADAPTIVE-OPPORTUNITY-ENGINE-2026-11-20`  
 **Canonical runtime:** `main.py` · **Archive limit:** 99 files (preserved exactly)  
 **Entry authority:** `MONITOR_ONLY_NO_NEW_BUYS` · **Live arming:** OFF
 
-## A85 implementation included in this release
+## A86 — integrated Market Brain
+
+A86 turns the existing A85 analyst into a bounded, read-only decision-support loop. It remains inside the current scan lifecycle and uses the shared ticker/closed-OHLCV snapshots; it does not start a second exchange downloader or gain canonical selector/order/execution authority.
+
+- **Market Radar:** considers up to 500 verified/available shared USDT ticker records, ranks an intermediate pool of up to 100–150 research candidates, and refreshes up to 15 high-priority candidates in the deep-analysis allocation. Deep candle analysis remains bounded to 60 symbols and the existing A79 four-timeframe request budget; 500 symbols are not represented as 500 deep OHLCV analyses per cycle.
+- **BTC scenario engine:** scores BULLISH/BEARISH/RANGE scenarios on 15M, 1H, 4H and 24H from closed Spot candles. These are normalized evidence scores, **not probabilities**. Empirical conditional frequencies are exposed only after at least 30 resolved forecasts for the same horizon and forecast class. Each forecast is later resolved against a subsequent closed candle.
+- **Relative-strength and sector view:** corrects the former mislabeled one-hour return (which compared roughly six hours), provides separate 1H/6H/4H/24H changes and equivalent-period relative strength against BTC, and surfaces static sector rotation only for explicitly classified symbols. Unknown sectors remain unknown.
+- **Strategy consensus and adaptive ranking:** conflicting family directions incur a bounded ranking penalty; an adaptive family/regime adjustment is possible only after at least 60 resolved A86 Paper outcomes, split chronologically into train/holdout with concordant expectancy. This adjustment changes ranking only—not eligibility, risk gates, queue routing or order authority.
+- **Paper trade ledger:** records economically valid READY/WAITING plans as reference simulations (not exchange fills), then follows future closed 1M/5M/15M candles. It accounts for estimated round-trip costs, records TP/SL/timeout, and labels same-candle stop-and-target hits `AMBIGUOUS`, excluding them from expectancy/Win Rate; missing market data becomes `DATA_GAP` after 24 hours and never fabricates an outcome. The ledger is separate from Opportunity-Hunter Shadow outcomes. No wallet balance is assumed; `A85_PAPER_CAPITAL_USDT=0` keeps position sizing as a capped reference notional.
+- **Portfolio Brain:** surfaces at most two diversified Paper candidates, avoids duplicate known sectors, and avoids pairwise return correlation at/above 0.85 only when a sufficient aligned sample exists. It does not fetch a private balance, reserve capital, add to the canonical selector or place orders.
+- **Telegram:** adds `/brain`, `/forecast` and `/paper`; the commands are read-only and report missing calibration/data explicitly. Existing commands and account/protection authorization remain unchanged.
+
+### A86 environment controls
+
+The new controls are documented in `.env.example`: radar maximum (100–500, default 500), priority refresh count (0–30, default 15), portfolio slots (1–2, default 2), Paper-ledger enablement/retention/caps, optional explicitly supplied Paper capital (default 0, no assumed wallet), forecast calibration floor (minimum 30), and adaptive ranking sample/maximum adjustment (minimum 60 observations; at most 5 score points). Values are range-checked by the existing A85 configuration loader.
+
+### Market-data and performance boundaries
+
+Market Cap, BTC Dominance, derivatives OI/Funding/liquidations and real CVD remain `UNAVAILABLE` until a verified provider is configured. The ticker Radar can inspect only symbols present in the shared ticker snapshot; its 500 ceiling is not proof that the full exchange universe was retrieved. Sector taxonomy is partial/static. Paper outcomes are OHLCV simulations, not fills or realized PnL. No return or daily profit is guaranteed.
+
+## A85 foundation retained and extended by A86
 
 A85 is integrated into the existing runtime and consumes the existing A79/A80 ticker snapshot and the shared closed-candle `market_data_map`. It does not start a parallel OHLCV downloader, does not add candidates to the canonical selector, and has no order-submission authority.
 
@@ -16,7 +42,7 @@ A85 is integrated into the existing runtime and consumes the existing A79/A80 ti
 - **Consensus and ranking:** A85 deduplicates fresh Opportunity-Hunter family evidence, exposes primary/supporting families and conflicts, and computes separate signal quality, execution quality, data confidence and ranking scores. The raw nine-detector Router remains the canonical candidate authority; A85 does not replace it or directly recompute every detector. Scores are not win probabilities.
 - **Trade plan:** best Ask reference, entry zone/preferred entry, bounded chase distance and expiry, structural/ATR stop, ordered targets using nearby structural resistance/Fibonacci extensions and conservative R fallbacks, estimated duration, invalidation conditions, and a cost ledger for two-side fees, spread, slippage, estimated net return/RR and position-notional estimate. `READY_NOW` requires closed 15M/5M trigger, 1M confirmation when 1M data exists, fresh order book, acceptable spread, top-five depth and positive configured net economics. It is a read-only analytical label, not an order instruction.
 - **Charts:** Matplotlib Agg renders actual PNG candles for 1H/15M with EMA 9/20/50/100/200, VWAP/Bollinger, support/resistance zones, FVG/OB proxies, swing levels, BOS/CHoCH and sweep markers, Fibonacci, approximate volume POC, volume bars, entry/SL/TP plan and timestamps. Telegram `sendPhoto` is used when credentials and the Telegram session are available; failures are recorded and text/TradingView fallback remains.
-- **Telegram read-only commands:** `/market`, `/top`, `/ready`, `/waiting`, `/analyze SYMBOL`, `/chart SYMBOL`, `/portfolio`, `/strategies`, `/performance`, `/regime`, `/help`. Existing order/protection commands remain in the original command handler and retain their original authorization.
+- **Telegram read-only commands:** `/market`, `/top`, `/ready`, `/waiting`, `/analyze SYMBOL`, `/chart SYMBOL`, `/portfolio`, `/strategies`, `/performance`, `/regime`, `/brain`, `/forecast`, `/paper`, `/help`. A86 commands are read-only. Existing order/protection commands remain in the original command handler and retain their original authorization.
 - **Shadow performance:** completed Opportunity-Hunter Shadow outcomes only; minimum 30 observations per reported group, chronological holdout split when the sample is large enough, no automated strategy-weight or execution-gate changes, and no win probability unless separately calibrated (currently reported as unavailable).
 - **Persistence/resource bounds:** A85 uses the existing SQLite DB path, bounded retention, bounded deep-analysis count, no duplicate OHLCV fetcher, one chart at a time per alert job, and image bytes are passed directly to Telegram rather than accumulated as permanent local files.
 

@@ -1574,6 +1574,258 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         self.assertEqual(shared["timeframe_integrity"], "FAILED")
         self.assertEqual(shared["reason"], "shared_1h_4h_frame_reference")
 
+    def test_a86_hourly_return_is_one_closed_hour_and_six_hour_return_is_separate(self):
+        now=bot.WALL_NOW()
+        asset=self._market_data(now,seed=2)
+        btc=self._market_data(now,seed=3)
+        btc_frame,_=bot.A85MarketIntelligence._closed(btc,"1H",now=now)
+        btc_frame4,_=bot.A85MarketIntelligence._closed(btc,"4H",now=now)
+        row=bot.A85MarketIntelligence._analyze_one("SOL/USDT",asset,
+            {"frame_1h":btc_frame,"frame_4h":btc_frame4},[],now)
+        closed,_=bot.A85MarketIntelligence._closed(asset,"1H",now=now)
+        expected=(float(closed.close.iloc[-1])/float(closed.close.iloc[-2])-1.0)*100.0
+        expected6=(float(closed.close.iloc[-1])/float(closed.close.iloc[-7])-1.0)*100.0
+        self.assertAlmostEqual(row["return_1h_pct"],expected,places=8)
+        self.assertAlmostEqual(row["return_6h_pct"],expected6,places=8)
+        self.assertAlmostEqual(row["relative_strength_vs_btc_pct"],
+            expected-(float(btc_frame.close.iloc[-1])/float(btc_frame.close.iloc[-2])-1.0)*100.0,places=8)
+
+    def test_a86_btc_forecast_never_claims_probability_without_empirical_sample(self):
+        import tempfile
+        now=bot.WALL_NOW()
+        btc=self._market_data(now,seed=7)
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a86-forecast.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_FORECAST_MIN_CALIBRATION_SAMPLE":30},clear=False):
+                result=bot.A85MarketIntelligence.market_forecast(btc,now=now)
+                rows=list(result["horizons"].values())
+                self.assertEqual(result["status"],"OK")
+                self.assertEqual(len(rows),4)
+                self.assertTrue(all(x["probabilities"] is None for x in rows))
+                self.assertTrue(all(x["calibration"]["status"]=="INSUFFICIENT_SAMPLE" for x in rows))
+                conn=bot.A85MarketIntelligence._connect()
+                try:
+                    count=conn.execute("SELECT COUNT(*) FROM a85_forecast_ledger").fetchone()[0]
+                finally:
+                    conn.close()
+        self.assertEqual(count,4)
+
+    def test_a86_paper_ledger_records_only_simulated_plans_without_execution_authority(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a86-paper.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            row={"symbol":"SOL/USDT","status":"READY_NOW","primary_strategy":"PULLBACK",
+                 "market_regime":"BEARISH","candle_ts":123456,
+                 "plan":{"economic_pass":True,"preferred_entry":100.0,"stop_loss":98.0,
+                         "entry_zone_low":99.5,"entry_zone_high":100.1,"entry_expiry_ts":9999999999,
+                         "round_trip_cost_pct":0.3,"risk_pct_including_costs":2.3,
+                         "targets":[{"price":103.0},{"price":104.0},{"price":106.0}],
+                         "paper_sizing":{"suggested_position_size_usdt":50.0}}}
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_PAPER_LEDGER_ENABLE":True},clear=False):
+                result=bot.A85MarketIntelligence._paper_record_rows([row],now=200000.0)
+                report=bot.A85MarketIntelligence.paper_performance()
+                conn=bot.A85MarketIntelligence._connect()
+                try:
+                    saved=conn.execute("SELECT status,notional_usdt,outcome_status FROM a85_paper_ledger").fetchone()
+                finally:
+                    conn.close()
+        self.assertEqual(result["recorded"],1)
+        self.assertEqual(saved["status"],"OPEN")
+        self.assertAlmostEqual(saved["notional_usdt"],50.0)
+        self.assertIsNone(saved["outcome_status"])
+        self.assertFalse(result["execution_authority"])
+        self.assertEqual(report["sample_count"],0)
+
+    def test_a86_portfolio_brain_avoids_duplicate_sector_and_stays_read_only(self):
+        rows=[
+            {"symbol":"SOL/USDT","sector":"L1_BLOCKCHAINS","status":"READY_NOW","ranking_score":95,
+             "primary_strategy":"PULLBACK","plan":{"economic_pass":True,"paper_sizing":{"suggested_position_size_usdt":75}}},
+            {"symbol":"AVAX/USDT","sector":"L1_BLOCKCHAINS","status":"WAITING_FOR_ENTRY","ranking_score":90,
+             "primary_strategy":"BREAKOUT","plan":{"economic_pass":True,"paper_sizing":{"suggested_position_size_usdt":75}}},
+            {"symbol":"UNI/USDT","sector":"DEFI","status":"READY_NOW","ranking_score":85,
+             "primary_strategy":"SWEEP","plan":{"economic_pass":True,"paper_sizing":{"suggested_position_size_usdt":50}}},
+        ]
+        result=bot.A85MarketIntelligence.portfolio_brain(rows,market_map={})
+        self.assertEqual([x["symbol"] for x in result["selected"]],["SOL/USDT","UNI/USDT"])
+        self.assertEqual(result["excluded"][0]["reason"],"DUPLICATE_SECTOR_EXPOSURE")
+        self.assertFalse(result["execution_authority"])
+        self.assertFalse(result["order_authority"])
+
+    def test_a86_adaptive_weight_requires_minimum_chronological_train_holdout_sample(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a86-adaptive.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_ADAPTIVE_MIN_SAMPLE":60},clear=False):
+                bot.A85MarketIntelligence._ensure_schema()
+                conn=bot.A85MarketIntelligence._connect()
+                try:
+                    for i in range(60):
+                        conn.execute("""INSERT INTO a85_paper_ledger
+                            (fingerprint,symbol,family,regime,timeframe,candle_ts,created_at,expires_at,
+                             entry_price,stop_price,tp1,cost_pct,risk_pct_including_costs,notional_usdt,
+                             status,outcome_status,outcome_net_r,resolved_at,details_json)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (f"fp-{i}",f"COIN{i}/USDT","PULLBACK","BEARISH","1H",i,1000+i,2000+i,
+                             100.0,98.0,103.0,0.2,2.2,50.0,"TP1","TP1",0.5,3000+i,"{}"))
+                    conn.commit()
+                finally:
+                    conn.close()
+                result=bot.A85MarketIntelligence._adaptive_strategy_adjustment("PULLBACK","BEARISH")
+        self.assertEqual(result["status"],"WALK_FORWARD_CONFIRMED")
+        self.assertEqual(result["train_sample"],30)
+        self.assertEqual(result["holdout_sample"],30)
+        self.assertGreater(result["adjustment"],0)
+        self.assertTrue(result["ranking_only"])
+        self.assertFalse(result["execution_or_gate_authority"])
+
+    def _a86_paper_resolution_fixture(self, db, ambiguous=False):
+        import tempfile
+        now0 = bot.WALL_NOW()
+        base_md = self._market_data(now0, seed=11)
+        candle_ts = int(base_md["df_1m"].index[-1].timestamp())
+        row = {"symbol": "SOL/USDT", "status": "READY_NOW", "primary_strategy": "PULLBACK",
+               "market_regime": "BEARISH", "candle_ts": candle_ts,
+               "plan": {"economic_pass": True, "preferred_entry": 102.0, "stop_loss": 98.0,
+                        "entry_zone_low": 101.8, "entry_zone_high": 102.2,
+                        "entry_expiry_ts": now0 + 3600, "round_trip_cost_pct": 0.2,
+                        "risk_pct_including_costs": 4.1,
+                        "targets": [{"price": 104.0}, {"price": 106.0}, {"price": 108.0}],
+                        "paper_sizing": {"suggested_position_size_usdt": 50.0}}}
+        bot.A85MarketIntelligence._schema_paths.discard(db)
+        with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_PAPER_LEDGER_ENABLE": True}, clear=False):
+            recorded = bot.A85MarketIntelligence._paper_record_rows([row], now=now0)
+            future_now = now0 + 180.0
+            future_frame = self._frame(60, future_now, seed=12)
+            later = future_frame.index > bot.pd.to_datetime(candle_ts, unit="s", utc=True)
+            future_frame.loc[later, "high"] = 103.0
+            future_frame.loc[later, "low"] = 100.0
+            future_frame.loc[later, "close"] = 102.0
+            future_frame.loc[later, "open"] = 102.0
+            last_idx = future_frame.index[-1]
+            future_frame.loc[last_idx, "high"] = 105.0
+            future_frame.loc[last_idx, "low"] = 97.0 if ambiguous else 100.0
+            future_md = {"df_1m": future_frame}
+            updated = bot.A85MarketIntelligence._paper_update_market({"SOL/USDT": future_md}, now=future_now)
+            conn = bot.A85MarketIntelligence._connect()
+            try:
+                saved = conn.execute("SELECT status,outcome_status,outcome_net_r,outcome_net_return_pct FROM a85_paper_ledger").fetchone()
+            finally:
+                conn.close()
+        return recorded, updated, dict(saved)
+
+    def test_a86_paper_ledger_resolves_tp_only_from_later_closed_candles(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a86-paper-tp.sqlite3")
+            recorded, updated, saved = self._a86_paper_resolution_fixture(db, ambiguous=False)
+        self.assertEqual(recorded["recorded"], 1)
+        self.assertEqual(updated["updated"], 1)
+        self.assertEqual(saved["status"], "TP1")
+        self.assertEqual(saved["outcome_status"], "TP1")
+        self.assertIsNotNone(saved["outcome_net_r"])
+        self.assertGreater(saved["outcome_net_r"], 0)
+        self.assertFalse(updated["execution_authority"])
+
+    def test_a86_paper_ledger_marks_same_candle_stop_and_target_as_ambiguous(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a86-paper-ambiguous.sqlite3")
+            recorded, updated, saved = self._a86_paper_resolution_fixture(db, ambiguous=True)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db}, clear=False):
+                performance = bot.A85MarketIntelligence.paper_performance()
+        self.assertEqual(recorded["recorded"], 1)
+        self.assertEqual(updated["updated"], 1)
+        self.assertEqual(saved["status"], "AMBIGUOUS")
+        self.assertEqual(saved["outcome_status"], "AMBIGUOUS")
+        self.assertIsNone(saved["outcome_net_r"])
+        self.assertEqual(performance["sample_count"], 0)
+        self.assertFalse(updated["execution_authority"])
+
+    def test_a86_paper_ledger_closes_unobserved_rows_without_fabricating_performance(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a86-paper-data-gap.sqlite3")
+            now = bot.WALL_NOW()
+            base_plan = {"economic_pass": True, "preferred_entry": 102.0, "stop_loss": 98.0,
+                         "entry_zone_low": 101.8, "entry_zone_high": 102.2,
+                         "entry_expiry_ts": now + 3600, "round_trip_cost_pct": 0.2,
+                         "risk_pct_including_costs": 4.1,
+                         "targets": [{"price": 104.0}, {"price": 106.0}],
+                         "paper_sizing": {"suggested_position_size_usdt": 50.0}}
+            rows = [
+                {"symbol": "SOL/USDT", "status": "READY_NOW", "primary_strategy": "PULLBACK",
+                 "market_regime": "BEARISH", "candle_ts": 1000, "plan": dict(base_plan)},
+                {"symbol": "AVAX/USDT", "status": "WAITING_FOR_ENTRY", "primary_strategy": "BREAKOUT",
+                 "market_regime": "BEARISH", "candle_ts": 1001, "plan": dict(base_plan)},
+            ]
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_PAPER_LEDGER_ENABLE": True}, clear=False):
+                recorded = bot.A85MarketIntelligence._paper_record_rows(rows, now=now)
+                updated = bot.A85MarketIntelligence._paper_update_market({}, now=now + 25 * 3600)
+                conn = bot.A85MarketIntelligence._connect()
+                try:
+                    statuses = {r["symbol"]: (r["status"], r["outcome_status"], r["outcome_net_r"])
+                                for r in conn.execute("SELECT symbol,status,outcome_status,outcome_net_r FROM a85_paper_ledger")}
+                finally:
+                    conn.close()
+                performance = bot.A85MarketIntelligence.paper_performance()
+        self.assertEqual(recorded["recorded"], 2)
+        self.assertEqual(updated["updated"], 2)
+        self.assertEqual(statuses["SOL/USDT"], ("DATA_GAP", "DATA_GAP", None))
+        self.assertEqual(statuses["AVAX/USDT"], ("EXPIRED", "EXPIRED", None))
+        self.assertEqual(performance["sample_count"], 0)
+        self.assertFalse(updated["execution_authority"])
+
+    def test_a86_500_pair_radar_is_bounded_to_available_verified_tickers(self):
+        import tempfile
+        now=bot.WALL_NOW()
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a86-radar.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            tickers={f"RAD{i:03d}/USDT":{"quoteVolume":5_000_000+i,"percentage":float(i%20),
+                      "bid":1.0,"ask":1.001,"last":1.0005} for i in range(530)}
+            with patch.dict(bot.CONFIG,{"DB_PATH":db,"A85_MAX_ANALYSIS_SYMBOLS":8,"A85_RADAR_MAX_UNIVERSE":500},clear=False):
+                result=bot.A85MarketIntelligence.scan_map({"BTC/USDT":self._market_data(now)},
+                    universe_count=530,ticker_snapshot=tickers)
+        self.assertEqual(result["fast_scan_available_symbols"],530)
+        self.assertEqual(result["radar_considered_symbols"],500)
+        self.assertEqual(result["radar_max_universe"],500)
+        self.assertIn("UP_TO_500",result["radar_scope"])
+        self.assertLessEqual(result["deep_analyzed_symbols"],8)
+
+    def test_a86_brain_forecast_and_paper_telegram_commands_are_read_only(self):
+        from unittest.mock import AsyncMock, patch
+        market = {"btc_forecast": {"overall_scenario": "RANGE", "available_horizons": 4,
+                  "horizons": {key: {"status": "OK", "predicted_scenario": "RANGE",
+                  "scenario_scores_pct": {"BULLISH": 30, "BEARISH": 25, "RANGE": 45},
+                  "calibration": {"status": "INSUFFICIENT_SAMPLE", "sample_count": 0}}
+                  for key in ("15M", "1H", "4H", "24H")} },
+                  "portfolio_brain": {"selected": [], "execution_authority": False}}
+        reply = AsyncMock()
+        async def run():
+            with patch.object(bot.A85MarketIntelligence, "market_snapshot", return_value=market), \
+                 patch.object(bot.A85MarketIntelligence, "paper_performance", return_value={"status": "INSUFFICIENT_SAMPLE", "sample_count": 0, "execution_authority": False}), \
+                 patch.object(bot.TelegramCommandController, "_reply", new=reply):
+                results = []
+                for command in ("/brain", "/forecast", "/paper"):
+                    results.append(await bot._v702_a85_readonly_dispatch(
+                        bot.TelegramCommandController, None,
+                        {"text": command, "chat": {"id": 123}}))
+                return results
+        handled = asyncio.run(run())
+        self.assertEqual(handled, [True, True, True])
+        self.assertEqual(reply.await_count, 3)
+        bodies = [str(call.args[1]) for call in reply.await_args_list]
+        self.assertIn("A86 MARKET BRAIN", bodies[0])
+        self.assertIn("No live orders", bodies[0])
+        self.assertIn("Scenario scores are not probabilities", bodies[1])
+        self.assertIn("SIMULATED, NOT REALIZED PNL", bodies[2])
+        self.assertFalse(bot.A85MarketIntelligence.execution_authority)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+
     def test_a85_runtime_identity_and_new_deep_fetch_budget_are_documented(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         env = (ROOT / ".env.example").read_text(encoding="utf-8")

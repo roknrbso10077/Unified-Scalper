@@ -1,3 +1,17 @@
+# A86 — Full Market Brain & Adaptive Opportunity Engine (2026-11-20)
+
+- Integrated A86 into the canonical `main.py`; no new runtime script or archive path. Preserved the existing 99-file inventory and the current V702 lifecycle, protections and Spot-only/monitor-only policy.
+- Added a bounded ticker radar (up to 500 available ticker records), intermediate candidate pool (100–150), priority refresh lane (default 15), and fair deep-analysis rotation while continuing to use the shared A79 four-timeframe fetch budget.
+- Corrected the `return_1h_pct` interval definition: 1H now compares adjacent closed 1H candles; 6H, 4H and 24H returns/relative strength are explicit separate fields. Strategy-family direction conflict now has a bounded ranking-only penalty.
+- Added BTC BULLISH/BEARISH/RANGE scenario scores for 15M/1H/4H/24H. Forecast records are resolved later with closed candles; empirical conditional frequencies are withheld until at least 30 resolved samples exist for each horizon and predicted class. Scores are not mislabeled probabilities.
+- Added an independent A85 Paper ledger for reference plans, future closed-candle entry/outcome tracking, round-trip modeled costs and Net R/return. Same-candle SL+TP is `AMBIGUOUS` and excluded from performance; unobserved open positions become `DATA_GAP` after 24 hours and expired waiting setups become `EXPIRED`; neither is counted as a trade win/loss. Simulated references are not exchange fills or realized PnL.
+- Added walk-forward, family/regime adaptive **ranking-only** adjustment after at least 60 resolved Paper outcomes with chronological train/holdout concordance; added a two-slot read-only Portfolio Brain that avoids duplicate known sectors and high measured correlations when enough aligned data exists.
+- Added read-only Telegram `/brain`, `/forecast` and `/paper` commands. Added configuration in `.env.example`, architecture/operating notes in `README.md`, focused regression coverage in the existing `test_release_contracts.py` (including later-candle TP, ambiguous same-bar SL/TP, missing-data expiry and read-only Telegram command tests), and refreshed the existing manifests/checksum ledger.
+- External market cap, BTC dominance, OI, funding, liquidations and real CVD remain unavailable without a verified provider. The radar ceiling does not claim 500 deep OHLCV analyses per cycle.
+- No order, account balance fetch, selector handoff, Futures, short, leverage or live trading authority was added. `MONITOR_ONLY_NO_NEW_BUYS` and existing risk gates remain unchanged.
+
+---
+
 # Changelog — Unified Scalper A85 Market Intelligence & Visual Trade Analyst
 
 ## 2026-11-20 — Recovery closeout and A83 opt-in safety default
@@ -2724,3 +2738,15 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Full packaged regression: 58 test modules, 12 isolated runs, 647 collected, **646 passed, 1 skipped, 0 failed**. Run pass counts: 70, 31, 86, 102, 6, 6, 9, 12, 29, 34, 28, 233. Each pytest process used its own SQLite test database.
 - Release contracts: 70 passed, 1 historical A51 fixture skipped, 0 failed. Intraday shadow module: 31 passed. A85/BTC focused regressions: 26 passed; daily Micro diagnostics: 2 passed (these focused subsets are included in the full-suite counts).
 - The one skip needs an A51 runtime log not bundled in the release. No live MEXC API, real Telegram delivery, private account fee lookup, live order, Docker/host load or profitability claim was tested.
+
+
+## Independent final audit and delivery closure — 2026-11-20
+
+- Re-verified the supplied A85 ZIP: 99 unique file paths, 73 Python sources; final inventory remains exactly 99 with no files added or removed.
+- `compileall`: 73/73 passed. Regression: 647 collected across 58 modules; 646 passed, one historical A51 fixture skipped, zero failed. The tests completed in 12 isolated groups with independent SQLite paths (pass counts: 32, 31, 26, 33, 44, 34, 50, 112, 35, 32, 40, 177). The combined one-process pytest invocation exceeded the 300-second limit and is not claimed as a pass.
+- Independently re-ran `test_release_contracts.py`: 70 passed, one historical A51 log skip; `test_v702_intraday_shadow.py`: 31 passed; selected A85 tests: 4 passed; focused daily Micro diagnostics: 2 passed. All focused results overlap with the full-suite total.
+- `python main.py --validate-only`: exit 0; bot did not start and no live threads were created. No MEXC/Telegram credentials were supplied.
+- No reproducible source-code defect was confirmed in this closure, so no Python logic or trading gate was changed. Six existing documentation/manifest/checksum files were updated; zero paths were added or removed.
+- Log diagnosis: 170 PreQual rejects / zero passes; the leading cause is HTF strength below strategy floor (136), followed by MICRO order-book/liquidity confirmation (10). No Select/Queue/Telegram/Execution progression is shown. Preserve `MONITOR_ONLY_NO_NEW_BUYS`; do not lower the gates to manufacture signals.
+- A85 is implemented as a bounded, read-only analyst over shared market snapshots; its scores are not calibrated win probabilities and external Market Cap/Dominance/OI/Funding/Liquidation/CVD feeds are not configured. See `FINAL_AUDIT_REPORT.md` for exact limits.
+- Validation environment was Python 3.13.5 while the Docker target is 3.12; `ccxt` and `aiosqlite` were unavailable in the sandbox; Docker and external network execution were not tested. Validate-only peak RSS was 586,568 KiB (572.8 MiB), so a 512 MB runtime is not validated. No real order, real fill, private fee, live Telegram delivery, soak or profitability was tested.

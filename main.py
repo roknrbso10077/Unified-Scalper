@@ -108506,7 +108506,7 @@ FINAL_CANONICAL_RUNTIME.update({
 # Read-only analytical layer over the already collected market_data_map.
 # It has no order, selector, queue, or execution authority.
 # =============================================================================
-V702_A85_REVISION = "A85-UNIFIED-MARKET-INTELLIGENCE-VISUAL-TRADE-ANALYST-2026-11-20"
+V702_A85_REVISION = "A86-FULL-MARKET-BRAIN-ADAPTIVE-OPPORTUNITY-ENGINE-2026-11-20"
 V702_A85_DIAGNOSTIC_CLOSURE_REVISION = "A85-DEPLOY-IDENTITY-MICRO-REJECTION-AND-ROTATED-DEEP-COVERAGE-CLOSURE-2026-11-20"
 STATS["v702_a85_diagnostic_closure_revision"] = V702_A85_DIAGNOSTIC_CLOSURE_REVISION
 CONFIG.setdefault("A85_INTELLIGENCE_ENABLE", True)
@@ -108582,6 +108582,20 @@ for _a85_spec in (
     ("A85_BOOK_DEPTH_MULTIPLIER", "A85_BOOK_DEPTH_MULTIPLIER", "float", 1.5, 1.0, 10.0),
     ("A85_MAX_CHASE_DISTANCE_PCT", "A85_MAX_CHASE_DISTANCE_PCT", "float", 0.35, 0.05, 2.0),
     ("A85_MIN_BOOK_IMBALANCE", "A85_MIN_BOOK_IMBALANCE", "float", -0.25, -1.0, 1.0),
+    ("A85_RADAR_MAX_UNIVERSE", "A85_RADAR_MAX_UNIVERSE", "int", 500, 100, 500),
+    ("A85_RADAR_REFRESH_TOP", "A85_RADAR_REFRESH_TOP", "int", 15, 0, 30),
+    ("A85_MAX_PORTFOLIO_SLOTS", "A85_MAX_PORTFOLIO_SLOTS", "int", 2, 1, 2),
+    ("A85_PAPER_LEDGER_ENABLE", "A85_PAPER_LEDGER_ENABLE", "bool", True, None, None),
+    ("A85_PAPER_CAPITAL_USDT", "A85_PAPER_CAPITAL_USDT", "float", 0.0, 0.0, 100000000.0),
+    ("A85_PAPER_RISK_PER_TRADE_PCT", "A85_PAPER_RISK_PER_TRADE_PCT", "float", 0.50, 0.10, 2.0),
+    ("A85_PAPER_MAX_POSITION_USDT", "A85_PAPER_MAX_POSITION_USDT", "float", 75.0, 5.0, 1000000.0),
+    ("A85_PAPER_MAX_ROWS", "A85_PAPER_MAX_ROWS", "int", 10000, 1000, 50000),
+    ("A85_PAPER_RETENTION_DAYS", "A85_PAPER_RETENTION_DAYS", "int", 90, 30, 365),
+    ("A85_FORECAST_RETENTION_DAYS", "A85_FORECAST_RETENTION_DAYS", "int", 180, 30, 730),
+    ("A85_FORECAST_MIN_CALIBRATION_SAMPLE", "A85_FORECAST_MIN_CALIBRATION_SAMPLE", "int", 30, 30, 10000),
+    ("A85_FORECAST_MAX_ROWS", "A85_FORECAST_MAX_ROWS", "int", 20000, 1000, 100000),
+    ("A85_ADAPTIVE_MIN_SAMPLE", "A85_ADAPTIVE_MIN_SAMPLE", "int", 60, 60, 10000),
+    ("A85_ADAPTIVE_MAX_ADJUSTMENT", "A85_ADAPTIVE_MAX_ADJUSTMENT", "float", 5.0, 0.0, 10.0),
 ):
     _a85_load_env_setting(*_a85_spec)
 del _a85_spec
@@ -108652,6 +108666,32 @@ class A85MarketIntelligence:
                     state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL, updated_at REAL NOT NULL)""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS a85_alert_state (
                     symbol TEXT PRIMARY KEY, last_alert_at REAL NOT NULL, fingerprint TEXT NOT NULL)""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_paper_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    symbol TEXT NOT NULL, family TEXT NOT NULL, regime TEXT NOT NULL,
+                    timeframe TEXT NOT NULL, candle_ts INTEGER NOT NULL, created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL, entry_price REAL NOT NULL,
+                    entry_zone_low REAL, entry_zone_high REAL, stop_price REAL NOT NULL,
+                    tp1 REAL NOT NULL, tp2 REAL, tp3 REAL, cost_pct REAL NOT NULL,
+                    risk_pct_including_costs REAL NOT NULL, notional_usdt REAL NOT NULL,
+                    status TEXT NOT NULL, entry_filled_at REAL, entry_filled_price REAL,
+                    last_candle_ts INTEGER NOT NULL DEFAULT 0, exit_price REAL,
+                    outcome_status TEXT, outcome_net_r REAL, outcome_net_return_pct REAL,
+                    max_target_hit INTEGER NOT NULL DEFAULT 0, resolved_at REAL,
+                    details_json TEXT NOT NULL DEFAULT '{}')""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_paper_status ON a85_paper_ledger(status,created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_paper_family ON a85_paper_ledger(family,regime,resolved_at)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_forecast_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL, horizon TEXT NOT NULL, candle_ts INTEGER NOT NULL,
+                    target_ts INTEGER NOT NULL, reference_price REAL NOT NULL,
+                    forecast_label TEXT NOT NULL, bull_score REAL NOT NULL,
+                    bear_score REAL NOT NULL, range_score REAL NOT NULL,
+                    range_band_pct REAL NOT NULL, created_at REAL NOT NULL,
+                    resolved_label TEXT, future_return_pct REAL, resolved_at REAL,
+                    UNIQUE(symbol,horizon,candle_ts))""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_forecast_pending ON a85_forecast_ledger(symbol,horizon,resolved_at,target_ts)")
                 conn.commit()
                 cls._schema_paths.add(path)
             finally:
@@ -109130,6 +109170,23 @@ class A85MarketIntelligence:
         total_cost_usdt=fee_cost_usdt+spread_cost_usdt+slippage_cost_usdt
         stop_risk_usdt=notional*risk_pct/100.0
         max_loss_including_costs_usdt=notional*stop_cost_pct/100.0
+        paper_capital=max(0.0,float(CONFIG.get("A85_PAPER_CAPITAL_USDT",0.0) or 0.0))
+        paper_risk_pct=max(0.10,min(2.0,float(CONFIG.get("A85_PAPER_RISK_PER_TRADE_PCT",0.50) or 0.50)))
+        paper_max_notional=max(1.0,float(CONFIG.get("A85_PAPER_MAX_POSITION_USDT",CONFIG.get("FIXED_POSITION_SIZE_USDT",75.0)) or 75.0))
+        if paper_capital>0:
+            paper_risk_budget=paper_capital*paper_risk_pct/100.0
+            paper_risk_sized_notional=paper_risk_budget/max(stop_cost_pct/100.0,1e-9)
+            paper_suggested_notional=min(paper_max_notional,paper_risk_sized_notional)
+            paper_sizing_status="RISK_BUDGET_SIZED_WITH_CONFIGURED_PAPER_CAPITAL"
+        else:
+            paper_risk_budget=None
+            paper_suggested_notional=paper_max_notional
+            paper_sizing_status="CAPITAL_NOT_CONFIGURED_FIXED_NOTIONAL_REFERENCE_ONLY"
+        paper_sizing={"status":paper_sizing_status,"capital_usdt":paper_capital if paper_capital>0 else None,
+                      "risk_per_trade_pct":paper_risk_pct,"risk_budget_usdt":paper_risk_budget,
+                      "suggested_position_size_usdt":round(max(1.0,paper_suggested_notional),2),
+                      "max_position_size_usdt":paper_max_notional,"paper_only":True,
+                      "available_exchange_balance_assumed":False}
         tps = []
         for tp in raw_targets:
             gross = (tp - entry) / entry * 100.0
@@ -109181,6 +109238,7 @@ class A85MarketIntelligence:
                 "fee_cost_usdt_round_trip":fee_cost_usdt,"spread_cost_usdt":spread_cost_usdt,
                 "slippage_cost_usdt_round_trip":slippage_cost_usdt,"total_estimated_cost_usdt":total_cost_usdt,
                 "stop_risk_usdt_before_costs":stop_risk_usdt,"max_loss_including_costs_usdt":max_loss_including_costs_usdt,
+                "paper_sizing":paper_sizing,
                 "risk_pct_before_costs":risk_pct,"risk_pct_including_costs": stop_cost_pct,
                 "entry_price_source":"BEST_ASK_FROM_MARKET_SNAPSHOT","exit_cost_model":"TWO_SIDE_FEES_PLUS_SPREAD_AND_TWO_SIDE_SLIPPAGE",
                 "book": book,
@@ -109226,7 +109284,7 @@ class A85MarketIntelligence:
                 "execution_authority": False}
 
     @classmethod
-    def _analyze_one(cls, symbol, md, btc_ind=None, hunter_signals=None, now=None):
+    def _analyze_one(cls, symbol, md, btc_ind=None, hunter_signals=None, now=None, market_regime=None):
         denied, why=cls._forbidden_or_stable(symbol)
         if denied: return None
         now=float(now or WALL_NOW())
@@ -109252,16 +109310,33 @@ class A85MarketIntelligence:
         alignment=bullish/max(1,len(valid_order))
         mtf_state="BULLISH" if bullish>=3 and bullish>bearish else "BEARISH" if bearish>=3 and bearish>bullish else "NEUTRAL"
         close=inds["1H"]["close"]
-        btc_return=None
+        def _period_return(frame, bars_back):
+            try:
+                values=pd.to_numeric(frame["close"],errors="coerce").dropna().astype(float)
+                if len(values)<=bars_back or float(values.iloc[-1-bars_back])<=0:
+                    return None
+                return (float(values.iloc[-1])/float(values.iloc[-1-bars_back])-1.0)*100.0
+            except Exception:
+                return None
+        btc_return_1h=btc_return_4h=btc_return_24h=None
         try:
             if btc_ind and btc_ind.get("frame_1h") is not None:
-                b=btc_ind["frame_1h"]["close"].astype(float)
-                if len(b)>=7:
-                    btc_return=(float(b.iloc[-1])/float(b.iloc[-7])-1)*100
-        except Exception: btc_return=None
-        c1=frames["1H"]["close"].astype(float)
-        ret1=(float(c1.iloc[-1])/float(c1.iloc[-7])-1)*100 if len(c1)>=7 and float(c1.iloc[-7])>0 else 0.0
-        rs=(ret1-btc_return) if btc_return is not None else None
+                btc_return_1h=_period_return(btc_ind["frame_1h"],1)
+                btc_return_6h=_period_return(btc_ind["frame_1h"],6)
+                btc_return_24h=_period_return(btc_ind["frame_1h"],24)
+            else:
+                btc_return_6h=None
+            if btc_ind and btc_ind.get("frame_4h") is not None:
+                btc_return_4h=_period_return(btc_ind["frame_4h"],1)
+        except Exception:
+            btc_return_1h=btc_return_4h=btc_return_24h=btc_return_6h=None
+        ret1=_period_return(frames["1H"],1)
+        ret6h=_period_return(frames["1H"],6)
+        ret24h=_period_return(frames["1H"],24)
+        ret4h=_period_return(frames["4H"],1) if "4H" in frames else None
+        rs=(ret1-btc_return_1h) if ret1 is not None and btc_return_1h is not None else None
+        rs4h=(ret4h-btc_return_4h) if ret4h is not None and btc_return_4h is not None else None
+        rs24h=(ret24h-btc_return_24h) if ret24h is not None and btc_return_24h is not None else None
         vratio=inds.get("15M",inds["1H"])["volume_ratio"]
         structure_score=1.0 if structure["structure"]=="BULLISH" else 0.5 if structure["structure"]=="MIXED" else 0.0
         volume_score=max(0.0,min(1.0,(vratio-0.7)/0.8))
@@ -109307,7 +109382,12 @@ class A85MarketIntelligence:
         imbalance_quality=max(0.0,min(100.0,50.0+50.0*(imbalance or 0.0))) if imbalance is not None else 0.0
         execution_quality=round(spread_quality*0.40+depth_quality*0.45+imbalance_quality*0.15,1)
         rr_quality=max(0.0,min(100.0,(cls._safe(plan.get("net_rr_tp1"),0.0) or 0.0)/2.0*100.0))
-        ranking_score=round(quality*0.55+execution_quality*0.20+rr_quality*0.15+data_confidence_score*0.10,1)
+        base_ranking_score=quality*0.55+execution_quality*0.20+rr_quality*0.15+data_confidence_score*0.10
+        consensus_penalty=12.0 if consensus.get("direction_conflict") else 0.0
+        strategy_adjustment=cls._adaptive_strategy_adjustment(primary, str(market_regime or md.get("market_regime") or "UNKNOWN"))
+        adaptive_delta=float(strategy_adjustment.get("adjustment",0.0) or 0.0)
+        ranking_score=round(max(0.0,min(100.0,base_ranking_score-consensus_penalty+adaptive_delta)),1)
+        sector=next((name for name,bases in cls._sector_by_base.items() if symbol.split("/",1)[0] in bases),None)
         return {"symbol":symbol,"status":status,"quality_score":quality,"signal_quality_score":signal_quality,
                 "data_confidence_score":data_confidence_score,"data_confidence":("HIGH" if len(inds)>=5 else "MEDIUM" if len(inds)>=3 else "LOW"),
                 "timeframes":{k:{"trend":v["trend"],"close":v["close"],"ema9":v["ema"][9],"ema20":v["ema"][20],"ema50":v["ema"][50],
@@ -109318,8 +109398,13 @@ class A85MarketIntelligence:
                                    "climax_1h":inds["1H"].get("volume_climax"),"buying_pressure_1h":inds["1H"].get("buying_pressure"),
                                    "accumulation_proxy_1h":inds["1H"].get("accumulation_proxy"),"distribution_proxy_1h":inds["1H"].get("distribution_proxy"),
                                    "volume_profile_1h":inds["1H"].get("volume_profile")},
-                "relative_strength_vs_btc_pct":rs,"return_1h_pct":ret1,"quote_vol_24h":cls._safe(md.get("quote_vol_24h")),"spread_pct":book.get("spread_pct"),
-                "execution_quality_score":execution_quality,"ranking_score":ranking_score,
+                "relative_strength_vs_btc_pct":rs,"relative_strength_vs_btc_1h_pct":rs,
+                "relative_strength_vs_btc_4h_pct":rs4h,"relative_strength_vs_btc_24h_pct":rs24h,
+                "return_1h_pct":ret1,"return_6h_pct":ret6h,"return_24h_pct":ret24h,"return_4h_pct":ret4h,
+                "quote_vol_24h":cls._safe(md.get("quote_vol_24h")),"spread_pct":book.get("spread_pct"),"sector":sector,
+                "execution_quality_score":execution_quality,"base_ranking_score":round(base_ranking_score,1),
+                "strategy_conflict_penalty":consensus_penalty,"adaptive_strategy_adjustment":strategy_adjustment,
+                "ranking_score":ranking_score,
                 "primary_strategy":primary,"supporting_strategies":families,"strategy_signal_count":len(families),
                 "strategy_consensus":consensus,"evidence_buckets":bucket_scores,"plan":{**plan,"status":status},"entry_confirmation":trigger,
                 "candle_ts":max(stamps.values()) if stamps else 0,"analyzed_at":now,"execution_authority":False,
@@ -109354,9 +109439,9 @@ class A85MarketIntelligence:
             ie=cls.indicators(eth1)
             if ie:
                 eth_trend=ie["trend"]
-                if len(eth1)>=7 and len(btc1)>=7:
-                    er=(float(eth1.close.iloc[-1])/float(eth1.close.iloc[-7])-1)*100
-                    br=(float(btc1.close.iloc[-1])/float(btc1.close.iloc[-7])-1)*100
+                if len(eth1)>=2 and len(btc1)>=2:
+                    er=(float(eth1.close.iloc[-1])/float(eth1.close.iloc[-2])-1)*100
+                    br=(float(btc1.close.iloc[-1])/float(btc1.close.iloc[-2])-1)*100
                     eth_rs=er-br
         btc15,ts15=cls._closed(btc or {},"15M",now) if isinstance(btc,dict) else (None,0)
         i15=cls.indicators(btc15) if btc15 is not None else None
@@ -109410,6 +109495,593 @@ class A85MarketIntelligence:
             return False
 
     @classmethod
+    def _adaptive_strategy_adjustment(cls, family, regime="UNKNOWN"):
+        """Small ranking-only adjustment from sufficiently large chronological paper samples."""
+        family_token = str(family or "UNKNOWN").upper()
+        regime_token = str(regime or "UNKNOWN").upper()
+        empty = {"adjustment": 0.0, "status": "INSUFFICIENT_SAMPLE", "sample_count": 0,
+                 "family": family_token, "regime": regime_token, "train_expectancy_r": None,
+                 "holdout_expectancy_r": None, "ranking_only": True}
+        if family_token == "UNKNOWN":
+            return {**empty, "status": "NO_PRIMARY_STRATEGY"}
+        cache = getattr(cls, "_adaptive_rank_cache", None)
+        if cache is None:
+            cache = {}
+            cls._adaptive_rank_cache = cache
+        cache_key = (family_token, regime_token)
+        cached = cache.get(cache_key)
+        cache_now = float(WALL_NOW())
+        if cached and cache_now - float(cached.get("cached_at", 0.0)) < 300.0:
+            return dict(cached["value"])
+        try:
+            cls._ensure_schema()
+            minimum = max(60, int(CONFIG.get("A85_ADAPTIVE_MIN_SAMPLE", 60)))
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    rows = conn.execute("""SELECT outcome_net_r FROM (
+                        SELECT outcome_net_r, resolved_at FROM a85_paper_ledger
+                        WHERE family=? AND regime=? AND outcome_status IN ('TP1','TP2','TP3','SL','TIMEOUT')
+                          AND outcome_net_r IS NOT NULL
+                        ORDER BY resolved_at DESC LIMIT 500) ORDER BY resolved_at ASC""",
+                        (family_token, regime_token)).fetchall()
+                finally:
+                    conn.close()
+            values = [float(r[0]) for r in rows if cls._safe(r[0]) is not None]
+            if len(values) < minimum:
+                result = {**empty, "sample_count": len(values), "minimum_sample": minimum}
+                cache[cache_key] = {"cached_at": cache_now, "value": result}
+                return result
+            split = len(values) // 2
+            train, holdout = values[:split], values[split:]
+            train_exp = sum(train) / len(train) if train else 0.0
+            holdout_exp = sum(holdout) / len(holdout) if holdout else 0.0
+            same_edge = (train_exp > 0 and holdout_exp > 0) or (train_exp < 0 and holdout_exp < 0)
+            max_adjust = max(0.0, float(CONFIG.get("A85_ADAPTIVE_MAX_ADJUSTMENT", 5.0)))
+            adjustment = max(-max_adjust, min(max_adjust, holdout_exp * 2.5)) if same_edge else 0.0
+            result = {"adjustment": round(adjustment, 2), "status": "WALK_FORWARD_CONFIRMED" if same_edge else "EDGE_NOT_STABLE",
+                      "sample_count": len(values), "train_sample": len(train), "holdout_sample": len(holdout),
+                      "train_expectancy_r": round(train_exp, 4), "holdout_expectancy_r": round(holdout_exp, 4),
+                      "family": family_token, "regime": regime_token, "ranking_only": True,
+                      "execution_or_gate_authority": False}
+            cache[cache_key] = {"cached_at": cache_now, "value": result}
+            return result
+        except Exception as exc:
+            STATS["a85_adaptive_rank_errors"] = int(STATS.get("a85_adaptive_rank_errors", 0) or 0) + 1
+            return {**empty, "status": f"UNAVAILABLE:{type(exc).__name__}"}
+
+    @classmethod
+    def _forecast_calibration(cls, horizon, forecast_label, now=None):
+        """Historical conditional outcome frequencies; never fabricate an uncalibrated probability."""
+        label = str(forecast_label or "UNKNOWN").upper()
+        minimum = max(30, int(CONFIG.get("A85_FORECAST_MIN_CALIBRATION_SAMPLE", 30)))
+        try:
+            cls._ensure_schema()
+            cutoff = float(now or WALL_NOW()) - max(30, int(CONFIG.get("A85_FORECAST_RETENTION_DAYS", 180))) * 86400.0
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    rows = conn.execute("""SELECT resolved_label FROM a85_forecast_ledger
+                        WHERE symbol='BTC/USDT' AND horizon=? AND forecast_label=?
+                          AND resolved_at IS NOT NULL AND resolved_at>=?
+                        ORDER BY resolved_at DESC LIMIT 2000""", (str(horizon), label, cutoff)).fetchall()
+                finally:
+                    conn.close()
+            outcomes = [str(r[0] or "UNKNOWN").upper() for r in rows]
+            n = len(outcomes)
+            if n < minimum:
+                return {"status": "INSUFFICIENT_SAMPLE", "sample_count": n, "minimum_sample": minimum,
+                        "historical_conditional_frequencies_pct": None, "probability_claim_permitted": False}
+            counts = {name: outcomes.count(name) for name in ("BULLISH", "BEARISH", "RANGE")}
+            freq = {name: round(value / n * 100.0, 1) for name, value in counts.items()}
+            return {"status": "EMPIRICALLY_CALIBRATED_BY_FORECAST_CLASS", "sample_count": n,
+                    "historical_conditional_frequencies_pct": freq,
+                    "probability_claim_permitted": True,
+                    "method": "REALIZED_FREQUENCIES_CONDITIONED_ON_PRIOR_FORECAST_CLASS_NOT_A_GUARANTEE"}
+        except Exception as exc:
+            return {"status": f"UNAVAILABLE:{type(exc).__name__}", "sample_count": 0,
+                    "historical_conditional_frequencies_pct": None, "probability_claim_permitted": False}
+
+    @classmethod
+    def _resolve_forecast_rows(cls, frame, horizon, interval_sec, now=None):
+        """Resolve pending BTC forecasts only against fully closed future candles."""
+        try:
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                return 0
+            index_seconds = [int(pd.Timestamp(x).timestamp()) for x in frame.index]
+            if not index_seconds:
+                return 0
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    pending = conn.execute("""SELECT id,target_ts,reference_price,range_band_pct
+                        FROM a85_forecast_ledger WHERE symbol='BTC/USDT' AND horizon=?
+                          AND resolved_at IS NULL AND target_ts<=? ORDER BY candle_ts ASC LIMIT 500""",
+                        (str(horizon), max(index_seconds))).fetchall()
+                    resolved = 0
+                    for row in pending:
+                        target_ts = int(row["target_ts"])
+                        pos = next((i for i, stamp in enumerate(index_seconds) if stamp >= target_ts), None)
+                        if pos is None:
+                            continue
+                        reference = cls._safe(row["reference_price"])
+                        future = cls._safe(frame["close"].iloc[pos])
+                        if reference is None or future is None or reference <= 0:
+                            continue
+                        change = (future / reference - 1.0) * 100.0
+                        band = max(0.05, float(row["range_band_pct"] or 0.12))
+                        actual = "BULLISH" if change > band else "BEARISH" if change < -band else "RANGE"
+                        conn.execute("UPDATE a85_forecast_ledger SET resolved_label=?,future_return_pct=?,resolved_at=? WHERE id=? AND resolved_at IS NULL",
+                                     (actual, change, float(now or WALL_NOW()), int(row["id"])))
+                        resolved += 1
+                    conn.commit()
+                    return resolved
+                finally:
+                    conn.close()
+        except Exception as exc:
+            STATS["a85_forecast_resolution_errors"] = int(STATS.get("a85_forecast_resolution_errors", 0) or 0) + 1
+            logger.debug("[A85-FORECAST] resolution failed: %s", type(exc).__name__)
+            return 0
+
+    @classmethod
+    def _score_btc_horizon(cls, btc_md, horizon, timeframe, interval_sec, now=None):
+        frame, candle_ts = cls._closed(btc_md or {}, timeframe, now=now)
+        if frame is None:
+            return {"status": "DATA_INCOMPLETE", "horizon": horizon, "timeframe": timeframe,
+                    "reason": "CLOSED_CANDLE_HISTORY_UNAVAILABLE", "probabilities": None}
+        ind = cls.indicators(frame)
+        if not ind:
+            return {"status": "DATA_INCOMPLETE", "horizon": horizon, "timeframe": timeframe,
+                    "reason": "INDICATOR_HISTORY_INSUFFICIENT", "probabilities": None}
+        structure = cls._structure_smc(frame, ind)
+        bull = 0.0
+        bear = 0.0
+        sideways = 0.0
+        close = float(ind["close"])
+        ema20, ema50 = float(ind["ema"][20]), float(ind["ema"][50])
+        slope = float(ind.get("ema20_slope_pct") or 0.0)
+        rsi = float(ind.get("rsi14") or 50.0)
+        macd = float(ind.get("macd_hist") or 0.0)
+        volume_ratio = float(ind.get("volume_ratio") or 0.0)
+        pressure = float(ind.get("buying_pressure") or 0.0)
+        if close > ema20 > ema50:
+            bull += 28
+        elif close < ema20 < ema50:
+            bear += 28
+        else:
+            sideways += 18
+            bull += 6 if close > ema20 else 0
+            bear += 6 if close < ema20 else 0
+        if slope > 0.04:
+            bull += 14
+        elif slope < -0.04:
+            bear += 14
+        else:
+            sideways += 10
+        if macd > 0:
+            bull += 12
+        elif macd < 0:
+            bear += 12
+        else:
+            sideways += 5
+        if rsi >= 56:
+            bull += 10
+        elif rsi <= 44:
+            bear += 10
+        else:
+            sideways += 10
+        if volume_ratio >= 1.25 and pressure >= 0.10:
+            bull += 12
+        elif volume_ratio >= 1.25 and pressure <= -0.10:
+            bear += 12
+        elif volume_ratio < 0.80:
+            sideways += 8
+        if structure.get("structure") == "BULLISH":
+            bull += 12
+        elif structure.get("structure") == "BEARISH":
+            bear += 12
+        else:
+            sideways += 5
+        if structure.get("bos") == "BULLISH_BOS" or structure.get("liquidity_sweep_low"):
+            bull += 8
+        if structure.get("bos") == "BEARISH_BOS" or structure.get("liquidity_sweep_high"):
+            bear += 8
+        if (ind.get("bb_width_pct") or 0) < 2.0:
+            sideways += 8
+        total = max(1.0, bull + bear + sideways)
+        scores = {"BULLISH": round(bull / total * 100.0, 1),
+                  "BEARISH": round(bear / total * 100.0, 1),
+                  "RANGE": round(sideways / total * 100.0, 1)}
+        label = max(scores, key=scores.get)
+        range_band = max(0.10, min(1.5, float(ind.get("atr_pct") or 0.5) * 0.20))
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    conn.execute("""INSERT OR IGNORE INTO a85_forecast_ledger
+                        (symbol,horizon,candle_ts,target_ts,reference_price,forecast_label,bull_score,bear_score,range_score,range_band_pct,created_at)
+                        VALUES('BTC/USDT',?,?,?,?,?,?,?,?,?,?)""",
+                        (str(horizon), int(candle_ts), int(candle_ts + interval_sec), close, label,
+                         scores["BULLISH"], scores["BEARISH"], scores["RANGE"], range_band, float(now or WALL_NOW())))
+                    retention = max(30, int(CONFIG.get("A85_FORECAST_RETENTION_DAYS", 180)))
+                    max_rows = max(1000, int(CONFIG.get("A85_FORECAST_MAX_ROWS", 20000)))
+                    conn.execute("DELETE FROM a85_forecast_ledger WHERE created_at<?", (float(now or WALL_NOW()) - retention * 86400.0,))
+                    conn.execute("DELETE FROM a85_forecast_ledger WHERE id NOT IN (SELECT id FROM a85_forecast_ledger ORDER BY created_at DESC LIMIT ?)", (max_rows,))
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as exc:
+            STATS["a85_forecast_persistence_errors"] = int(STATS.get("a85_forecast_persistence_errors", 0) or 0) + 1
+            logger.debug("[A85-FORECAST] persistence failed: %s", type(exc).__name__)
+        self_resolution = cls._resolve_forecast_rows(frame, horizon, interval_sec, now=now)
+        calibration = cls._forecast_calibration(horizon, label, now=now)
+        try:
+            closed_candles = len(frame)
+            confidence = "HIGH" if closed_candles >= 100 else "MEDIUM" if closed_candles >= 56 else "LOW"
+        except Exception:
+            confidence = "LOW"
+        return {"status": "OK", "horizon": horizon, "timeframe": timeframe,
+                "predicted_scenario": label, "scenario_scores_pct": scores,
+                "probabilities": calibration.get("historical_conditional_frequencies_pct") if calibration.get("probability_claim_permitted") else None,
+                "calibration": calibration, "data_confidence": confidence,
+                "reference_close": close, "candle_open_ts": int(candle_ts),
+                "range_band_pct_for_outcome_label": round(range_band, 3),
+                "evidence": {"trend": ind.get("trend"), "ema20_slope_pct": round(slope, 4),
+                             "rsi14": round(rsi, 2), "macd_hist": macd,
+                             "volume_ratio": round(volume_ratio, 3), "buying_pressure_proxy": round(pressure, 3),
+                             "structure": structure.get("structure"), "bos": structure.get("bos"),
+                             "liquidity_sweep_low": bool(structure.get("liquidity_sweep_low")),
+                             "liquidity_sweep_high": bool(structure.get("liquidity_sweep_high"))},
+                "resolved_forecasts_this_scan": self_resolution,
+                "interpretation": "SCENARIO_SCORE_NOT_PROBABILITY_UNLESS_EMPIRICAL_CALIBRATION_SAMPLE_IS_SUFFICIENT"}
+
+    @classmethod
+    def market_forecast(cls, btc_md, now=None):
+        """BTC multi-horizon scenario engine with a strict empirical calibration gate."""
+        now = float(now or WALL_NOW())
+        horizons = (("15M", "15M", 900), ("1H", "1H", 3600),
+                    ("4H", "4H", 14400), ("24H", "1D", 86400))
+        if not isinstance(btc_md, dict):
+            return {"status": "DATA_UNAVAILABLE", "source": "CLOSED_SPOT_OHLCV_ONLY", "horizons": {}}
+        results = {name: cls._score_btc_horizon(btc_md, name, tf, interval, now=now)
+                   for name, tf, interval in horizons}
+        usable = [v for v in results.values() if v.get("status") == "OK"]
+        overall = "UNKNOWN"
+        if usable:
+            bull = sum(float(x["scenario_scores_pct"]["BULLISH"]) for x in usable) / len(usable)
+            bear = sum(float(x["scenario_scores_pct"]["BEARISH"]) for x in usable) / len(usable)
+            side = sum(float(x["scenario_scores_pct"]["RANGE"]) for x in usable) / len(usable)
+            overall = max({"BULLISH": bull, "BEARISH": bear, "RANGE": side}, key={"BULLISH": bull, "BEARISH": bear, "RANGE": side}.get)
+        return {"status": "OK" if usable else "DATA_INCOMPLETE", "overall_scenario": overall,
+                "horizons": results, "available_horizons": len(usable),
+                "source": "MEXC_CLOSED_SPOT_OHLCV_ONLY",
+                "external_derivatives": "UNAVAILABLE_NO_VERIFIED_PROVIDER",
+                "probability_policy": "NO_PERCENT_PROBABILITY_UNTIL_30_PLUS_RESOLVED_FORECASTS_PER_HORIZON_AND_CLASS"}
+
+    @classmethod
+    def _paper_record_rows(cls, rows, now=None):
+        """Create independent simulated A85 trade records; this method cannot call an exchange."""
+        if not bool(CONFIG.get("A85_PAPER_LEDGER_ENABLE", True)):
+            return {"recorded": 0, "status": "DISABLED_BY_CONFIG", "execution_authority": False}
+        now = float(now or WALL_NOW())
+        recorded = 0
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    for row in rows or []:
+                        if str(row.get("status") or "").upper() not in {"READY_NOW", "WAITING_FOR_ENTRY"}:
+                            continue
+                        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+                        entry = cls._safe(plan.get("preferred_entry"))
+                        stop = cls._safe(plan.get("stop_loss"))
+                        targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
+                        tp = [cls._safe((x or {}).get("price")) for x in targets[:3]]
+                        if not plan.get("economic_pass") or entry is None or stop is None or entry <= stop or not tp or tp[0] is None:
+                            continue
+                        symbol = str(row.get("symbol") or "").upper()
+                        candle_ts = int(cls._safe(row.get("candle_ts"), 0) or 0)
+                        family = str(row.get("primary_strategy") or "UNKNOWN").upper()
+                        regime = str(row.get("market_regime") or "UNKNOWN").upper()
+                        fingerprint_source = (symbol, candle_ts, family, round(entry, 10), round(stop, 10))
+                        import hashlib
+                        fingerprint = hashlib.sha256(json.dumps(fingerprint_source).encode()).hexdigest()
+                        cost_pct = max(0.0, cls._safe(plan.get("round_trip_cost_pct"), 0.0) or 0.0)
+                        risk_pct = max(0.001, cls._safe(plan.get("risk_pct_including_costs"), ((entry-stop)/entry*100.0+cost_pct)) or 0.001)
+                        sizing = plan.get("paper_sizing") if isinstance(plan.get("paper_sizing"), dict) else {}
+                        notional = max(1.0, cls._safe(sizing.get("suggested_position_size_usdt"),
+                                                       CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)) or 75.0)
+                        ready = str(row.get("status")).upper() == "READY_NOW"
+                        expires = cls._safe(plan.get("entry_expiry_ts"), now + 3600.0) or now + 3600.0
+                        details = {"entry_method": "PAPER_REFERENCE_ASK_NO_LIVE_FILL", "entry_reason": "READY_NOW_REFERENCE" if ready else "WAITING_FOR_ENTRY_ZONE_TOUCH",
+                                   "execution_authority": False, "source": "A85_CLOSED_CANDLE_PLAN"}
+                        cur = conn.execute("""INSERT OR IGNORE INTO a85_paper_ledger
+                            (fingerprint,symbol,family,regime,timeframe,candle_ts,created_at,expires_at,
+                             entry_price,entry_zone_low,entry_zone_high,stop_price,tp1,tp2,tp3,cost_pct,
+                             risk_pct_including_costs,notional_usdt,status,entry_filled_at,entry_filled_price,
+                             last_candle_ts,details_json)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (fingerprint, symbol, family, regime, "1H", candle_ts, now, expires,
+                             entry, cls._safe(plan.get("entry_zone_low")), cls._safe(plan.get("entry_zone_high")),
+                             stop, tp[0], tp[1] if len(tp)>1 else None, tp[2] if len(tp)>2 else None,
+                             cost_pct, risk_pct, notional, "OPEN" if ready else "WAITING_ENTRY",
+                             now if ready else None, entry if ready else None, candle_ts,
+                             json.dumps(details, ensure_ascii=False, separators=(",", ":"))))
+                        recorded += max(0, int(cur.rowcount or 0))
+                    max_rows = max(1000, int(CONFIG.get("A85_PAPER_MAX_ROWS", 10000)))
+                    conn.execute("DELETE FROM a85_paper_ledger WHERE id NOT IN (SELECT id FROM a85_paper_ledger ORDER BY created_at DESC LIMIT ?)", (max_rows,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            STATS["a85_paper_ledger_records"] = int(STATS.get("a85_paper_ledger_records", 0) or 0) + recorded
+            return {"recorded": recorded, "status": "OK", "execution_authority": False}
+        except Exception as exc:
+            STATS["a85_paper_ledger_errors"] = int(STATS.get("a85_paper_ledger_errors", 0) or 0) + 1
+            logger.warning("[A85-PAPER] record failed: %s", type(exc).__name__)
+            return {"recorded": 0, "status": f"ERROR:{type(exc).__name__}", "execution_authority": False}
+
+    @classmethod
+    def _paper_update_market(cls, market_map, now=None):
+        """Resolve simulated entries/exits from future closed OHLCV bars; ambiguous bars are not guessed."""
+        if not bool(CONFIG.get("A85_PAPER_LEDGER_ENABLE", True)):
+            return {"updated": 0, "status": "DISABLED_BY_CONFIG", "execution_authority": False}
+        now = float(now or WALL_NOW())
+        updated = 0
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    active = conn.execute("SELECT * FROM a85_paper_ledger WHERE status IN ('WAITING_ENTRY','OPEN') ORDER BY created_at ASC LIMIT 2000").fetchall()
+                    for trade in active:
+                        md = (market_map or {}).get(str(trade["symbol"]))
+                        trade_state = str(trade["status"] or "UNKNOWN")
+                        if not isinstance(md, dict):
+                            if trade_state == "WAITING_ENTRY" and now >= float(trade["expires_at"] or 0):
+                                conn.execute("UPDATE a85_paper_ledger SET status='EXPIRED',outcome_status='EXPIRED',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            elif trade_state == "OPEN" and now - float(trade["created_at"] or now) >= 86400.0:
+                                # Missing market snapshots are a data gap, never a fabricated TP/SL outcome.
+                                conn.execute("UPDATE a85_paper_ledger SET status='DATA_GAP',outcome_status='DATA_GAP',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            continue
+                        selected_frame = None
+                        selected_tf = None
+                        selected_interval = None
+                        for tf, key, interval in (("1M", "df_1m", 60), ("5M", "df_5m", 300), ("15M", "df_15m", 900)):
+                            frame, _ = cls._closed(md, tf, now=now)
+                            if frame is not None:
+                                selected_frame, selected_tf, selected_interval = frame, tf, interval
+                                break
+                        if selected_frame is None:
+                            if trade_state == "WAITING_ENTRY" and now >= float(trade["expires_at"] or 0):
+                                conn.execute("UPDATE a85_paper_ledger SET status='EXPIRED',outcome_status='EXPIRED',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            elif trade_state == "OPEN" and now - float(trade["created_at"] or now) >= 86400.0:
+                                conn.execute("UPDATE a85_paper_ledger SET status='DATA_GAP',outcome_status='DATA_GAP',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            continue
+                        last_seen = int(trade["last_candle_ts"] or trade["candle_ts"] or 0)
+                        bars = []
+                        for idx, candle in selected_frame.iterrows():
+                            stamp = int(pd.Timestamp(idx).timestamp())
+                            if stamp > last_seen:
+                                bars.append((stamp, candle))
+                        if not bars:
+                            if trade_state == "WAITING_ENTRY" and now >= float(trade["expires_at"] or 0):
+                                conn.execute("UPDATE a85_paper_ledger SET status='EXPIRED',outcome_status='EXPIRED',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            elif trade_state == "OPEN" and now - float(trade["created_at"] or now) >= 86400.0:
+                                conn.execute("UPDATE a85_paper_ledger SET status='DATA_GAP',outcome_status='DATA_GAP',resolved_at=? WHERE id=?",
+                                             (now, int(trade["id"])))
+                                updated += 1
+                            continue
+                        state = str(trade["status"])
+                        entry = float(trade["entry_price"])
+                        stop = float(trade["stop_price"])
+                        targets = [("TP1", cls._safe(trade["tp1"])), ("TP2", cls._safe(trade["tp2"])), ("TP3", cls._safe(trade["tp3"]))]
+                        cost_pct = float(trade["cost_pct"] or 0.0)
+                        risk_pct = max(0.001, float(trade["risk_pct_including_costs"] or 0.001))
+                        filled_at = trade["entry_filled_at"]
+                        last_stamp = last_seen
+                        final_update = None
+                        max_target_hit = int(trade["max_target_hit"] or 0)
+                        for stamp, candle in bars:
+                            last_stamp = stamp
+                            high = cls._safe(candle.get("high")); low = cls._safe(candle.get("low")); close = cls._safe(candle.get("close"))
+                            if high is None or low is None or close is None:
+                                continue
+                            if state == "WAITING_ENTRY":
+                                zone_low = cls._safe(trade["entry_zone_low"], entry) or entry
+                                zone_high = cls._safe(trade["entry_zone_high"], entry) or entry
+                                if high >= zone_low and low <= zone_high:
+                                    state = "OPEN"
+                                    filled_at = stamp + selected_interval
+                                    # Do not score TP/SL from the same candle that filled the simulated limit.
+                                continue
+                            hit_targets = [(name, price, number) for number, (name, price) in enumerate(targets, 1)
+                                           if price is not None and high >= price]
+                            stop_hit = low <= stop
+                            if stop_hit and hit_targets:
+                                final_update = ("AMBIGUOUS", None, None, None)
+                                break
+                            if stop_hit:
+                                exit_price = stop
+                                net_pct = ((exit_price / entry) - 1.0) * 100.0 - cost_pct
+                                final_update = ("SL", exit_price, net_pct, net_pct / risk_pct)
+                                break
+                            if hit_targets:
+                                name, exit_price, target_number = max(hit_targets, key=lambda x: x[2])
+                                max_target_hit = max(max_target_hit, target_number)
+                                net_pct = ((exit_price / entry) - 1.0) * 100.0 - cost_pct
+                                final_update = (name, exit_price, net_pct, net_pct / risk_pct)
+                                break
+                        if state == "WAITING_ENTRY" and now >= float(trade["expires_at"]):
+                            conn.execute("UPDATE a85_paper_ledger SET status='EXPIRED',outcome_status='EXPIRED',resolved_at=?,last_candle_ts=? WHERE id=?",
+                                         (now, last_stamp, int(trade["id"])))
+                            updated += 1
+                            continue
+                        if final_update:
+                            outcome, exit_price, net_pct, net_r = final_update
+                            conn.execute("""UPDATE a85_paper_ledger SET status=?,outcome_status=?,exit_price=?,
+                                outcome_net_return_pct=?,outcome_net_r=?,max_target_hit=?,resolved_at=?,last_candle_ts=?
+                                WHERE id=?""", (outcome, outcome, exit_price, net_pct, net_r, max_target_hit, now, last_stamp, int(trade["id"])))
+                            updated += 1
+                        else:
+                            conn.execute("UPDATE a85_paper_ledger SET status=?,entry_filled_at=?,entry_filled_price=?,max_target_hit=?,last_candle_ts=? WHERE id=?",
+                                         (state, filled_at, entry if state == "OPEN" else None, max_target_hit, last_stamp, int(trade["id"])))
+                            if state == "OPEN" and now - float(trade["created_at"]) >= 86400.0:
+                                last_close = cls._safe(selected_frame["close"].iloc[-1])
+                                if last_close is not None:
+                                    net_pct = ((last_close / entry) - 1.0) * 100.0 - cost_pct
+                                    conn.execute("""UPDATE a85_paper_ledger SET status='TIMEOUT',outcome_status='TIMEOUT',
+                                        exit_price=?,outcome_net_return_pct=?,outcome_net_r=?,resolved_at=? WHERE id=?""",
+                                        (last_close, net_pct, net_pct / risk_pct, now, int(trade["id"])))
+                                    updated += 1
+                    retention = max(30, int(CONFIG.get("A85_PAPER_RETENTION_DAYS", 90)))
+                    conn.execute("DELETE FROM a85_paper_ledger WHERE created_at<?", (now - retention * 86400.0,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            return {"updated": updated, "status": "OK", "execution_authority": False}
+        except Exception as exc:
+            STATS["a85_paper_ledger_errors"] = int(STATS.get("a85_paper_ledger_errors", 0) or 0) + 1
+            logger.warning("[A85-PAPER] update failed: %s", type(exc).__name__)
+            return {"updated": 0, "status": f"ERROR:{type(exc).__name__}", "execution_authority": False}
+
+    @classmethod
+    def paper_performance(cls, limit=5000):
+        try:
+            cls._ensure_schema()
+            with cls._db_lock:
+                conn = cls._connect()
+                try:
+                    rows = conn.execute("SELECT * FROM a85_paper_ledger ORDER BY created_at DESC LIMIT ?",
+                                        (max(100, min(10000, int(limit))),)).fetchall()
+                finally:
+                    conn.close()
+            data = [dict(x) for x in rows]
+            final = [x for x in data if x.get("outcome_status") in {"TP1", "TP2", "TP3", "SL", "TIMEOUT"}
+                     and cls._safe(x.get("outcome_net_r")) is not None]
+            final.sort(key=lambda x: float(x.get("resolved_at") or x.get("created_at") or 0))
+            n = len(final)
+            wins = [float(x["outcome_net_r"]) for x in final if float(x["outcome_net_r"]) > 0]
+            losses = [float(x["outcome_net_r"]) for x in final if float(x["outcome_net_r"]) < 0]
+            expectancy = sum(float(x["outcome_net_r"]) for x in final) / n if n else None
+            equity = peak = drawdown = 0.0
+            for row in final:
+                equity += float(row["outcome_net_r"])
+                peak = max(peak, equity)
+                drawdown = max(drawdown, peak - equity)
+            minimum = max(30, int(CONFIG.get("A85_MIN_PERFORMANCE_SAMPLE", 30)))
+            def group(key):
+                result = {}
+                for name in sorted({str(x.get(key) or "UNKNOWN") for x in final}):
+                    items = [x for x in final if str(x.get(key) or "UNKNOWN") == name]
+                    result[name] = {"sample_count": len(items),
+                                    "net_expectancy_r": round(sum(float(x["outcome_net_r"]) for x in items) / len(items), 4) if items else None,
+                                    "status": "SUFFICIENT_FOR_REVIEW" if len(items) >= minimum else "INSUFFICIENT_SAMPLE"}
+                return result
+            status_counts = defaultdict(int)
+            for row in data:
+                status_counts[str(row.get("status") or "UNKNOWN")] += 1
+            return {"status": "OK" if n >= minimum else "INSUFFICIENT_SAMPLE", "sample_count": n,
+                    "minimum_sample": minimum, "observed_rows": len(data), "open_rows": status_counts.get("OPEN", 0),
+                    "waiting_entry_rows": status_counts.get("WAITING_ENTRY", 0),
+                    "ambiguous_rows": status_counts.get("AMBIGUOUS", 0),
+                    "expired_rows": status_counts.get("EXPIRED", 0),
+                    "win_rate_pct": round(len(wins) / n * 100.0, 2) if n else None,
+                    "net_expectancy_r": round(expectancy, 4) if expectancy is not None else None,
+                    "profit_factor": round(sum(wins) / abs(sum(losses)), 4) if losses else (None if not wins else "NO_LOSSES_IN_SAMPLE"),
+                    "max_drawdown_r": round(drawdown, 4), "by_strategy": group("family"), "by_regime": group("regime"),
+                    "source": "A85_PAPER_LEDGER_CLOSED_OHLCV_ESTIMATES_NOT_REALIZED_EXCHANGE_PNL",
+                    "execution_authority": False, "adaptive_changes_require_chronological_train_holdout": True}
+        except Exception as exc:
+            return {"status": "UNAVAILABLE", "reason": type(exc).__name__, "sample_count": 0,
+                    "source": "A85_PAPER_LEDGER", "execution_authority": False}
+
+    @classmethod
+    def _correlation(cls, symbol_a, symbol_b, market_map, now=None):
+        frames = []
+        for symbol in (symbol_a, symbol_b):
+            md = (market_map or {}).get(symbol)
+            frame, _ = cls._closed(md or {}, "1H", now=now) if isinstance(md, dict) else (None, 0)
+            if frame is None:
+                return None, 0
+            close = pd.to_numeric(frame["close"], errors="coerce")
+            series = close.pct_change().dropna().tail(80)
+            series.name = symbol
+            frames.append(series)
+        try:
+            aligned = pd.concat(frames, axis=1, join="inner").dropna()
+            if len(aligned) < 30 or aligned.iloc[:, 0].std() == 0 or aligned.iloc[:, 1].std() == 0:
+                return None, len(aligned)
+            corr = float(aligned.iloc[:, 0].corr(aligned.iloc[:, 1]))
+            return (corr if math.isfinite(corr) else None), len(aligned)
+        except Exception:
+            return None, 0
+
+    @classmethod
+    def portfolio_brain(cls, rows, market_map=None, now=None):
+        """Read-only paper portfolio shortlist; no balance fetch and no order authority."""
+        now = float(now or WALL_NOW())
+        slots = max(1, min(2, int(CONFIG.get("A85_MAX_PORTFOLIO_SLOTS", 2))))
+        eligible = [r for r in (rows or []) if str(r.get("status") or "").upper() in {"READY_NOW", "WAITING_FOR_ENTRY"}
+                    and (r.get("plan") or {}).get("economic_pass")]
+        eligible.sort(key=lambda r: float(r.get("ranking_score") or r.get("quality_score") or 0), reverse=True)
+        selected = []
+        excluded = []
+        correlation_notes = []
+        for candidate in eligible:
+            symbol = str(candidate.get("symbol") or "")
+            sector = candidate.get("sector") or next((name for name, bases in cls._sector_by_base.items()
+                                                       if symbol.split("/", 1)[0] in bases), None)
+            conflict = None
+            best_corr = None
+            for chosen in selected:
+                if sector and chosen.get("sector") and sector == chosen.get("sector"):
+                    conflict = "DUPLICATE_SECTOR_EXPOSURE"
+                    break
+                corr, sample = cls._correlation(symbol, chosen["symbol"], market_map or {}, now=now)
+                correlation_notes.append({"pair": [symbol, chosen["symbol"]], "correlation": corr, "sample_count": sample})
+                if corr is not None:
+                    best_corr = corr if best_corr is None else max(best_corr, corr)
+                    if corr >= 0.85:
+                        conflict = "HIGH_POSITIVE_RETURN_CORRELATION"
+                        break
+            if conflict:
+                excluded.append({"symbol": symbol, "reason": conflict, "correlation": best_corr})
+                continue
+            plan = candidate.get("plan") or {}
+            sizing = plan.get("paper_sizing") or {}
+            selected.append({"symbol": symbol, "sector": sector or "UNCLASSIFIED",
+                             "strategy": candidate.get("primary_strategy"),
+                             "status": candidate.get("status"),
+                             "ranking_score": candidate.get("ranking_score"),
+                             "quality_score": candidate.get("quality_score"),
+                             "position_notional_usdt": cls._safe(sizing.get("suggested_position_size_usdt"),
+                                                                  CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)),
+                             "max_loss_including_costs_usdt": plan.get("max_loss_including_costs_usdt"),
+                             "correlation_to_selected": best_corr,
+                             "diversification_note": "RETURN_CORRELATION_UNAVAILABLE" if selected and best_corr is None else "LOW_OR_ACCEPTABLE_OBSERVED_CORRELATION"})
+            if len(selected) >= slots:
+                break
+        return {"status": "OK" if selected else "NO_ECONOMIC_CANDIDATES",
+                "slots": slots, "selected": selected, "excluded": excluded,
+                "considered_candidates": len(eligible), "correlation_observations": correlation_notes,
+                "risk_model": "PLAN_STOP_RISK_AFTER_ESTIMATED_COSTS; CAPITAL_BALANCE_NOT_ASSUMED",
+                "execution_authority": False, "order_authority": False}
+
+    @classmethod
     def _sector_rotation(cls, ticker_rows, eligible_tickers):
         if not bool(CONFIG.get("A85_SECTOR_CLASSIFICATION_ENABLE", True)):
             return {"status":"DISABLED_BY_CONFIG","sectors":[],"taxonomy":"STATIC_EXPLICIT_SYMBOL_MAP"}
@@ -109457,26 +110129,43 @@ class A85MarketIntelligence:
         except Exception: active=[]
         priority=list(dict.fromkeys(str(r.get("symbol") or "").upper() for r in active if r.get("symbol")))
         priority=[s for s in priority if s in symbols]
-        normal=[s for s in symbols if s not in set(priority)]
+        fast_source=ticker_snapshot if isinstance(ticker_snapshot,dict) else {}
+        radar_candidates=[]
+        research_floor=max(100_000.0,float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT",250_000.0)))
+        for raw_symbol,ticker in fast_source.items():
+            sym=str(raw_symbol or "").upper().strip()
+            if sym not in symbols or not isinstance(ticker,dict):
+                continue
+            qv=cls._safe(_v702_a80_ticker_quote_volume(ticker))
+            if qv is None or qv<research_floor:
+                continue
+            change=cls._safe(ticker.get("percentage",ticker.get("change_pct_24h",ticker.get("change_24h_pct"))),0.0) or 0.0
+            bid=cls._safe(ticker.get("bid")); ask=cls._safe(ticker.get("ask"))
+            spread=((ask-bid)/((ask+bid)/2.0)*100.0) if bid and ask and ask>bid else None
+            radar_candidates.append((sym,qv,abs(change),spread))
+        radar_candidates.sort(key=lambda x:(x[1],x[2],-(x[3] if x[3] is not None else 99.0)),reverse=True)
+        fast_cap=min(max(0,int(CONFIG.get("A85_RADAR_REFRESH_TOP",15))),max(0,max_symbols//4))
+        fast_priority=[x[0] for x in radar_candidates if x[0] not in set(priority)][:fast_cap]
+        hunter_cap=max(1,max_symbols//3)
+        chosen=list(dict.fromkeys(priority[:hunter_cap]+fast_priority))
+        # Keep at least a rotating lane after urgent Hunter and fast-radar refresh slots.
+        normal=[s for s in symbols if s not in set(chosen)]
         offset=cls.get_rotation_offset("A85")
-        # Reserve at least half of every deep-analysis cycle for fair rotation;
-        # Hunter urgency can prioritize, but cannot monopolize the whole cycle.
-        priority_cap=max(1,max_symbols//2)
-        chosen=priority[:priority_cap]
         room=max(0,max_symbols-len(chosen))
         if room and normal:
             start=offset%len(normal); rotated=normal[start:]+normal[:start]
             chosen += rotated[:room]
             cls.set_rotation_offset("A85",(start+max(1,room))%len(normal))
         btc_context=cls._macro_context(market_map,now)
-        btc_ind={"frame_1h":cls._closed(market_map.get("BTC/USDT") or {},"1H",now)[0]} if isinstance(market_map.get("BTC/USDT"),dict) else None
+        btc_ind={"frame_1h":cls._closed(market_map.get("BTC/USDT") or {},"1H",now)[0],
+                 "frame_4h":cls._closed(market_map.get("BTC/USDT") or {},"4H",now)[0]} if isinstance(market_map.get("BTC/USDT"),dict) else None
         signals_by_symbol=defaultdict(list)
         for r in active: signals_by_symbol[str(r.get("symbol") or "").upper()].append(r)
         rows=[]; errors=0
         for symbol in chosen:
             try:
-                row=cls._analyze_one(symbol,market_map.get(symbol),btc_ind,signals_by_symbol.get(symbol),now)
-                if row: 
+                row=cls._analyze_one(symbol,market_map.get(symbol),btc_ind,signals_by_symbol.get(symbol),now,btc_context.get("regime","UNKNOWN"))
+                if row:
                     row["market_regime"]=btc_context.get("regime","UNKNOWN")
                     rows.append(row)
             except Exception as exc:
@@ -109511,6 +110200,10 @@ class A85MarketIntelligence:
             spread24=((ask-bid)/((ask+bid)/2.0)*100.0) if bid and ask and ask>bid else None
             ticker_rows.append({"symbol":sym,"quote_volume_24h":qv,"change_24h_pct":pct,"spread_pct":spread24,
                                 "last":cls._safe(ticker.get("last")),"timestamp":cls._safe(ticker.get("timestamp"))})
+        radar_available_count=len(ticker_rows)
+        radar_limit=max(100,min(500,int(CONFIG.get("A85_RADAR_MAX_UNIVERSE",500))))
+        ticker_rows.sort(key=lambda x:(float(x.get("quote_volume_24h") or 0.0),abs(float(x.get("change_24h_pct") or 0.0))),reverse=True)
+        ticker_rows=ticker_rows[:radar_limit]
         eligible_tickers=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=max(3_000_000.0,float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME",3_000_000.0)))]
         research_floor=max(100_000.0,float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT",250_000.0)))
         intermediate_pool=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=research_floor]
@@ -109523,6 +110216,8 @@ class A85MarketIntelligence:
         total_universe=int(universe_count or len(fast_source) or len(market_map))
         market={"status":"OK","timestamp":now,"regime":btc_context,"breadth":breadth,
                 "total_universe":total_universe,"fast_scan_ticker_symbols":len(ticker_rows),
+                "fast_scan_available_symbols":radar_available_count,"radar_considered_symbols":len(ticker_rows),
+                "radar_max_universe":radar_limit,"radar_scope":"UP_TO_500_AVAILABLE_SHARED_TICKERS; NOT_A_GUARANTEE_OF_500_MARKET_DATA_CANDLES",
                 "fast_scan_eligible_symbols":len(eligible_tickers),"fast_scan_scope":"AVAILABLE_SHARED_TICKER_SNAPSHOT_NOT_GUARANTEED_ALL_EXCHANGE_LISTINGS",
                 "intermediate_eligible_symbols":len(intermediate_pool),"intermediate_scan_limit":intermediate_limit,
                 "intermediate_scanned_symbols":len(intermediate_selected),"intermediate_candidates_selected":len(intermediate_selected),
@@ -109543,9 +110238,12 @@ class A85MarketIntelligence:
                 "api_errors":int((research_summary or {}).get("failed",0) or 0),"api_error_visibility":"A79_A80_SUPPLEMENT_SUMMARY; CORE API HEALTH REMAINS IN SOURCE TELEMETRY","analysis_success":sum(1 for r in rows if r.get("status") not in {"DATA_INCOMPLETE","REJECTED"}),
                 "analysis_failure":errors,
                 "analysis_errors":errors,"stale_data_or_missing":sum(1 for r in rows if r.get("status")=="DATA_INCOMPLETE"),
-                "top_movers_1h":[r["symbol"] for r in sorted(usable,key=lambda x:float(x.get("return_1h_pct") or -999),reverse=True)[:5]],
+                "top_movers_1h":[r["symbol"] for r in sorted([x for x in usable if x.get("return_1h_pct") is not None],key=lambda x:float(x.get("return_1h_pct") or -999),reverse=True)[:5]],
+                "top_movers_6h":[r["symbol"] for r in sorted([x for x in usable if x.get("return_6h_pct") is not None],key=lambda x:float(x.get("return_6h_pct") or -999),reverse=True)[:5]],
                 "top_volume_expansion":[r["symbol"] for r in sorted(usable,key=lambda x:float((x.get("timeframes",{}).get("1H",{}).get("volume_ratio") or 0)),reverse=True)[:5]],
-                "top_relative_strength":[r["symbol"] for r in sorted([x for x in usable if x.get("relative_strength_vs_btc_pct") is not None],key=lambda x:float(x.get("relative_strength_vs_btc_pct") or -999),reverse=True)[:5]],
+                "top_relative_strength":[r["symbol"] for r in sorted([x for x in usable if x.get("relative_strength_vs_btc_1h_pct") is not None],key=lambda x:float(x.get("relative_strength_vs_btc_1h_pct") or -999),reverse=True)[:5]],
+                "top_relative_strength_4h":[r["symbol"] for r in sorted([x for x in usable if x.get("relative_strength_vs_btc_4h_pct") is not None],key=lambda x:float(x.get("relative_strength_vs_btc_4h_pct") or -999),reverse=True)[:5]],
+                "top_relative_strength_24h":[r["symbol"] for r in sorted([x for x in usable if x.get("relative_strength_vs_btc_24h_pct") is not None],key=lambda x:float(x.get("relative_strength_vs_btc_24h_pct") or -999),reverse=True)[:5]],
                 "top_liquidity_sweeps":[r["symbol"] for r in usable if (r.get("structure") or {}).get("liquidity_sweep_low")][:5],
                 "top_resistance_breakouts":[r["symbol"] for r in usable if (r.get("structure") or {}).get("bos")=="BULLISH_BOS"][:5],
                 "top_pullbacks":[r["symbol"] for r in usable if r.get("mtf_state")=="BULLISH" and (r.get("structure") or {}).get("support") and abs(float(r["timeframes"]["1H"]["close"])-float(r["structure"]["support"]["price"]))<=2.0*float(r["timeframes"]["1H"]["atr"])][:5],
@@ -109562,6 +110260,13 @@ class A85MarketIntelligence:
                     "error":(research_summary or {}).get("error")},
                 "elapsed_sec":round(float(MONO_NOW())-started,3),"execution_authority":False,
                 "source":"SHARED_MARKET_DATA_MAP_AND_CLOSED_CANDLES"}
+        btc_forecast=cls.market_forecast(market_map.get("BTC/USDT"),now=now)
+        portfolio=cls.portfolio_brain(rows,market_map,now=now)
+        paper_update=cls._paper_update_market(market_map,now=now)
+        paper_record=cls._paper_record_rows(rows,now=now)
+        market["btc_forecast"]=btc_forecast
+        market["portfolio_brain"]=portfolio
+        market["paper_ledger_cycle"]={"update":paper_update,"record":paper_record,"execution_authority":False}
         cls.persist(rows)
         with _A85_LAST_SCAN_LOCK:
             _A85_LATEST_MARKET_MAP={s: market_map[s] for s in chosen if s in market_map}
@@ -109617,11 +110322,12 @@ class A85MarketIntelligence:
             md=_A85_LATEST_MARKET_MAP.get(token)
             btc=_A85_LATEST_MARKET_MAP.get("BTC/USDT")
         if not isinstance(md,dict): return None
-        btc_ind={"frame_1h":cls._closed(btc,"1H")[0]} if isinstance(btc,dict) else None
+        btc_ind={"frame_1h":cls._closed(btc,"1H")[0],"frame_4h":cls._closed(btc,"4H")[0]} if isinstance(btc,dict) else None
         hunter=[]
         try: hunter=[r for r in OpportunityHunter.snapshot(300) if r.get("symbol")==token]
         except Exception: pass
-        return cls._analyze_one(token,md,btc_ind,hunter)
+        current_regime=(_A85_LATEST_MARKET.get("regime") or {}).get("regime","UNKNOWN") if isinstance(_A85_LATEST_MARKET.get("regime"),dict) else "UNKNOWN"
+        return cls._analyze_one(token,md,btc_ind,hunter,market_regime=current_regime)
 
     @classmethod
     def performance(cls, limit=5000):
@@ -109852,6 +110558,11 @@ class A85MarketIntelligence:
             "telegram_photo_fallback": callable(cls.send_photo),
             "performance_sample_floor": int(CONFIG.get("A85_MIN_PERFORMANCE_SAMPLE",30))>=30,
             "sector_rotation_is_explicit_partial_classifier": callable(cls._sector_rotation) and bool(cls._sector_by_base),
+            "market_radar_bounded_to_500": 100<=int(CONFIG.get("A85_RADAR_MAX_UNIVERSE",500))<=500,
+            "btc_forecast_has_empirical_calibration_gate": callable(cls.market_forecast) and callable(cls._forecast_calibration),
+            "paper_ledger_is_separate_and_read_only": callable(cls._paper_record_rows) and callable(cls.paper_performance),
+            "portfolio_brain_is_analysis_only": callable(cls.portfolio_brain) and cls.execution_authority is False,
+            "adaptive_ranking_requires_train_holdout": callable(cls._adaptive_strategy_adjustment) and int(CONFIG.get("A85_ADAPTIVE_MIN_SAMPLE",60))>=60,
             "intermediate_scan_bounded": 100<=int(CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT",150))<=150,
             "live_keys_default_off": "UNIFIED_LIVE_PILOT_ENABLE=0" in Path(__file__).with_name(".env.example").read_text(encoding="utf-8") and "UNIFIED_A55_LIVE_ARM=0" in Path(__file__).with_name(".env.example").read_text(encoding="utf-8"),
             "monitor_only_policy": FINAL_CANONICAL_RUNTIME.get("effective_entry_policy")=="MONITOR_ONLY_NO_NEW_BUYS",
@@ -109950,7 +110661,7 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
     text=str((message or {}).get("text") or "").strip()
     parts=text.split(); command=parts[0].split("@",1)[0].lower() if parts else ""
     args=parts[1:]
-    readonly={"/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime","/help"}
+    readonly={"/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime","/brain","/forecast","/paper","/help"}
     if command not in readonly:
         return False
     chat_id=((message or {}).get("chat") or {}).get("id")
@@ -109958,7 +110669,7 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
         x=A85MarketIntelligence._safe(v); return f"{x:.10g}" if x is not None else "n/a"
     try:
         if command=="/help":
-            body=("<b>A85 READ-ONLY MARKET COMMANDS</b>\n/market — market overview\n/top — best ranked opportunities\n/ready — analytical ready only (not an order)\n/waiting — waiting/early setups\n/analyze SYMBOL — technical analysis\n/chart SYMBOL — PNG chart\n/regime — BTC/ETH and breadth\n/strategies — observed strategy families\n/performance — shadow outcome metrics\n/portfolio — local bot position state only\n\nExisting commands: /ping, /status, /digest, /opportunities, /orders, /sl, /cancel, /cancel_all_targets, /cancel_all.\nProtection/account-changing commands retain their original authorization and gates.")
+            body=("<b>A86 MARKET BRAIN — READ ONLY</b>\n/brain — BTC scenarios + best diversified paper shortlist\n/forecast — BTC 15M/1H/4H/24H scenario scores and empirical calibration\n/paper — A85 paper-ledger outcomes (not real PnL)\n/market — market radar and market breadth\n/top — best ranked opportunities\n/ready — analytical ready only (not an order)\n/waiting — waiting/early setups\n/analyze SYMBOL — technical analysis\n/chart SYMBOL — PNG chart\n/regime — BTC/ETH and breadth\n/strategies — observed strategy families\n/performance — existing Opportunity Hunter shadow outcome metrics\n/portfolio — local bot position state only\n\nAll A85/A86 intelligence commands are read-only. Existing protection/account-changing commands retain their original authorization and gates.")
         elif command in ("/market","/regime"):
             m=A85MarketIntelligence.market_snapshot(); reg=m.get("regime") or {}; breadth=m.get("breadth") or {}
             btc=reg.get("btc"); btc=btc if isinstance(btc,dict) else {}
@@ -109986,6 +110697,9 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
                   f"Pullbacks: {', '.join(m.get('top_pullbacks') or []) or 'none'}\n"
                   f"Liquidity sweeps: {', '.join(m.get('top_liquidity_sweeps') or []) or 'none'}\n"
                   f"Sectors: {sectors.get('status','UNKNOWN')} | Top: {sector_top} | Weak: {sector_weak}\n"
+                  f"BTC scenario overall: {((m.get('btc_forecast') or {}).get('overall_scenario','UNKNOWN'))} | horizons={((m.get('btc_forecast') or {}).get('available_horizons',0))}/4\n"
+                  f"Portfolio paper shortlist: {', '.join(x.get('symbol','') for x in ((m.get('portfolio_brain') or {}).get('selected') or [])) or 'none'}\n"
+                  f"Paper ledger: {((m.get('paper_ledger_cycle') or {}).get('record') or {}).get('recorded',0)} new records; simulated only\n"
                   f"External cap/dominance/OI: {((m.get('external_market_cap_dominance_oi_funding') or {}).get('status','UNKNOWN'))}\n"
                   f"Data source: {reg.get('source','MEXC_CLOSED_SPOT_OHLCV_ONLY')} | execution authority=false")
         elif command in ("/top","/ready","/waiting"):
@@ -110028,6 +110742,38 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
                 body=(f"PNG charts sent: {', '.join(delivered)}. " if delivered else "No PNG chart could be delivered. ")
                 if failed: body+=f"Unavailable/send failed: {', '.join(failed)}. "
                 body+=f"TradingView fallback: {fallback}"
+        elif command=="/forecast":
+            market=A85MarketIntelligence.market_snapshot()
+            forecast=market.get("btc_forecast") or {}
+            lines=[f"<b>BTC MULTI-HORIZON SCENARIOS — {forecast.get('overall_scenario','UNKNOWN')}</b>"]
+            for horizon in ("15M","1H","4H","24H"):
+                item=(forecast.get("horizons") or {}).get(horizon) or {}
+                scores=item.get("scenario_scores_pct") or {}
+                calibration=item.get("calibration") or {}
+                lines.append(f"{horizon}: {item.get('status','UNAVAILABLE')} {item.get('predicted_scenario','UNKNOWN')} | BULL={fmt(scores.get('BULLISH'))} BEAR={fmt(scores.get('BEARISH'))} RANGE={fmt(scores.get('RANGE'))} | calibration={calibration.get('status','UNKNOWN')} n={calibration.get('sample_count',0)}")
+                if calibration.get("probability_claim_permitted"):
+                    lines.append(f"  Historical conditional frequencies: {json.dumps(calibration.get('historical_conditional_frequencies_pct'),ensure_ascii=False)}")
+            lines.append("Scenario scores are not probabilities. Empirical frequencies appear only after the per-horizon/class sample floor is met. Closed spot OHLCV only; derivatives unavailable.")
+            body="\n".join(lines)
+        elif command=="/brain":
+            market=A85MarketIntelligence.market_snapshot()
+            forecast=market.get("btc_forecast") or {}
+            portfolio=market.get("portfolio_brain") or {}
+            lines=[f"<b>A86 MARKET BRAIN — {forecast.get('overall_scenario','BTC UNKNOWN')}</b>"]
+            for horizon in ("15M","1H","4H","24H"):
+                item=(forecast.get("horizons") or {}).get(horizon) or {}
+                scores=item.get("scenario_scores_pct") or {}
+                lines.append(f"BTC {horizon}: {item.get('predicted_scenario','UNKNOWN')} B{fmt(scores.get('BULLISH'))}/S{fmt(scores.get('BEARISH'))}/R{fmt(scores.get('RANGE'))}")
+            lines.append("\n<b>DIVERSIFIED PAPER SHORTLIST</b>")
+            for index,item in enumerate(portfolio.get("selected") or [],1):
+                lines.append(f"{index}. {item.get('symbol')} | {item.get('strategy')} | rank={fmt(item.get('ranking_score'))} | paper notional={fmt(item.get('position_notional_usdt'))} USDT | stop-risk={fmt(item.get('max_loss_including_costs_usdt'))} USDT")
+            if not portfolio.get("selected"):
+                lines.append("No eligible economic candidates in the latest scan.")
+            lines.append("\nNo live orders. Capital balance is not assumed; shortlist is analysis-only and Paper-mode.")
+            body="\n".join(lines)
+        elif command=="/paper":
+            report=A85MarketIntelligence.paper_performance()
+            body="<b>A85 PAPER LEDGER — SIMULATED, NOT REALIZED PNL</b>\n"+json.dumps(report,ensure_ascii=False,default=str)[:3200]
         elif command=="/portfolio":
             rows=[]
             for sym,tr in list(ACTIVE_TRADES.items())[:20]:
@@ -110063,7 +110809,7 @@ FINAL_CANONICAL_RUNTIME.update({
     "a85_selector_authority": False,
     "a85_order_authority": False,
     "a85_auto_png_chart_renderer": True,
-    "a85_telegram_read_only_commands": ["/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime"],
+    "a85_telegram_read_only_commands": ["/market","/top","/ready","/waiting","/analyze","/chart","/portfolio","/strategies","/performance","/regime","/brain","/forecast","/paper"],
     "effective_entry_policy": "MONITOR_ONLY_NO_NEW_BUYS",
     "hard_gate_bypass": False,
     "live_gates_relaxed": False,
@@ -110076,7 +110822,7 @@ def _v702_a85_self_test_terminal():
     checks["stablecoins_not_directional"] = A85MarketIntelligence._forbidden_or_stable("USDC/USDT")[0]
     checks["hard_forbidden_still_blocked"] = A85MarketIntelligence._forbidden_or_stable("PUMP/USDT")[0]
     checks["ordinary_asset_not_blocked"] = not A85MarketIntelligence._forbidden_or_stable("SOL/USDT")[0]
-    checks["telegram_commands_are_read_only"] = all(x in FINAL_CANONICAL_RUNTIME.get("a85_telegram_read_only_commands",[]) for x in ("/market","/chart","/performance"))
+    checks["telegram_commands_are_read_only"] = all(x in FINAL_CANONICAL_RUNTIME.get("a85_telegram_read_only_commands",[]) for x in ("/market","/chart","/performance","/brain","/forecast","/paper"))
     checks["no_a85_trade_path"] = not any(callable(getattr(A85MarketIntelligence, name, None)) for name in ("submit_order","create_order","select_for_execution"))
     checks["core_liquidity_floor_preserved"] = float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)) >= 3_000_000.0
     failed=[k for k,v in checks.items() if not v]
