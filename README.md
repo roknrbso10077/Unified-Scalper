@@ -1,3 +1,28 @@
+# A87 — Actionable BTC Direction & Telegram Decision Briefing (2026-11-20)
+
+**Current analytical layer:** `A87-ACTIONABLE-BTC-DIRECTION-PRICE-TARGETS-AND-TELEGRAM-DECISION-BRIEFING-2026-11-20` (extends A86 in the existing `main.py`). No extra runtime or package file is added.
+
+A87 turns the existing A86 market snapshot into an explicit, explainable Spot-Long decision and sends it through the existing Telegram Outbox after a completed A85 scan:
+
+- **BTC decision:** `WAIT_DATA`, `WAIT_FOR_LONG_CONFIRMATION`, `WAIT_VOLATILITY_COOLDOWN`, `WAIT_FOR_BREAKOUT_CONFIRMATION`, `WAIT_FOR_MTF_CONFIRMATION`, or `LONG_BIAS`. `LONG_BIAS` requires a bullish regime and bullish closed-candle 1H + 4H scenario agreement. It is a market bias, not an order.
+- **BTC levels:** two downside and two upside planning levels sourced from closed 4H structure where available, otherwise explicitly marked ATR fallback levels. The report includes reference close, timeframe, EMA50/EMA200, ATR, and the invalidation condition. These are scenario levels, not guaranteed future prices.
+- **Coin decisions:** `/decision SYMBOL` combines the existing A85 candidate state, economics, entry zone, stop, TP1–TP3, estimated TP1 net USDT, Net RR, spread/cost evidence, multi-timeframe state, relative strength vs BTC and reasons. It returns `ENTER_CONDITIONALLY` only for a `READY_NOW` plan with economic gates passed while BTC has a confirmed long bias; otherwise it says wait/watch/avoid.
+- **Automatic Telegram briefing:** `A86_AUTO_BRAIN_REPORT_ENABLE=1` by default, queued through the existing Outbox after scan completion. `A86_AUTO_BRAIN_REPORT_INTERVAL_SEC=900` is the normal repeat interval; material state changes may be sent sooner subject to a 180–600 second minimum gap. This means queue acceptance is not a delivery acknowledgement; actual delivery still depends on valid Telegram credentials and the dispatcher.
+- **Message size:** the main `/brain` briefing is capped at 3,500 characters; up to `A86_BRAIN_REPORT_MAX_CANDIDATES=3` coin plans are included (range 1–5).
+
+Telegram commands:
+
+- `/brain` — full current BTC direction, BTC scenario targets, up to three coin plans, reasons, radar coverage and Paper status.
+- `/forecast` — BTC 15M/1H/4H/24H scenario scores, calibration state, targets and invalidation.
+- `/decision SOL/USDT` — one coin’s decision and complete reference trade plan.
+- `/paper` — simulated outcomes only, never realized account PnL.
+
+**Release verification for A87:** all 73 Python files pass `compileall`; `test_release_contracts.py` reports 85 passed, 1 historical fixture skipped, 0 failed; `main.py --validate-only` exits 0 with no bot start or live threads. Telegram Outbox/reply formatting is mock-tested only; real Telegram delivery is not verified.
+
+**Safety invariant:** `MONITOR_ONLY_NO_NEW_BUYS` remains active; A85/A86/A87 do not acquire selector, order or execution authority. `ENTER_CONDITIONALLY` means the analytical snapshot passed its stated checks and still requires a fresh manual price/ask/spread/order-book recheck; the software does not place the trade. No probability is claimed from raw scenario scores. Forecast target levels are not investment guarantees. Missing or stale closed-candle evidence yields `WAIT_DATA` rather than an invented call.
+
+## Previous A86 documentation
+
 # UNIFIED SCALPER V702 — A86 FULL MARKET BRAIN & ADAPTIVE OPPORTUNITY ENGINE
 
 ## أحدث مراجعة وإصدار — A86 (2026-11-20)

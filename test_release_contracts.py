@@ -1820,11 +1820,147 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         self.assertEqual(reply.await_count, 3)
         bodies = [str(call.args[1]) for call in reply.await_args_list]
         self.assertIn("A86 MARKET BRAIN", bodies[0])
-        self.assertIn("No live orders", bodies[0])
+        self.assertIn("قرار Spot Long", bodies[0])
+        self.assertIn("MONITOR_ONLY_NO_NEW_BUYS", bodies[0])
         self.assertIn("Scenario scores are not probabilities", bodies[1])
         self.assertIn("SIMULATED, NOT REALIZED PNL", bodies[2])
         self.assertFalse(bot.A85MarketIntelligence.execution_authority)
         self.assertFalse(bot.A85MarketIntelligence.order_authority)
+
+    def test_a87_decision_symbol_telegram_command_explains_wait_and_plan_read_only(self):
+        market = {"a86_decision": {"action": "WAIT_FOR_LONG_CONFIRMATION",
+                  "display_ar": "انتظر — اتجاه البيتكوين لا يدعم شراء Spot الآن",
+                  "regime": "BEARISH", "long_bias_allowed": False}}
+        row = {"symbol": "SOL/USDT", "status": "READY_NOW", "quality_score": 88,
+               "ranking_score": 84, "primary_strategy": "PULLBACK",
+               "relative_strength_vs_btc_1h_pct": 1.1, "relative_strength_vs_btc_4h_pct": 2.2,
+               "mtf_state": "BULLISH", "timeframes": {"1D": {"trend": "BULLISH"},
+               "4H": {"trend": "BULLISH"}, "1H": {"trend": "BULLISH", "rsi14": 56, "volume_ratio": 1.4},
+               "15M": {"trend": "BULLISH"}}, "structure": {"bos": "BULLISH"},
+               "plan": {"economic_pass": True, "preferred_entry": 140.0, "entry_zone_low": 139.0,
+                        "entry_zone_high": 141.0, "stop_loss": 136.0,
+                        "targets": [{"price": 146.0}, {"price": 150.0}, {"price": 155.0}],
+                        "estimated_net_profit_usdt_tp1": 2.1, "net_rr_tp1": 1.2,
+                        "round_trip_cost_pct": 0.2, "entry_expiry_ts": 1234567890}}
+        reply = AsyncMock()
+        async def run():
+            with patch.object(bot.A85MarketIntelligence, "market_snapshot", return_value=market), \
+                 patch.object(bot.A85MarketIntelligence, "analyze_symbol", return_value=row), \
+                 patch.object(bot.TelegramCommandController, "_reply", new=reply):
+                handled = await bot._v702_a85_readonly_dispatch(
+                    bot.TelegramCommandController, None,
+                    {"text": "/decision SOL/USDT", "chat": {"id": 123}})
+                return handled
+        handled = asyncio.run(run())
+        self.assertTrue(handled)
+        body = str(reply.await_args.args[1])
+        self.assertIn("انتظر", body)
+        self.assertIn("SOL/USDT", body)
+        self.assertIn("140", body)
+        self.assertIn("136", body)
+        self.assertIn("146", body)
+        self.assertIn("2.1", body)
+        self.assertIn("لا يتم تنفيذ أمر حقيقي", body)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+
+    def test_a87_btc_market_decision_and_coin_enter_wait_avoid_are_explicit(self):
+        bear_market = {
+            "regime": "BEARISH",
+            "btc": {"1H": "BEARISH", "4H": "BEARISH", "close_4h": 90.0,
+                    "ema50_4h": 100.0, "ema200_4h": 120.0},
+        }
+        forecast = {"horizons": {
+            "1H": {"status": "OK", "predicted_scenario": "BEARISH", "scenario_scores_pct": {"BULLISH": 20, "BEARISH": 65, "RANGE": 15}},
+            "4H": {"status": "OK", "predicted_scenario": "BEARISH", "scenario_scores_pct": {"BULLISH": 15, "BEARISH": 70, "RANGE": 15}},
+        }}
+        levels = {"status": "OK", "reference_price": 90.0}
+        decision = bot.A85MarketIntelligence.market_decision(bear_market, forecast, levels)
+        self.assertEqual(decision["action"], "WAIT_FOR_LONG_CONFIRMATION")
+        self.assertFalse(decision["long_bias_allowed"])
+        ready = {"status": "READY_NOW", "plan": {"economic_pass": True, "reason": "NET_COST_PASS"}}
+        coin_decision = bot.A85MarketIntelligence.candidate_decision(ready, decision)
+        self.assertEqual(coin_decision["action"], "WAIT_FOR_BTC_CONFIRMATION")
+        bull_decision = {"long_bias_allowed": True}
+        self.assertEqual(bot.A85MarketIntelligence.candidate_decision(ready, bull_decision)["action"], "ENTER_CONDITIONALLY")
+        rejected = {"status": "REJECTED", "plan": {"reason": "SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN"}}
+        self.assertEqual(bot.A85MarketIntelligence.candidate_decision(rejected, bull_decision)["action"], "AVOID")
+        self.assertFalse(bot.A85MarketIntelligence.execution_authority)
+        self.assertFalse(bot.A85MarketIntelligence.order_authority)
+
+    def test_a87_btc_target_levels_are_closed_candle_structure_or_atr_fallbacks(self):
+        now = bot.WALL_NOW()
+        md = self._market_data(now, seed=17)
+        levels = bot.A85MarketIntelligence.btc_trade_levels(md, now=now)
+        self.assertEqual(levels["status"], "OK")
+        self.assertGreater(levels["reference_price"], 0)
+        self.assertEqual(len(levels["downside_targets"]), 2)
+        self.assertEqual(len(levels["upside_targets"]), 2)
+        self.assertLess(levels["downside_targets"][0]["price"], levels["reference_price"])
+        self.assertGreater(levels["upside_targets"][0]["price"], levels["reference_price"])
+        self.assertIn("source", levels["downside_targets"][0])
+
+    def test_a87_brain_report_contains_btc_targets_coin_plan_and_clear_decision(self):
+        market = {
+            "timestamp": bot.WALL_NOW(), "status": "OK",
+            "regime": {"regime": "BEARISH", "btc": {"1D": "BEARISH", "4H": "BEARISH", "1H": "BEARISH"}},
+            "btc_forecast": {"horizons": {key: {"status": "OK", "predicted_scenario": "BEARISH",
+                "scenario_scores_pct": {"BULLISH": 20, "BEARISH": 65, "RANGE": 15}}
+                for key in ("15M", "1H", "4H", "24H")}},
+            "btc_trade_levels": {"status": "OK", "timeframe": "4H", "reference_price": 60000,
+                "downside_targets": [{"price": 58000, "source": "STRUCTURAL_SUPPORT"}, {"price": 56000, "source": "ATR_EXTENSION_FALLBACK"}],
+                "upside_targets": [{"price": 62000, "source": "STRUCTURAL_RESISTANCE"}, {"price": 64000, "source": "ATR_EXTENSION_FALLBACK"}],
+                "ema50": 63000, "ema200": 70000, "atr": 900},
+            "a86_decision": {"action": "WAIT_FOR_LONG_CONFIRMATION", "display_ar": "انتظر", "reason": "BTC 4H and 1H bearish",
+                "target_side": "DOWNSIDE", "invalidation": "4H close above EMA50"},
+            "decision_candidates": [{"symbol": "SOL/USDT", "status": "WAITING_FOR_ENTRY", "quality_score": 85,
+                "ranking_score": 82, "primary_strategy": "PULLBACK", "mtf_state": "BULLISH",
+                "relative_strength_vs_btc_1h_pct": 1.2, "relative_strength_vs_btc_4h_pct": 2.4,
+                "plan": {"preferred_entry": 140, "entry_zone_low": 139, "entry_zone_high": 141,
+                    "stop_loss": 136, "targets": [{"price": 146}, {"price": 150}, {"price": 155}],
+                    "estimated_net_profit_usdt_tp1": 2.0, "net_rr_tp1": 1.1, "round_trip_cost_pct": 0.2},
+                "brain_decision": {"action": "WAIT_FOR_BTC_CONFIRMATION", "display_ar": "انتظر",
+                    "reasons": ["BTC macro bearish"]}, "timeframes": {}}],
+            "fast_scan_available_symbols": 120, "radar_considered_symbols": 120, "deep_analyzed_symbols": 60,
+            "paper_ledger_cycle": {"record": {"recorded": 1, "status": "OK"}},
+        }
+        body = bot._v702_a86_brain_report_text(market)
+        self.assertIn("قرار السوق", body)
+        self.assertIn("58000", body)
+        self.assertIn("SOL/USDT", body)
+        self.assertIn("140", body)
+        self.assertIn("136", body)
+        self.assertIn("146", body)
+        self.assertIn("انتظر", body)
+        self.assertIn("MONITOR_ONLY_NO_NEW_BUYS", body)
+
+    def test_a87_auto_brain_report_is_enqueued_and_rate_limited(self):
+        import tempfile
+        from unittest.mock import AsyncMock, patch
+        market = {
+            "timestamp": 1000.0, "regime": {"regime": "BEARISH", "btc": {"1H": "BEARISH", "4H": "BEARISH"}},
+            "btc_forecast": {"horizons": {}}, "btc_trade_levels": {"status": "DATA_INCOMPLETE"},
+            "a86_decision": {"action": "WAIT_FOR_LONG_CONFIRMATION", "display_ar": "انتظر", "reason": "bearish", "target_side": "DOWNSIDE"},
+            "decision_candidates": [], "fast_scan_available_symbols": 100, "radar_considered_symbols": 100,
+            "deep_analyzed_symbols": 20, "paper_ledger_cycle": {"record": {"recorded": 0, "status": "OK"}},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a87-brain-delivery.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            enqueue = AsyncMock(return_value=True)
+            async def run():
+                with patch.dict(bot.CONFIG, {"DB_PATH": db, "TELEGRAM_ENABLED": True,
+                    "A86_AUTO_BRAIN_REPORT_ENABLE": True, "A86_AUTO_BRAIN_REPORT_INTERVAL_SEC": 900}, clear=False), \
+                     patch.dict(bot.ENV, {"TELEGRAM_TOKEN": "TEST_TOKEN", "TELEGRAM_CHAT": "123"}, clear=False), \
+                     patch.object(bot.A85MarketIntelligence, "market_snapshot", return_value=market), \
+                     patch.object(bot.TelegramDispatcher, "enqueue", new=enqueue), \
+                     patch.object(bot, "WALL_NOW", side_effect=[1000.0, 1001.0]):
+                    first = await bot._v702_a86_publish_brain_report()
+                    second = await bot._v702_a86_publish_brain_report()
+                    return first, second
+            first, second = asyncio.run(run())
+        self.assertEqual(first["status"], "ENQUEUED_NOT_DELIVERY_ACK")
+        self.assertEqual(second["status"], "RATE_LIMITED")
+        self.assertEqual(enqueue.await_count, 1)
 
     def test_a85_runtime_identity_and_new_deep_fetch_budget_are_documented(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -1833,6 +1969,9 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         self.assertIn("V702_A85_DIAGNOSTIC_CLOSURE_REVISION", source)
         self.assertIn("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", source)
         self.assertRegex(env, r"(?m)^A85_DEEP_FETCH_SYMBOLS_PER_CYCLE=16$")
+        self.assertRegex(env, r"(?m)^A86_AUTO_BRAIN_REPORT_ENABLE=1$")
+        self.assertRegex(env, r"(?m)^A86_AUTO_BRAIN_REPORT_INTERVAL_SEC=900$")
+        self.assertRegex(env, r"(?m)^A86_BRAIN_REPORT_MAX_CANDIDATES=3$")
         self.assertFalse(bot.A85MarketIntelligence.execution_authority)
         self.assertFalse(bot.A85MarketIntelligence.selector_authority)
         self.assertFalse(bot.A85MarketIntelligence.order_authority)

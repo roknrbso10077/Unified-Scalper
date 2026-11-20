@@ -1,3 +1,14 @@
+# A87 — Actionable Market Decision & Telegram Briefing (2026-11-20)
+
+- Added a deterministic Spot-Long market decision from verified BTC 1H/4H closed-candle regime, forecast scenario scores and BTC structural/ATR planning levels. Missing evidence maps to WAIT_DATA; no synthetic price or probability is generated.
+- Added BTC downside/upside target reporting with source provenance (closed-candle structural support/resistance or clearly-labelled ATR extension fallback), EMA50/EMA200, ATR and scenario invalidation.
+- Added explicit per-coin `ENTER_CONDITIONALLY` / `WAIT` / `WATCH` / `AVOID` classification. A conditional-entry label requires the A85 `READY_NOW` state, positive configured economics, and a bullish BTC 1H+4H market bias; it does not submit an order.
+- Added `/decision SYMBOL`; enhanced `/brain` and `/forecast` with actionable decision, BTC price levels and full reference plans (entry zone, SL, TP1–TP3, estimated net TP1, Net RR, cost, MTF, relative strength and reasons).
+- Added rate-limited automatic Telegram brain briefing after each completed A85 scan through the existing durable Outbox. Default interval 900 seconds; changed state is throttled by a minimum gap. Enqueue is not a delivery acknowledgement.
+- Added `.env.example` controls for automatic briefing enablement, repeat interval and maximum coin plans.
+- Preserved `MONITOR_ONLY_NO_NEW_BUYS`, A85/A86/A87 read-only authority and all existing core order/risk gates. No live exchange order or Telegram network delivery is performed by tests.
+- Added regression coverage for directional BTC decision, structural/ATR targets, message contents, rate limiting, and `/decision SYMBOL` with a simulated Telegram reply.
+
 # A86 — Full Market Brain & Adaptive Opportunity Engine (2026-11-20)
 
 - Integrated A86 into the canonical `main.py`; no new runtime script or archive path. Preserved the existing 99-file inventory and the current V702 lifecycle, protections and Spot-only/monitor-only policy.
