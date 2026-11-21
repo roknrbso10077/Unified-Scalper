@@ -2761,3 +2761,13 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Log diagnosis: 170 PreQual rejects / zero passes; the leading cause is HTF strength below strategy floor (136), followed by MICRO order-book/liquidity confirmation (10). No Select/Queue/Telegram/Execution progression is shown. Preserve `MONITOR_ONLY_NO_NEW_BUYS`; do not lower the gates to manufacture signals.
 - A85 is implemented as a bounded, read-only analyst over shared market snapshots; its scores are not calibrated win probabilities and external Market Cap/Dominance/OI/Funding/Liquidation/CVD feeds are not configured. See `FINAL_AUDIT_REPORT.md` for exact limits.
 - Validation environment was Python 3.13.5 while the Docker target is 3.12; `ccxt` and `aiosqlite` were unavailable in the sandbox; Docker and external network execution were not tested. Validate-only peak RSS was 586,568 KiB (572.8 MiB), so a 512 MB runtime is not validated. No real order, real fill, private fee, live Telegram delivery, soak or profitability was tested.
+
+## A88 — BTC data integrity, opportunity qualification and report deduplication (2026-11-21)
+
+- Corrected EMA200 history handling: require 400 closed 1H/4H candles, request one additional raw bar for the open candle, and fail closed on insufficient/stale BTC evidence. Removed BTC 1H fallback from 4H target generation.
+- Replaced weak A86 candidate display with a qualified-only shortlist: non-BTC, minimum quality/ranking, positive cost-aware TP1 economics and Net RR, bullish 1H/4H/MTF and positive BTC-relative strength. Added explicit funnel/rejection counts.
+- Changed horizon forecast display from misleading percent symbols to technical scenario points /100; added counter-trend interpretation for a bullish 15m score within bearish higher timeframes.
+- Made A86 briefing admission atomic with a SQLite reservation and strengthened the report fingerprint to include forecast, plan and funnel changes.
+- Added Intraday Shadow scheduler-stage telemetry and corrected daily aggregates to avoid double-counting selected/fetched/processed counts.
+- Fixed the supplemental A79 1H/4H read-only fetch to define and use its own 401-raw-bar request limit; expanded its regression fixture to verify 400 closed-bar history and prevent an undefined-variable runtime error.
+- Kept all existing safety gates, hard exclusions, Spot-only rules, execution protections and `MONITOR_ONLY_NO_NEW_BUYS` unchanged.

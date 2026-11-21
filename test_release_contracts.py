@@ -1128,8 +1128,8 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
     @staticmethod
     def _frame(interval_sec: int, now: float, seed: int = 1):
         import numpy as np
-        n = 128
-        end_open = (int(now // interval_sec) - 2) * interval_sec
+        n = 401
+        end_open = (int(now // interval_sec) - 1) * interval_sec
         stamps = [end_open - (n - 1 - i) * interval_sec for i in range(n)]
         index = bot.pd.to_datetime(stamps, unit="s", utc=True)
         x = np.arange(n, dtype=float)
@@ -1961,6 +1961,94 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         self.assertEqual(first["status"], "ENQUEUED_NOT_DELIVERY_ACK")
         self.assertEqual(second["status"], "RATE_LIMITED")
         self.assertEqual(enqueue.await_count, 1)
+
+    def test_a88_effective_closed_frame_retains_400_bars(self):
+        now=bot.WALL_NOW()
+        frame=self._frame(14400,now,seed=70)
+        closed,ts=bot.OpportunityHunter._closed_frame(frame,14400,now=now)
+        self.assertIsNotNone(closed)
+        self.assertGreaterEqual(len(closed),400)
+        self.assertGreater(ts,0)
+
+    def test_a88_btc_levels_fail_closed_without_ema200_history(self):
+        now=bot.WALL_NOW()
+        btc=self._market_data(now,seed=71)
+        short=dict(btc)
+        short["df_4h"]=btc["df_4h"].tail(150)
+        with patch.object(bot,"WALL_NOW",return_value=now):
+            result=bot.A85MarketIntelligence.btc_trade_levels(short,now=now)
+        self.assertEqual(result.get("status"),"DATA_INCOMPLETE")
+        self.assertEqual(result.get("reason"),"BTC_CLOSED_4H_EMA200_HISTORY_INSUFFICIENT")
+        self.assertEqual(result.get("history_bars"),150)
+
+    def test_a88_btc_macro_is_unknown_when_ema200_warmup_is_short(self):
+        now=bot.WALL_NOW()
+        market={"BTC/USDT":self._market_data(now,seed=72),"ETH/USDT":self._market_data(now,seed=74)}
+        market["BTC/USDT"]["df_4h"]=market["BTC/USDT"]["df_4h"].tail(180)
+        result=bot.A85MarketIntelligence._macro_context(market,now)
+        self.assertEqual(result.get("regime"),"UNKNOWN")
+        self.assertEqual(result.get("reason"),"BTC_EMA200_HISTORY_INSUFFICIENT")
+        self.assertEqual(result.get("data_quality",{}).get("history_4h"),180)
+
+    def test_a88_btc_macro_is_unknown_when_closed_candles_are_stale(self):
+        now=bot.WALL_NOW()
+        market={"BTC/USDT":self._market_data(now,seed=73),"ETH/USDT":self._market_data(now,seed=75)}
+        # Shift both BTC frames far enough into the past while retaining all 400 bars.
+        for key,interval in (("df_1h",3600),("df_4h",14400)):
+            frame=market["BTC/USDT"][key].copy()
+            frame.index=frame.index-(bot.pd.Timedelta(seconds=interval*1.5))
+            market["BTC/USDT"][key]=frame
+        result=bot.A85MarketIntelligence._macro_context(market,now)
+        self.assertEqual(result.get("regime"),"UNKNOWN")
+        self.assertEqual(result.get("reason"),"BTC_CLOSED_CANDLE_STALE")
+
+    def test_a88_report_labels_technical_scores_as_points_and_explains_mtf_conflict(self):
+        market={"timestamp":bot.WALL_NOW(),"regime":{"regime":"BEARISH","btc":{"1D":"BEARISH","4H":"BEARISH","1H":"BEARISH"}},
+                "btc_forecast":{"horizons":{
+                    "15M":{"status":"OK","predicted_scenario":"BULLISH","scenario_scores_pct":{"BULLISH":55,"BEARISH":0,"RANGE":45}},
+                    "1H":{"status":"OK","predicted_scenario":"BEARISH","scenario_scores_pct":{"BULLISH":0,"BEARISH":100,"RANGE":0}},
+                    "4H":{"status":"OK","predicted_scenario":"BEARISH","scenario_scores_pct":{"BULLISH":0,"BEARISH":100,"RANGE":0}},
+                    "24H":{"status":"DATA_INCOMPLETE"}}},
+                "btc_trade_levels":{"status":"DATA_INCOMPLETE","reason":"history"},
+                "a86_decision":{"action":"WAIT_FOR_LONG_CONFIRMATION","display_ar":"انتظر","reason":"bearish"},
+                "decision_candidates":[],"candidate_funnel":{"analyzed":3,"qualified":0,"mtf_not_bullish":3},
+                "fast_scan_available_symbols":100,"radar_considered_symbols":100,"deep_analyzed_symbols":20,
+                "paper_ledger_cycle":{"record":{"recorded":0,"status":"OK"}}}
+        body=bot._v702_a86_brain_report_text(market)
+        self.assertIn("نقاط السيناريو /100",body)
+        self.assertIn("تفسير التعارض",body)
+        self.assertIn("لا توجد فرصة صالحة",body)
+        self.assertNotIn("صعود 55% / هبوط",body)
+
+    def test_a88_concurrent_brain_publishers_reserve_only_one_outbox_send(self):
+        import tempfile
+        from unittest.mock import AsyncMock, patch
+        market={"timestamp":1000.0,"regime":{"regime":"BEARISH","btc":{"1H":"BEARISH","4H":"BEARISH"}},
+                "btc_forecast":{"horizons":{}},"btc_trade_levels":{"status":"DATA_INCOMPLETE"},
+                "a86_decision":{"action":"WAIT_FOR_LONG_CONFIRMATION","display_ar":"انتظر","reason":"bearish"},
+                "decision_candidates":[],"fast_scan_available_symbols":10,"radar_considered_symbols":10,
+                "deep_analyzed_symbols":3,"paper_ledger_cycle":{"record":{"recorded":0,"status":"OK"}}}
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a88-concurrent.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            calls=[]
+            async def slow_enqueue(_body):
+                calls.append(_body)
+                await asyncio.sleep(0.03)
+                return True
+            enqueue=AsyncMock(side_effect=slow_enqueue)
+            async def run():
+                with patch.dict(bot.CONFIG,{"DB_PATH":db,"TELEGRAM_ENABLED":True,"A86_AUTO_BRAIN_REPORT_ENABLE":True,
+                    "A86_AUTO_BRAIN_REPORT_INTERVAL_SEC":900},clear=False), \
+                     patch.dict(bot.ENV,{"TELEGRAM_TOKEN":"TEST_TOKEN","TELEGRAM_CHAT":"123"},clear=False), \
+                     patch.object(bot.A85MarketIntelligence,"market_snapshot",return_value=market), \
+                     patch.object(bot.TelegramDispatcher,"enqueue",new=enqueue), \
+                     patch.object(bot,"WALL_NOW",side_effect=[1000.0,1000.1]):
+                    return await asyncio.gather(bot._v702_a86_publish_brain_report(),bot._v702_a86_publish_brain_report())
+            results=asyncio.run(run())
+        self.assertEqual(enqueue.await_count,1)
+        self.assertEqual(sum(1 for r in results if r.get("sent")),1)
+        self.assertIn(next(r.get("status") for r in results if not r.get("sent")),{"RESERVATION_BUSY","RATE_LIMITED"})
 
     def test_a85_runtime_identity_and_new_deep_fetch_budget_are_documented(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")

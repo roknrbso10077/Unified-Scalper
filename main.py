@@ -26914,7 +26914,9 @@ async def run_bot(universe: List[str]):
             shared_btc_context_ts = 0.0
             if _PDNP_OK:
                 try:
-                    btc_limits = {"5m":320, "15m":360, "1h":260, "4h":260}
+                    _a85_ema_history = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+                    _a85_ema_fetch_limit = min(1000, _a85_ema_history + 1)
+                    btc_limits = {"5m":320, "15m":360, "1h":_a85_ema_fetch_limit, "4h":_a85_ema_fetch_limit}
                     _btc_timeout = max(
                         1.0, float(CONFIG.get("V598_BTC_CONTEXT_FETCH_TIMEOUT_SEC", 15.0))
                     )
@@ -26942,8 +26944,9 @@ async def run_bot(universe: List[str]):
                         _now_ms = int(exchange.milliseconds()) if callable(getattr(exchange, "milliseconds", None)) else int(time.time() * 1000)
                         _current_open_ms = (_now_ms // interval_ms) * interval_ms
                         _target_start_ms = _current_open_ms - (max(1, int(_lim)) - 1) * interval_ms
-                        _target_closed_rows = max(240, int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 240) or 240))
-                        _target_total_rows = _target_closed_rows + 1  # allow for a potentially open final candle
+                        _ema_closed_required = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+                        _target_closed_rows = max(_ema_closed_required, int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 240) or 240))
+                        _target_total_rows = _target_closed_rows + 1  # one potentially open final candle
                         _rows_by_ts: Dict[int, list] = {}
 
                         def _merge_ohlcv_rows(_rows):
@@ -28035,8 +28038,23 @@ async def run_bot(universe: List[str]):
                     STATS["v702_intraday_shadow_core_selected"] = int(_shadow_selection.get("core_selected", 0) or 0)
                     STATS["v702_intraday_shadow_micro_selected"] = int(_shadow_selection.get("micro_selected", 0) or 0)
                     STATS["v702_intraday_shadow_rs_leaders_selected"] = int(_shadow_selection.get("rs_leaders_selected", 0) or 0)
+                    try:
+                        _scheduler_type = "BATCH_SELECTED" if _shadow_selected else "SELECTION_EMPTY"
+                        _scheduler_reason = "" if _shadow_selected else (
+                            "no_eligible_core_or_micro_symbols" if not _shadow_pool_core and not _shadow_pool_micro
+                            else "selector_returned_empty_batch")
+                        await asyncio.to_thread(_intraday_shadow.record_scheduler_event,
+                            _scheduler_type, len(_shadow_selected), 0, 0, 0, _scheduler_reason,
+                            {"core_pool":len(_shadow_pool_core),"micro_pool":len(_shadow_pool_micro),
+                             "core_selected":int(_shadow_selection.get("core_selected",0) or 0),
+                             "micro_selected":int(_shadow_selection.get("micro_selected",0) or 0),
+                             "rs_leaders_selected":int(_shadow_selection.get("rs_leaders_selected",0) or 0)})
+                    except Exception:
+                        STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
                     async def _v702_intraday_process_batch(_selected, _snapshots, _service=_intraday_shadow):
                         """Run the research-only data lane away from the canonical scan critical path."""
+                        await asyncio.to_thread(_service.record_scheduler_event, "BATCH_STARTED",
+                                                len(_selected), 0, 0, 0, "")
                         async def _v702_intraday_fetch_1m(_sym):
                             async with _v650_sem:
                                 return await asyncio.wait_for(
@@ -28063,7 +28081,7 @@ async def run_bot(universe: List[str]):
                                     _results.append(_task_exc)
                             else:
                                 _results.append(asyncio.TimeoutError("intraday_batch_budget_exceeded"))
-                        _ok_count = _signal_count = _resolved_count = _fail_count = 0
+                        _ok_count = _signal_count = _resolved_count = _fail_count = _fetch_ok_count = 0
                         _engine_cycle_aggregate = {}
                         _cols = ["ts", "open", "high", "low", "close", "volume"]
                         for _sym, _raw in zip(_selected, _results):
@@ -28071,6 +28089,7 @@ async def run_bot(universe: List[str]):
                                 if isinstance(_raw, BaseException) or not _raw:
                                     _fail_count += 1
                                     continue
+                                _fetch_ok_count += 1
                                 _frame = pd.DataFrame(_raw, columns=_cols)
                                 _frame["ts"] = pd.to_datetime(_frame["ts"], unit="ms", utc=True)
                                 _frame.set_index("ts", inplace=True)
@@ -28094,6 +28113,10 @@ async def run_bot(universe: List[str]):
                                 _fail_count += 1
                                 STATS["v702_intraday_shadow_process_errors"] = int(STATS.get("v702_intraday_shadow_process_errors", 0) or 0) + 1
                                 logger.debug(f"[V702-A9-INTRADAY] {_sym} suppressed: {_process_exc}")
+                        await asyncio.to_thread(_service.record_scheduler_event, "BATCH_COMPLETED",
+                            len(_selected), _fetch_ok_count, _ok_count, _fail_count,
+                            "partial_fetch_or_processing_failure" if _fail_count else "",
+                            {"signals":_signal_count,"resolved":_resolved_count})
                         # Independent, persistent Telegram notification lane for 1m
                         # micro research signals. It cannot select candidates or submit orders.
                         _micro_tg_queued = _micro_tg_blocked = 0
@@ -28269,6 +28292,16 @@ async def run_bot(universe: List[str]):
                                     _dlines.append(f"\nTotals: evaluated={int(_dtot.get('evaluations',0))} signals_eval={int(_dtot.get('evaluation_signals',0))} rejected={int(_dtot.get('evaluation_rejections',0))} skipped={int(_dtot.get('skipped_evaluations',0))} signal_records={int(_dtot.get('signals_created', 0))} resolved={int(_dtot.get('resolved', 0))} TP={int(_dtot.get('tp1', 0))} SL={int(_dtot.get('sl', 0))} timeout={int(_dtot.get('timeouts', 0))} ambiguous={int(_dtot.get('ambiguous', 0))}")
                                 else:
                                     _dlines.append(f"\nEvaluation counters: unavailable in historical stored report · signal_records={int(_dtot.get('signals_created',0))} · resolved={int(_dtot.get('resolved',0))}")
+                                _scheduler_diag=_dp.get("scheduler",{}) if isinstance(_dp.get("scheduler"),dict) else {}
+                                _scheduler_events=_scheduler_diag.get("by_event_type",{}) or {}
+                                _selected_sum=int(_scheduler_diag.get("selected_count",0) or 0)
+                                _fetched_sum=int(_scheduler_diag.get("fetched_count",0) or 0)
+                                _processed_sum=int(_scheduler_diag.get("processed_count",0) or 0)
+                                _failed_sum=int(_scheduler_diag.get("failed_count",0) or 0)
+                                _selection_empty=int((_scheduler_events.get("SELECTION_EMPTY") or {}).get("events",0) or 0)
+                                _busy_skips=int((_scheduler_events.get("BATCH_SKIPPED_BUSY") or {}).get("events",0) or 0)
+                                _batch_started=int((_scheduler_events.get("BATCH_STARTED") or {}).get("events",0) or 0)
+                                _dlines.append(f"\nScheduler diagnostics: {_scheduler_diag.get('status','UNAVAILABLE')} · selected={_selected_sum} fetched={_fetched_sum} processed={_processed_sum} failed={_failed_sum} · empty_selections={_selection_empty} busy_skips={_busy_skips} batches_started={_batch_started} · reasons={OpportunityTelegramNotifier._escape(str(_scheduler_diag.get('top_reasons') or {}))}")
                                 try:
                                     _accepted_daily = await TelegramDispatcher.enqueue("\n".join(_dlines))
                                 except Exception as _daily_tg_exc:
@@ -28308,6 +28341,11 @@ async def run_bot(universe: List[str]):
                             return
                         except Exception as _batch_exc:
                             STATS["v702_intraday_shadow_lane_errors"] = int(STATS.get("v702_intraday_shadow_lane_errors", 0) or 0) + 1
+                            try:
+                                _intraday_shadow.record_scheduler_event("BATCH_FAILED", len(_shadow_selected), 0, 0,
+                                len(_shadow_selected), f"{type(_batch_exc).__name__}:{str(_batch_exc)[:100]}")
+                            except Exception:
+                                STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
                             logger.warning(f"[V702-A9-INTRADAY-SHADOW] detached research batch failed safely: {_batch_exc}")
                             return
                         for _key in ("v702_intraday_shadow_fetch_ok", "v702_intraday_shadow_fetch_fail", "v702_intraday_shadow_signals_cycle", "v702_intraday_shadow_resolved_cycle", "v702_intraday_shadow_batch_selected_completed", "v702_intraday_micro_shadow_tg_queued", "v702_intraday_micro_shadow_tg_blocked", "v702_intraday_micro_outcome_tg_queued", "v702_intraday_micro_outcome_tg_blocked", "v702_intraday_daily_report_tg_queued", "v702_intraday_daily_report_tg_blocked"):
@@ -28413,9 +28451,21 @@ async def run_bot(universe: List[str]):
                         STATS["v702_intraday_shadow_batches_started"] = int(STATS.get("v702_intraday_shadow_batches_started", 0) or 0) + 1
                     elif _active_intraday_task is not None and not _active_intraday_task.done():
                         STATS["v702_intraday_shadow_batches_skipped_busy"] = int(STATS.get("v702_intraday_shadow_batches_skipped_busy", 0) or 0) + 1
+                        try:
+                            await asyncio.to_thread(_intraday_shadow.record_scheduler_event, "BATCH_SKIPPED_BUSY",
+                                len(_shadow_selected), 0, 0, 0, "previous_batch_still_running")
+                        except Exception:
+                            STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
                         logger.debug("[V702-A9-INTRADAY-SHADOW] previous bounded batch still active; skipping cycle to prevent overlap")
             except Exception as _intraday_lane_exc:
                 STATS["v702_intraday_shadow_lane_errors"] = int(STATS.get("v702_intraday_shadow_lane_errors", 0) or 0) + 1
+                try:
+                    _lane_service=globals().get("_V702_INTRADAY_SHADOW")
+                    if _lane_service is not None:
+                        await asyncio.to_thread(_lane_service.record_scheduler_event, "LANE_FAILED", 0, 0, 0, 1,
+                            f"{type(_intraday_lane_exc).__name__}:{str(_intraday_lane_exc)[:100]}")
+                except Exception:
+                    STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
                 logger.warning(f"[V702-A9-INTRADAY-SHADOW] lane failed safely; canonical trading pipeline unaffected: {_intraday_lane_exc}")
 
             finalists: List[RankedCandidate] = []
@@ -88891,7 +88941,7 @@ def _v703_r36_validate_config() -> bool:
             "mtf_1d_retry_factory_contract": "lambda _symbol=_symbol: exchange.fetch_ohlcv" in _v702_read_source_text(),
             "retry_safe_factory_integrity": _v702_r36_retry_factory_integrity(),
             "micro_trend_matches_micro_recall_tier": str(CanonicalStrategyPolicyRegistry.get("MICRO_TREND_CONTINUATION", {}).get("min_tier", "")).upper() == "MICRO",
-            "btc_4h_warmup_matches_closed_ema200": int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 0) or 0) >= 240 and 'btc_limits = {"5m":320, "15m":360, "1h":260, "4h":260}' in _v702_read_source_text(),
+            "btc_4h_warmup_matches_closed_ema200": int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 0) or 0) >= 240 and '"1h":_a85_ema_fetch_limit, "4h":_a85_ema_fetch_limit' in _v702_read_source_text() and 'ema_fetch_limit = min(1000, ema_history + 1)' in _v702_read_source_text(),
             "unknown_macro_policy_fails_closed": (not FamilyPolicyLayer.regime_policy_detail("PULLBACK", "UNKNOWN", local_regime="LOCAL_BEARISH")[0]) and FamilyPolicyLayer.regime_policy_detail("PULLBACK", "UNKNOWN", local_regime="LOCAL_BEARISH")[1] == "macro_context_unavailable",
             "bearish_severity_is_mandatory": bool(CONFIG.get("V425_BEARISH_SEVERITY_ENABLE", False)) and bool(getattr(getattr(V425BearishSeverity, "classify", None), "__func__", None) and getattr(V425BearishSeverity.classify.__func__, "_v702_r36_fail_closed_authority", False)),
             "unknown_severity_authority_is_fail_closed": bool(getattr(V425BearishSeverity.allows_new_long, "_v702_r36_fail_closed_authority", False)),
@@ -104486,7 +104536,10 @@ class OpportunityHunter:
             candle_close_ms = last_open_ms + period_ms
             if now_ms - candle_close_ms > int(period_ms * 2.6):
                 return None, 0
-            return data.tail(100), int(last_open_ms // 1000)
+            # Keep enough closed history for a genuinely warmed EMA200. The
+            # previous 100-row truncation silently produced a short-history EMA200.
+            history_limit = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+            return data.tail(history_limit), int(last_open_ms // 1000)
         except Exception:
             return None, 0
 
@@ -106039,7 +106092,9 @@ def _v702_a75_closed_frame(cls, frame, interval_sec, *, now=None):
         if len(recent_stamps) > 1 and any((b - a) != period_ms for a, b in zip(recent_stamps, recent_stamps[1:])):
             STATS["v702_a75_closed_frame_gaps"] = int(STATS.get("v702_a75_closed_frame_gaps", 0) or 0) + 1
             return None, 0
-        return data.tail(240), int(last_open_ms // 1000)
+        # Keep the TTL headroom while preserving A88's actual EMA200 warm-up.
+        history_limit = max(240, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+        return data.tail(history_limit), int(last_open_ms // 1000)
     except Exception as exc:
         STATS["v702_a75_closed_frame_errors"] = int(STATS.get("v702_a75_closed_frame_errors", 0) or 0) + 1
         logger.debug("[A75-CLOSED-FRAME] rejected malformed frame: %s:%s", type(exc).__name__, str(exc)[:100])
@@ -106890,7 +106945,7 @@ if _V699_VALIDATE_ONLY_REQUEST:
         "small_net_target_compression_helper_present": callable(getattr(SizingEngine, "small_net_compress_targets", None)),
         "small_net_prequal_fee_gate_cost_aware": 'small_net_mode=bool(CONFIG.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False))' in _v702_read_source_text().split("def _v669_fee_viable", 1)[-1].split("# ---- Canonical", 1)[0],
         "small_net_final_geometry_fee_gate_cost_aware": 'small_net_mode=bool(CONFIG.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False))' in _v702_read_source_text().split("def _v702_normalize_final_geometry", 1)[-1].split("def _v702_reanchor_targets_after_fill", 1)[0],
-        "btc_4h_context_warmup_margin": int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 0) or 0) >= 240 and 'btc_limits = {"5m":320, "15m":360, "1h":260, "4h":260}' in _v702_read_source_text(),
+        "btc_4h_context_warmup_margin": int(CONFIG.get("BTC_SHARED_CONTEXT_MIN_CANDLES_4H", 0) or 0) >= 240 and '"1h":_a85_ema_fetch_limit, "4h":_a85_ema_fetch_limit' in _v702_read_source_text() and 'ema_fetch_limit = min(1000, ema_history + 1)' in _v702_read_source_text(),
         "btc_4h_fetch_uses_explicit_since_and_bounded_recovery": 'since=_since, limit=_limit' in _v702_read_source_text() and 'for _page_no in range(1, 4)' in _v702_read_source_text(),
     }
     _v702_r40_small_net_report = {"pass": all(_v702_r40_small_net_checks.values()), "checks": _v702_r40_small_net_checks,
@@ -107796,29 +107851,37 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
     concurrency = max(1, min(16, int(concurrency)))
     sem = asyncio.Semaphore(concurrency)
     now = float(WALL_NOW())
-    ohlcv_limit = max(80, min(120, int(CONFIG.get("V702_A79_OHLCV_LIMIT", 100))))
+    ema_history = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+    # Request one extra raw bar so that a currently-forming candle can be
+    # discarded while retaining the full configured number of closed bars.
+    ema_fetch_limit = min(1000, ema_history + 1)
+    short_history = max(80, min(120, int(CONFIG.get("V702_A79_OHLCV_LIMIT", 100))))
     min_swing = max(56, int(CONFIG.get("V702_A79_MIN_SWING_CANDLES", 56)))
     min_mtf = max(25, int(CONFIG.get("V702_A79_MIN_MTF_CANDLES", 25)))
-    intervals = {"df_4h": ("4h", 14400, min_swing), "df_1h": ("1h", 3600, min_swing),
-                 "df_15m": ("15m", 900, min_mtf), "df_5m": ("5m", 300, min_mtf)}
+    # Each timeframe has its own bounded fetch depth. 1H/4H require the full
+    # warmed EMA200 history; 15m/5m retain their shorter research windows.
+    intervals = {"df_4h": ("4h", 14400, ema_fetch_limit, ema_history),
+                 "df_1h": ("1h", 3600, ema_fetch_limit, ema_history),
+                 "df_15m": ("15m", 900, short_history, min_mtf),
+                 "df_5m": ("5m", 300, short_history, min_mtf)}
     cols = ["ts", "open", "high", "low", "close", "volume"]
 
-    async def _fetch_one(symbol, key, timeframe):
+    async def _fetch_one(symbol, key, timeframe, fetch_limit):
         async with sem:
             return await asyncio.wait_for(
                 safe_api_call(f"ohlcv_a79_{timeframe}_{symbol}",
-                              lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=ohlcv_limit),
+                              lambda: exchange.fetch_ohlcv(symbol, timeframe, limit=fetch_limit),
                               retry_safe=True),
                 timeout=max(1.0, min(5.0, float(read_timeout_sec))),
             )
 
     async def _fetch_symbol(symbol):
         result = await asyncio.gather(
-            *[_fetch_one(symbol, key, tf) for key, (tf, _, _) in intervals.items()],
+            *[_fetch_one(symbol, key, tf, fetch_limit) for key, (tf, _, fetch_limit, _) in intervals.items()],
             return_exceptions=True,
         )
         frames = {}
-        for (key, (tf, interval_sec, minimum)), raw in zip(intervals.items(), result):
+        for (key, (tf, interval_sec, _fetch_limit, minimum)), raw in zip(intervals.items(), result):
             if isinstance(raw, BaseException) or not raw:
                 return symbol, None, f"{key}_fetch_failed"
             try:
@@ -108509,12 +108572,15 @@ FINAL_CANONICAL_RUNTIME.update({
 V702_A85_REVISION = "A86-FULL-MARKET-BRAIN-ADAPTIVE-OPPORTUNITY-ENGINE-2026-11-20"
 V702_A85_DIAGNOSTIC_CLOSURE_REVISION = "A85-DEPLOY-IDENTITY-MICRO-REJECTION-AND-ROTATED-DEEP-COVERAGE-CLOSURE-2026-11-20"
 V702_A87_REVISION = "A87-ACTIONABLE-BTC-DIRECTION-PRICE-TARGETS-AND-TELEGRAM-DECISION-BRIEFING-2026-11-20"
+V702_A88_REVISION = "A88-EMA200-HISTORY-TRUTH-QUALIFIED-CANDIDATES-ATOMIC-BRAIN-DELIVERY-SHADOW-SCHEDULER-2026-11-21"
+STATS["v702_a88_revision"] = V702_A88_REVISION
 STATS["v702_a85_diagnostic_closure_revision"] = V702_A85_DIAGNOSTIC_CLOSURE_REVISION
 STATS["v702_a87_revision"] = V702_A87_REVISION
 CONFIG.setdefault("A85_INTELLIGENCE_ENABLE", True)
 CONFIG.setdefault("A85_MAX_ANALYSIS_SYMBOLS", 60)
 CONFIG.setdefault("A85_INTERMEDIATE_SCAN_LIMIT", 150)
 CONFIG.setdefault("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16)
+CONFIG.setdefault("A85_EMA200_HISTORY_CANDLES", 400)
 CONFIG.setdefault("A85_MIN_QUALITY_SCORE", 68.0)
 CONFIG.setdefault("A85_ALERT_MIN_QUALITY", 82.0)
 CONFIG.setdefault("A85_MAX_ALERTS_PER_CYCLE", 3)
@@ -108565,6 +108631,7 @@ for _a85_spec in (
     ("A85_MAX_ANALYSIS_SYMBOLS", "A85_MAX_ANALYSIS_SYMBOLS", "int", 60, 8, 60),
     ("A85_INTERMEDIATE_SCAN_LIMIT", "A85_INTERMEDIATE_SCAN_LIMIT", "int", 150, 100, 150),
     ("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", "A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", "int", 16, 4, 24),
+    ("A85_EMA200_HISTORY_CANDLES", "A85_EMA200_HISTORY_CANDLES", "int", 400, 205, 500),
     ("A85_MIN_QUALITY_SCORE", "A85_MIN_QUALITY_SCORE", "float", 68.0, 0.0, 100.0),
     ("A85_ALERT_MIN_QUALITY", "A85_ALERT_MIN_QUALITY", "float", 82.0, 0.0, 100.0),
     ("A85_MAX_ALERTS_PER_CYCLE", "A85_MAX_ALERTS_PER_CYCLE", "int", 3, 0, 5),
@@ -108601,6 +108668,9 @@ for _a85_spec in (
     ("A86_AUTO_BRAIN_REPORT_ENABLE", "A86_AUTO_BRAIN_REPORT_ENABLE", "bool", True, None, None),
     ("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", "A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", "float", 900.0, 300.0, 86400.0),
     ("A86_BRAIN_REPORT_MAX_CANDIDATES", "A86_BRAIN_REPORT_MAX_CANDIDATES", "int", 3, 1, 5),
+    ("A86_MIN_CANDIDATE_QUALITY", "A86_MIN_CANDIDATE_QUALITY", "float", 55.0, 0.0, 100.0),
+    ("A86_MIN_CANDIDATE_RANKING", "A86_MIN_CANDIDATE_RANKING", "float", 45.0, 0.0, 100.0),
+    ("A86_MIN_CANDIDATE_NET_RR_TP1", "A86_MIN_CANDIDATE_NET_RR_TP1", "float", 1.20, 0.1, 10.0),
 ):
     _a85_load_env_setting(*_a85_spec)
 del _a85_spec
@@ -108672,7 +108742,17 @@ class A85MarketIntelligence:
                 conn.execute("""CREATE TABLE IF NOT EXISTS a85_alert_state (
                     symbol TEXT PRIMARY KEY, last_alert_at REAL NOT NULL, fingerprint TEXT NOT NULL)""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS a86_brain_delivery_state (
-                    state_key TEXT PRIMARY KEY, last_sent_at REAL NOT NULL, fingerprint TEXT NOT NULL)""")
+                    state_key TEXT PRIMARY KEY, last_sent_at REAL NOT NULL DEFAULT 0,
+                    fingerprint TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'IDLE',
+                    reserved_until REAL NOT NULL DEFAULT 0, reservation_id TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL DEFAULT 0)""")
+                _a86_cols={str(r[1]) for r in conn.execute("PRAGMA table_info(a86_brain_delivery_state)").fetchall()}
+                for _col,_ddl in (("state","TEXT NOT NULL DEFAULT 'IDLE'"),
+                                  ("reserved_until","REAL NOT NULL DEFAULT 0"),
+                                  ("reservation_id","TEXT NOT NULL DEFAULT ''"),
+                                  ("updated_at","REAL NOT NULL DEFAULT 0")):
+                    if _col not in _a86_cols:
+                        conn.execute(f"ALTER TABLE a86_brain_delivery_state ADD COLUMN {_col} {_ddl}")
                 conn.execute("""CREATE TABLE IF NOT EXISTS a85_paper_ledger (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     fingerprint TEXT NOT NULL UNIQUE,
@@ -109428,7 +109508,32 @@ class A85MarketIntelligence:
         if btc4 is None or btc1 is None:
             return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
                     "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},
-                    "reason":"BTC_CLOSED_4H_OR_1H_UNAVAILABLE","data_confidence":"LOW","source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
+                    "reason":"BTC_CLOSED_4H_OR_1H_UNAVAILABLE","data_confidence":"LOW",
+                    "data_quality":{"status":"DATA_INCOMPLETE","history_1h":len(btc1) if btc1 is not None else 0,
+                                    "history_4h":len(btc4) if btc4 is not None else 0},
+                    "source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
+        ema_history_required = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+        if len(btc4) < ema_history_required or len(btc1) < ema_history_required:
+            return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
+                    "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},
+                    "reason":"BTC_EMA200_HISTORY_INSUFFICIENT",
+                    "data_confidence":"LOW",
+                    "data_quality":{"status":"HISTORY_INSUFFICIENT","history_1h":len(btc1),
+                                    "history_4h":len(btc4),"required":ema_history_required,
+                                    "missing":{"1H":max(0,ema_history_required-len(btc1)),
+                                               "4H":max(0,ema_history_required-len(btc4))}},
+                    "source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
+        age_1h=max(0.0,now-(ts1+3600))
+        age_4h=max(0.0,now-(ts4+14400))
+        # A valid-but-old cache is not sufficient for a fresh directional call.
+        if age_1h > 5400.0 or age_4h > 21600.0:
+            return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
+                    "eth":{"1H":"UNKNOWN","relative_strength_vs_btc_pct":None},
+                    "reason":"BTC_CLOSED_CANDLE_STALE","data_confidence":"LOW",
+                    "data_quality":{"status":"STALE","history_1h":len(btc1),"history_4h":len(btc4),
+                                    "closed_1h_age_sec":age_1h,"closed_4h_age_sec":age_4h,
+                                    "max_1h_age_sec":5400,"max_4h_age_sec":21600},
+                    "source":"MEXC_CLOSED_SPOT_OHLCV_ONLY"}
         i4=cls.indicators(btc4); i1=cls.indicators(btc1); iD=cls.indicators(btcD) if btcD is not None else None
         if not i4 or not i1:
             return {"regime":"UNKNOWN","btc":{"1D":"UNKNOWN","4H":"UNKNOWN","1H":"UNKNOWN","15M":"UNKNOWN"},
@@ -109463,6 +109568,11 @@ class A85MarketIntelligence:
                 "eth":{"1H":eth_trend,"relative_strength_vs_btc_pct":eth_rs},
                 "reason":f"BTC 4H={i4['trend']}; BTC 1H={i1['trend']}; 4H ATR={vol:.2f}%",
                 "data_confidence":"HIGH" if iD and i15 else "MEDIUM" if iD or i15 else "LOW",
+                "data_quality":{"status":"VERIFIED","history_1h":len(btc1),"history_4h":len(btc4),
+                                "ema200_history_required":ema_history_required,
+                                "closed_1h_open_ts":ts1,"closed_4h_open_ts":ts4,
+                                "closed_1h_age_sec":max(0.0,now-(ts1+3600)),
+                                "closed_4h_age_sec":max(0.0,now-(ts4+14400))},
                 "missing_timeframes":[tf for tf,frame in (("1D",btcD),("15M",btc15)) if frame is None],
                 "source":"MEXC_CLOSED_SPOT_OHLCV_ONLY","external_derivatives":"UNAVAILABLE_NOT_ASSUMED"}
 
@@ -109726,7 +109836,7 @@ class A85MarketIntelligence:
         calibration = cls._forecast_calibration(horizon, label, now=now)
         try:
             closed_candles = len(frame)
-            confidence = "HIGH" if closed_candles >= 100 else "MEDIUM" if closed_candles >= 56 else "LOW"
+            confidence = "HIGH" if closed_candles >= 400 else "MEDIUM" if closed_candles >= 205 else "LOW"
         except Exception:
             confidence = "LOW"
         return {"status": "OK", "horizon": horizon, "timeframe": timeframe,
@@ -109778,10 +109888,11 @@ class A85MarketIntelligence:
         frame, candle_ts = cls._closed(btc_md or {}, "4H", now=now)
         timeframe = "4H"
         if frame is None:
-            frame, candle_ts = cls._closed(btc_md or {}, "1H", now=now)
-            timeframe = "1H"
-        if frame is None:
-            return {"status": "DATA_INCOMPLETE", "reason": "BTC_CLOSED_4H_1H_UNAVAILABLE"}
+            return {"status": "DATA_INCOMPLETE", "reason": "BTC_CLOSED_4H_UNAVAILABLE"}
+        ema_history_required = max(205, min(500, int(CONFIG.get("A85_EMA200_HISTORY_CANDLES", 400))))
+        if len(frame) < ema_history_required:
+            return {"status": "DATA_INCOMPLETE", "reason": "BTC_CLOSED_4H_EMA200_HISTORY_INSUFFICIENT",
+                    "history_bars":len(frame),"required_bars":ema_history_required,"timeframe":"4H"}
         ind = cls.indicators(frame)
         if not ind:
             return {"status": "DATA_INCOMPLETE", "reason": "BTC_INDICATOR_HISTORY_INSUFFICIENT"}
@@ -109800,7 +109911,8 @@ class A85MarketIntelligence:
         up2 = resistances[1] if len(resistances) > 1 else max(up1 + 0.75 * atr, close + 2.0 * atr)
         return {
             "status": "OK", "source": "CLOSED_SPOT_OHLCV_4H_STRUCTURE_ATR",
-            "timeframe": timeframe, "candle_ts": int(candle_ts), "reference_price": close,
+            "timeframe": timeframe, "history_bars":len(frame), "ema200_history_valid":len(frame)>=ema_history_required,
+            "ema200_history_required":ema_history_required, "candle_ts": int(candle_ts), "reference_price": close,
             "atr": round(float(atr), 10), "atr_pct": round(float(ind.get("atr_pct") or 0.0), 4),
             "ema20": cls._safe((ind.get("ema") or {}).get(20)),
             "ema50": cls._safe((ind.get("ema") or {}).get(50)),
@@ -110444,11 +110556,51 @@ class A85MarketIntelligence:
         a86_decision=cls.market_decision(btc_context,btc_forecast,btc_trade_levels)
         for candidate_row in rows:
             candidate_row["brain_decision"]=cls.candidate_decision(candidate_row,a86_decision)
-        decision_candidates=[r for r in rows if r.get("status") in {"READY_NOW","WAITING_FOR_ENTRY","EARLY_SETUP","DATA_INCOMPLETE"}]
+        # BTC is the macro reference, never an ordinary opportunity candidate.
+        # Only show coins with a constructive local long structure, positive BTC
+        # relative strength, and verified cost-aware economics. Weak setups stay
+        # in the internal radar but cannot masquerade as best opportunities.
+        candidate_funnel = {"analyzed":len(rows),"btc_reference_excluded":0,"status_not_eligible":0,
+                            "quality_below_floor":0,"ranking_below_floor":0,"economics_failed":0,
+                            "net_rr_below_floor":0,"mtf_not_bullish":0,"relative_strength_not_positive":0,
+                            "qualified":0}
+        decision_candidates=[]
+        min_quality=float(CONFIG.get("A86_MIN_CANDIDATE_QUALITY",55.0))
+        min_ranking=float(CONFIG.get("A86_MIN_CANDIDATE_RANKING",45.0))
+        min_net_rr=float(CONFIG.get("A86_MIN_CANDIDATE_NET_RR_TP1",1.20))
+        for candidate in rows:
+            symbol=str(candidate.get("symbol") or "").upper()
+            if symbol == "BTC/USDT":
+                candidate_funnel["btc_reference_excluded"] += 1; continue
+            if candidate.get("status") not in {"READY_NOW","WAITING_FOR_ENTRY"}:
+                candidate_funnel["status_not_eligible"] += 1; continue
+            quality=cls._safe(candidate.get("quality_score"))
+            ranking=cls._safe(candidate.get("ranking_score"))
+            if quality is None or quality < min_quality:
+                candidate_funnel["quality_below_floor"] += 1; continue
+            if ranking is None or ranking < min_ranking:
+                candidate_funnel["ranking_below_floor"] += 1; continue
+            plan=candidate.get("plan") or {}
+            if not bool(plan.get("economic_pass")):
+                candidate_funnel["economics_failed"] += 1; continue
+            net_rr=cls._safe(plan.get("net_rr_tp1"))
+            if net_rr is None or net_rr < min_net_rr:
+                candidate_funnel["net_rr_below_floor"] += 1; continue
+            tf=candidate.get("timeframes") or {}
+            if (str(candidate.get("mtf_state") or "").upper() != "BULLISH" or
+                str((tf.get("1H") or {}).get("trend") or "").upper() != "BULLISH" or
+                str((tf.get("4H") or {}).get("trend") or "").upper() != "BULLISH"):
+                candidate_funnel["mtf_not_bullish"] += 1; continue
+            rs1=cls._safe(candidate.get("relative_strength_vs_btc_1h_pct"))
+            rs4=cls._safe(candidate.get("relative_strength_vs_btc_4h_pct"))
+            if rs1 is None or rs4 is None or rs1 <= 0 or rs4 <= 0:
+                candidate_funnel["relative_strength_not_positive"] += 1; continue
+            candidate_funnel["qualified"] += 1
+            decision_candidates.append(candidate)
         decision_candidates.sort(key=lambda r:(
             0 if (r.get("brain_decision") or {}).get("action")=="ENTER_CONDITIONALLY" else
             1 if (r.get("brain_decision") or {}).get("action") in {"WAIT_FOR_BTC_CONFIRMATION","WAIT_FOR_ENTRY_TRIGGER"} else 2,
-            -float(r.get("ranking_score") or r.get("quality_score") or 0.0)))
+            -(cls._safe(r.get("ranking_score")) or cls._safe(r.get("quality_score")) or 0.0)))
         portfolio=cls.portfolio_brain(rows,market_map,now=now)
         paper_update=cls._paper_update_market(market_map,now=now)
         paper_record=cls._paper_record_rows(rows,now=now)
@@ -110464,6 +110616,9 @@ class A85MarketIntelligence:
             "timeframes":r.get("timeframes"),"structure":r.get("structure"),
         } for r in decision_candidates[:max(1,min(5,int(CONFIG.get("A86_BRAIN_REPORT_MAX_CANDIDATES",3))))]]
         market["decision_candidates_count"]=len(decision_candidates)
+        market["candidate_funnel"]=candidate_funnel
+        market["candidate_quality_floors"]={"quality":min_quality,"ranking":min_ranking,"net_rr_tp1":min_net_rr,
+                                            "required_mtf":"BULLISH_1H_AND_4H","relative_strength_vs_btc":"POSITIVE_1H_AND_4H"}
         market["portfolio_brain"]=portfolio
         market["paper_ledger_cycle"]={"update":paper_update,"record":paper_record,"execution_authority":False}
         cls.persist(rows)
@@ -110808,6 +110963,11 @@ def _v702_a86_brain_report_text(market=None):
     lines.append(f"قرار Spot Long: <b>{esc(decision.get('display_ar') or decision.get('action') or 'انتظر — لم يكتمل التحليل')}</b>")
     if decision.get("reason"):
         lines.append(f"السبب: {esc(decision.get('reason'))}")
+    data_quality=regime.get("data_quality") if isinstance(regime,dict) else {}
+    if isinstance(data_quality,dict) and data_quality:
+        lines.append(f"جودة بيانات BTC: {esc(data_quality.get('status'))} | شموع مغلقة 1H/4H: {data_quality.get('history_1h','n/a')}/{data_quality.get('history_4h','n/a')} | المطلوب لـ EMA200: {data_quality.get('ema200_history_required',data_quality.get('required','n/a'))}")
+        if data_quality.get("closed_1h_age_sec") is not None:
+            lines.append(f"عمر آخر إغلاق 1H/4H: {fmt(data_quality.get('closed_1h_age_sec'))}/{fmt(data_quality.get('closed_4h_age_sec'))} ثانية")
     if levels.get("status") == "OK":
         downside = levels.get("downside_targets") or []
         upside = levels.get("upside_targets") or []
@@ -110815,7 +110975,7 @@ def _v702_a86_brain_report_text(market=None):
             lines.append(f"سيناريو الهبوط: الهدف 1 <b>{fmt((downside[0] if len(downside)>0 else {}).get('price'))}</b> ({esc((downside[0] if len(downside)>0 else {}).get('source'))}) | الهدف 2 <b>{fmt((downside[1] if len(downside)>1 else {}).get('price'))}</b>")
         if decision.get("target_side") in {"UPSIDE", "BOTH_SCENARIOS"}:
             lines.append(f"سيناريو الصعود: الهدف 1 <b>{fmt((upside[0] if len(upside)>0 else {}).get('price'))}</b> ({esc((upside[0] if len(upside)>0 else {}).get('source'))}) | الهدف 2 <b>{fmt((upside[1] if len(upside)>1 else {}).get('price'))}</b>")
-        lines.append(f"EMA50/EMA200 4H: {fmt(levels.get('ema50'))} / {fmt(levels.get('ema200'))} | ATR: {fmt(levels.get('atr'))}")
+        lines.append(f"EMA50/EMA200 4H: {fmt(levels.get('ema50'))} / {fmt(levels.get('ema200'))} | ATR: {fmt(levels.get('atr'))} | شموع الحساب: {levels.get('history_bars','n/a')} (EMA200 warmup verified)")
         if decision.get("invalidation"):
             lines.append(f"إبطال السيناريو: {esc(decision.get('invalidation'))}")
     else:
@@ -110827,15 +110987,29 @@ def _v702_a86_brain_report_text(market=None):
         item = horizons.get(horizon) or {}
         scores = item.get("scenario_scores_pct") or {}
         if item.get("status") == "OK":
-            lines.append(f"{horizon}: {esc(item.get('predicted_scenario'))} | صعود {fmt(scores.get('BULLISH'))}% / هبوط {fmt(scores.get('BEARISH'))}% / عرضي {fmt(scores.get('RANGE'))}%")
+            lines.append(f"{horizon}: {esc(item.get('predicted_scenario'))} | نقاط السيناريو /100: صعود {fmt(scores.get('BULLISH'))}، هبوط {fmt(scores.get('BEARISH'))}، عرضي {fmt(scores.get('RANGE'))}")
+            calibration=item.get("calibration") or {}
+            if calibration.get("probability_claim_permitted"):
+                probs=calibration.get("historical_conditional_frequencies_pct") or {}
+                lines.append(f"  تكرارات تاريخية معايرة (عينة n={calibration.get('sample_count',0)}): صعود {fmt(probs.get('BULLISH'))}%، هبوط {fmt(probs.get('BEARISH'))}%، عرضي {fmt(probs.get('RANGE'))}%")
         else:
             lines.append(f"{horizon}: بيانات غير مكتملة")
-    lines.append("درجات السيناريو ليست احتمالات إحصائية؛ التكرارات التاريخية لا تظهر إلا بعد اكتمال عينة المعايرة المطلوبة.")
+    # Short-term disagreement is explicitly described as a counter-trend rebound,
+    # not an automatic reversal signal.
+    h15,h1,h4=(horizons.get(k) or {} for k in ("15M","1H","4H"))
+    if h15.get("predicted_scenario")=="BULLISH" and (h1.get("predicted_scenario")=="BEARISH" or h4.get("predicted_scenario")=="BEARISH"):
+        lines.append("تفسير التعارض: صعود 15M ارتداد قصير محتمل داخل اتجاه أكبر هابط؛ لا يُعد تأكيد انعكاس قبل تحسن 1H و4H.")
+    elif h15.get("predicted_scenario")=="BEARISH" and (h1.get("predicted_scenario")=="BULLISH" or h4.get("predicted_scenario")=="BULLISH"):
+        lines.append("تفسير التعارض: هبوط 15M تصحيح قصير محتمل؛ لا يغيّر الاتجاه الأكبر دون تأكيد الشموع المغلقة.")
+    lines.append("نقاط السيناريو أوزان فنية نسبية مجموعها 100 وليست احتمالات إحصائية. تُعرض التكرارات التاريخية فقط بعد اجتياز عينة المعايرة لكل أفق واتجاه.")
     lines.append("")
-    lines.append("<b>3) أفضل العملات المرشحة</b>")
+    lines.append("<b>3) أفضل الفرص التي اجتازت شروط الجودة</b>")
     candidates = market.get("decision_candidates") or []
     if not candidates:
-        lines.append("لا توجد عملة اجتازت حاليًا شروطًا كافية لعرض خطة دخول. القرار: انتظر ولا تطارد السعر.")
+        lines.append("لا توجد فرصة صالحة اجتازت حاليًا جميع شروط الجودة والاتجاه والقوة النسبية وصافي العائد. القرار: انتظر ولا تطارد السعر.")
+    funnel=market.get("candidate_funnel") or {}
+    if funnel:
+        lines.append(f"قمع المرشحين: تحليل {funnel.get('analyzed',0)} | مستبعد BTC {funnel.get('btc_reference_excluded',0)} | جودة منخفضة {funnel.get('quality_below_floor',0)} | اقتصاديات غير مجدية {funnel.get('economics_failed',0)} | MTF غير صاعد {funnel.get('mtf_not_bullish',0)} | قوة نسبية غير موجبة {funnel.get('relative_strength_not_positive',0)} | مؤهل {funnel.get('qualified',0)}")
     for index, row in enumerate(candidates[:max(1, min(5, int(CONFIG.get("A86_BRAIN_REPORT_MAX_CANDIDATES", 3))))], 1):
         plan = row.get("plan") or {}
         targets = plan.get("targets") or []
@@ -110854,6 +111028,11 @@ def _v702_a86_brain_report_text(market=None):
     paper = market.get("paper_ledger_cycle") or {}
     paper_rec = paper.get("record") or {}
     lines.append("")
+    funnel=market.get("candidate_funnel") or {}
+    floors=market.get("candidate_quality_floors") or {}
+    if funnel:
+        lines.append(f"<b>فلتر الفرص:</b> اجتازت {int(funnel.get('qualified',0) or 0)} من {int(funnel.get('analyzed',0) or 0)} | استبعاد BTC مرجعي {int(funnel.get('btc_reference_excluded',0) or 0)} | جودة منخفضة {int(funnel.get('quality_below_floor',0) or 0)} | اتجاه غير صاعد {int(funnel.get('mtf_not_bullish',0) or 0)} | قوة نسبية غير موجبة {int(funnel.get('relative_strength_not_positive',0) or 0)} | اقتصاد/عائد غير كافٍ {int(funnel.get('economics_failed',0) or 0)+int(funnel.get('net_rr_below_floor',0) or 0)}")
+        lines.append(f"حدود التأهيل: الجودة ≥{fmt(floors.get('quality'))}/100، الترتيب ≥{fmt(floors.get('ranking'))}/100، Net RR TP1 ≥{fmt(floors.get('net_rr_tp1'))}، واتجاه 1H/4H والقوة النسبية موجبان.")
     lines.append(f"<b>4) تغطية الرادار</b> | تيكرات متاحة/مدروسة: {market.get('fast_scan_available_symbols',0)}/{market.get('radar_considered_symbols',0)} | تحليل عميق هذه الدورة: {market.get('deep_analyzed_symbols',0)}")
     lines.append(f"Paper: سجلات جديدة {paper_rec.get('recorded',0)} | حالة {esc(paper_rec.get('status','UNKNOWN'))} — محاكاة فقط وليست أرباحًا حقيقية.")
     lines.append("<b>سياسة الأمان:</b> MONITOR_ONLY_NO_NEW_BUYS — التقرير توصية تحليلية للمراجعة اليدوية، ولا ينفذ أي أمر شراء أو بيع.")
@@ -110872,45 +111051,102 @@ async def _v702_a86_publish_brain_report():
     body = _v702_a86_brain_report_text(market)
     decision = market.get("a86_decision") or {}
     candidates = market.get("decision_candidates") or []
+    _btc_levels = market.get("btc_trade_levels") or {}
+    _horizons = (market.get("btc_forecast") or {}).get("horizons") or {}
+    _candidate_fingerprint=[]
+    def _fp_round(_value):
+        _number=A85MarketIntelligence._safe(_value)
+        return round(_number,2) if _number is not None else None
+    for _row in candidates[:5]:
+        _plan=_row.get("plan") or {}
+        _candidate_fingerprint.append({
+            "symbol":_row.get("symbol"),"status":_row.get("status"),
+            "action":(_row.get("brain_decision") or {}).get("action"),
+            "quality":_fp_round(_row.get("quality_score")),
+            "ranking":_fp_round(_row.get("ranking_score")),
+            "entry":_plan.get("preferred_entry"),"zone_low":_plan.get("entry_zone_low"),
+            "zone_high":_plan.get("entry_zone_high"),"stop":_plan.get("stop_loss"),
+            "targets":[(x or {}).get("price") for x in (_plan.get("targets") or [])[:3]],
+            "net_rr_tp1":_plan.get("net_rr_tp1"),"net_profit_tp1":_plan.get("estimated_net_profit_usdt_tp1")})
     fingerprint_payload = {
         "action": decision.get("action"), "regime": decision.get("regime"),
-        "h1": decision.get("horizon_1h"), "h4": decision.get("horizon_4h"),
-        "btc_targets": [(x or {}).get("price") for x in (market.get("btc_trade_levels") or {}).get("downside_targets", [])[:2]] +
-                       [(x or {}).get("price") for x in (market.get("btc_trade_levels") or {}).get("upside_targets", [])[:2]],
-        "candidates": [(r.get("symbol"), (r.get("brain_decision") or {}).get("action"), r.get("status"),
-                        round(float(r.get("ranking_score") or 0.0), 1)) for r in candidates[:5]],
+        "btc_reference_price":_btc_levels.get("reference_price"),
+        "btc_candle_ts":_btc_levels.get("candle_ts"),
+        "horizons":{k:{"label":v.get("predicted_scenario"),"scores":v.get("scenario_scores_pct"),
+                        "candle_open_ts":v.get("candle_open_ts"),"data_confidence":v.get("data_confidence")}
+                    for k,v in _horizons.items() if isinstance(v,dict)},
+        "btc_targets": [(x or {}).get("price") for x in _btc_levels.get("downside_targets", [])[:2]] +
+                       [(x or {}).get("price") for x in _btc_levels.get("upside_targets", [])[:2]],
+        "candidates":_candidate_fingerprint,
+        "candidate_funnel":market.get("candidate_funnel"),
     }
     import hashlib
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
     now = float(WALL_NOW())
     interval = max(300.0, float(CONFIG.get("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", 900.0) or 900.0))
     min_change_gap = max(180.0, min(600.0, interval / 3.0))
+    # A SQLite BEGIN IMMEDIATE reservation makes check-and-enqueue single-writer
+    # across concurrent tasks and multiple worker processes. A short reservation
+    # lease is recoverable after a crash; only an accepted durable outbox enqueue
+    # advances last_sent_at/fingerprint.
+    reservation_id = hashlib.sha256(f"{fingerprint}:{now:.6f}:{os.getpid()}:{threading.get_ident()}".encode()).hexdigest()[:32]
+    reservation_ttl = 90.0
     try:
         A85MarketIntelligence._ensure_schema()
         with A85MarketIntelligence._db_lock:
             conn = A85MarketIntelligence._connect()
             try:
-                previous = conn.execute("SELECT last_sent_at,fingerprint FROM a86_brain_delivery_state WHERE state_key='GLOBAL'").fetchone()
+                conn.execute("BEGIN IMMEDIATE")
+                previous = conn.execute("SELECT last_sent_at,fingerprint,state,reserved_until,reservation_id FROM a86_brain_delivery_state WHERE state_key='GLOBAL'").fetchone()
+                if previous:
+                    if str(previous[2] or "") == "RESERVED" and float(previous[3] or 0.0) > now:
+                        conn.rollback()
+                        STATS["a86_brain_report_reservation_busy"] = int(STATS.get("a86_brain_report_reservation_busy",0) or 0)+1
+                        return {"sent":False,"status":"RESERVATION_BUSY"}
+                    age = max(0.0, now - float(previous[0] or 0.0))
+                    same = str(previous[1] or "") == fingerprint
+                    if float(previous[0] or 0.0) > 0 and ((same and age < interval) or (not same and age < min_change_gap)):
+                        conn.rollback()
+                        STATS["a86_brain_report_rate_limited"] = int(STATS.get("a86_brain_report_rate_limited", 0) or 0) + 1
+                        return {"sent": False, "status": "RATE_LIMITED", "age_sec": age, "same_state": same}
+                conn.execute("""INSERT INTO a86_brain_delivery_state
+                    (state_key,last_sent_at,fingerprint,state,reserved_until,reservation_id,updated_at)
+                    VALUES('GLOBAL',0,'','RESERVED',?,?,?)
+                    ON CONFLICT(state_key) DO UPDATE SET state='RESERVED',reserved_until=excluded.reserved_until,
+                    reservation_id=excluded.reservation_id,updated_at=excluded.updated_at""",
+                    (now+reservation_ttl,reservation_id,now))
+                conn.commit()
             finally:
                 conn.close()
     except Exception as exc:
         return {"sent": False, "status": f"STATE_UNAVAILABLE:{type(exc).__name__}"}
-    if previous:
-        age = max(0.0, now - float(previous[0] or 0.0))
-        same = str(previous[1] or "") == fingerprint
-        if (same and age < interval) or (not same and age < min_change_gap):
-            STATS["a86_brain_report_rate_limited"] = int(STATS.get("a86_brain_report_rate_limited", 0) or 0) + 1
-            return {"sent": False, "status": "RATE_LIMITED", "age_sec": age, "same_state": same}
-    queued = await TelegramDispatcher.enqueue(body)
+    try:
+        queued = await TelegramDispatcher.enqueue(body)
+    except Exception as exc:
+        queued = False
+        STATS["a86_brain_report_enqueue_exception"] = f"{type(exc).__name__}:{str(exc)[:100]}"
     if not queued:
+        try:
+            with A85MarketIntelligence._db_lock:
+                conn=A85MarketIntelligence._connect()
+                try:
+                    conn.execute("UPDATE a86_brain_delivery_state SET state='IDLE',reserved_until=0,reservation_id='',updated_at=? WHERE state_key='GLOBAL' AND reservation_id=?",
+                                 (float(WALL_NOW()),reservation_id))
+                    conn.commit()
+                finally: conn.close()
+        except Exception:
+            STATS["a86_brain_report_state_write_errors"] = int(STATS.get("a86_brain_report_state_write_errors",0) or 0)+1
         STATS["a86_brain_report_enqueue_failures"] = int(STATS.get("a86_brain_report_enqueue_failures", 0) or 0) + 1
         return {"sent": False, "status": "OUTBOX_REJECTED"}
     try:
         with A85MarketIntelligence._db_lock:
             conn = A85MarketIntelligence._connect()
             try:
-                conn.execute("INSERT OR REPLACE INTO a86_brain_delivery_state(state_key,last_sent_at,fingerprint) VALUES('GLOBAL',?,?)", (now, fingerprint))
+                cur=conn.execute("UPDATE a86_brain_delivery_state SET last_sent_at=?,fingerprint=?,state='QUEUED',reserved_until=0,reservation_id='',updated_at=? WHERE state_key='GLOBAL' AND reservation_id=?",
+                                 (now,fingerprint,now,reservation_id))
                 conn.commit()
+                if not cur.rowcount:
+                    STATS["a86_brain_report_state_write_errors"] = int(STATS.get("a86_brain_report_state_write_errors",0) or 0)+1
             finally:
                 conn.close()
     except Exception:
@@ -111114,10 +111350,10 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
                 item=(forecast.get("horizons") or {}).get(horizon) or {}
                 scores=item.get("scenario_scores_pct") or {}
                 calibration=item.get("calibration") or {}
-                lines.append(f"{horizon}: {item.get('status','UNAVAILABLE')} {item.get('predicted_scenario','UNKNOWN')} | BULL={fmt(scores.get('BULLISH'))} BEAR={fmt(scores.get('BEARISH'))} RANGE={fmt(scores.get('RANGE'))} | calibration={calibration.get('status','UNKNOWN')} n={calibration.get('sample_count',0)}")
+                lines.append(f"{horizon}: {item.get('status','UNAVAILABLE')} {item.get('predicted_scenario','UNKNOWN')} | scenario points /100: BULL={fmt(scores.get('BULLISH'))} BEAR={fmt(scores.get('BEARISH'))} RANGE={fmt(scores.get('RANGE'))} | calibration={calibration.get('status','UNKNOWN')} n={calibration.get('sample_count',0)}")
                 if calibration.get("probability_claim_permitted"):
                     lines.append(f"  Historical conditional frequencies: {json.dumps(calibration.get('historical_conditional_frequencies_pct'),ensure_ascii=False)}")
-            lines.append("Scenario scores are not probabilities. Targets are structural/ATR planning levels, not guaranteed forecasts. Empirical frequencies appear only after the per-horizon/class sample floor is met. Closed spot OHLCV only; derivatives unavailable.")
+            lines.append("Scenario scores are not probabilities; they are relative technical points /100. A bullish 15m with bearish 1h/4h is a counter-trend rebound, not reversal confirmation. Targets are structural/ATR planning levels, not guarantees. Empirical frequencies appear only after the per-horizon/class sample floor is met. Closed spot OHLCV only; derivatives unavailable.")
             body="\n".join(lines)
         elif command=="/brain":
             market=A85MarketIntelligence.market_snapshot()
@@ -111179,6 +111415,14 @@ async def _v702_a85_readonly_dispatch(cls, exchange, message):
 STATS["v702_a85_self_test"] = A85MarketIntelligence.self_test()
 FINAL_CANONICAL_RUNTIME.update({
     "active_a87_revision_current": V702_A87_REVISION,
+    "active_a88_revision_current": V702_A88_REVISION,
+    "a88_ema200_history_bars": int(CONFIG.get("A85_EMA200_HISTORY_CANDLES",400)),
+    "a88_btc_ema200_requires_400_closed_candles": True,
+    "a88_ema_fetch_requests_one_extra_open_bar": True,
+    "a88_btc_trade_levels_never_fallback_to_1h": True,
+    "a88_candidates_exclude_btc_and_require_bullish_mtf_rs_and_cost_economics": True,
+    "a88_scenario_scores_explicitly_not_probabilities": True,
+    "a88_brain_publisher_uses_atomic_sqlite_reservation": True,
     "a86_auto_brain_report_enabled": bool(CONFIG.get("A86_AUTO_BRAIN_REPORT_ENABLE", True)),
     "a86_auto_brain_report_interval_sec": float(CONFIG.get("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", 900.0)),
     "a86_coin_decision_commands": ["/brain", "/forecast", "/decision SYMBOL"],
@@ -111205,6 +111449,10 @@ def _v702_a85_self_test_terminal():
     checks["ordinary_asset_not_blocked"] = not A85MarketIntelligence._forbidden_or_stable("SOL/USDT")[0]
     checks["telegram_commands_are_read_only"] = all(x in FINAL_CANONICAL_RUNTIME.get("a85_telegram_read_only_commands",[]) for x in ("/market","/chart","/performance","/brain","/forecast","/decision","/paper"))
     checks["a87_active_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a87_revision_current") == V702_A87_REVISION
+    checks["a88_active_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a88_revision_current") == V702_A88_REVISION
+    checks["a88_ema200_history_is_warmed"] = int(CONFIG.get("A85_EMA200_HISTORY_CANDLES",0) or 0) >= 400 and "data.tail(history_limit)" in _v702_read_source_text() and "history_limit = max(240, min(500, int(CONFIG.get(\"A85_EMA200_HISTORY_CANDLES\", 400))))" in _v702_read_source_text() and "ema_fetch_limit = min(1000, ema_history + 1)" in _v702_read_source_text()
+    checks["a88_candidate_gate_excludes_btc_and_requires_rs"] = "btc_reference_excluded" in _v702_read_source_text() and "relative_strength_not_positive" in _v702_read_source_text()
+    checks["a88_publisher_reservation_is_atomic"] = "BEGIN IMMEDIATE" in _v702_read_source_text() and "RESERVATION_BUSY" in _v702_read_source_text()
     checks["a87_preserves_monitor_only"] = FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS"
     checks["no_a85_trade_path"] = not any(callable(getattr(A85MarketIntelligence, name, None)) for name in ("submit_order","create_order","select_for_execution"))
     checks["core_liquidity_floor_preserved"] = float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)) >= 3_000_000.0

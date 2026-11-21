@@ -36,7 +36,7 @@ try:
 except Exception:  # pragma: no cover - guarded by runtime install/validator
     pd = None
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 STRATEGIES = (
     "MICRO_MOMENTUM_1M",
     "MICRO_SWEEP_RECLAIM_1M",
@@ -431,6 +431,39 @@ class V702IntradayShadow:
                 payload_json TEXT NOT NULL DEFAULT '{}', updated_ts REAL NOT NULL, note TEXT NOT NULL DEFAULT ''
             )""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_daily_state ON v702_intraday_shadow_daily_outbox(state,created_ts)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS v702_intraday_shadow_scheduler (
+                event_id TEXT PRIMARY KEY, event_ts REAL NOT NULL, event_type TEXT NOT NULL,
+                selected_count INTEGER NOT NULL DEFAULT 0, fetched_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '', details_json TEXT NOT NULL DEFAULT '{}'
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_scheduler_ts ON v702_intraday_shadow_scheduler(event_ts,event_type)")
+
+    def record_scheduler_event(self, event_type: str, selected_count: int = 0,
+                               fetched_count: int = 0, processed_count: int = 0,
+                               failed_count: int = 0, reason: str = "",
+                               details: Optional[Dict[str, Any]] = None,
+                               event_ts: Optional[float] = None) -> bool:
+        """Persist why the shadow lane ran, skipped, or failed; never affects trading."""
+        try:
+            ts = float(event_ts if event_ts is not None else time.time())
+            token = str(event_type or "UNKNOWN").upper()[:48]
+            reason_text = str(reason or "")[:160]
+            payload = details if isinstance(details, dict) else {}
+            event_id = hashlib.sha256(
+                f"{ts:.6f}|{token}|{reason_text}|{time.time_ns()}".encode("utf-8")
+            ).hexdigest()
+            with self._db() as conn:
+                conn.execute("""INSERT OR IGNORE INTO v702_intraday_shadow_scheduler
+                    (event_id,event_ts,event_type,selected_count,fetched_count,processed_count,failed_count,reason,details_json)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (event_id,ts,token,max(0,int(selected_count)),max(0,int(fetched_count)),
+                     max(0,int(processed_count)),max(0,int(failed_count)),reason_text,_json(payload)))
+                conn.execute("DELETE FROM v702_intraday_shadow_scheduler WHERE event_ts<?",
+                             (ts-max(14*86400, int(self._cfg().get("V702_INTRADAY_SHADOW_SCHEDULER_RETENTION_SEC", 30*86400))),))
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _symbol_allowed(symbol: str) -> bool:
@@ -1698,8 +1731,33 @@ class V702IntradayShadow:
                         "avg_net_pct": statistics.fmean(valid_pct) if valid_pct else None,
                         "ambiguous_excluded_from_net": outcomes["AMBIGUOUS_DATA_GAP"],
                     }
-                payload = {"schema_version": 2, "report_date": report_day.isoformat(), "timezone": tz_name,
+                scheduler_rows = conn.execute("""SELECT event_type,COUNT(*),SUM(selected_count),SUM(fetched_count),
+                    SUM(processed_count),SUM(failed_count) FROM v702_intraday_shadow_scheduler
+                    WHERE event_ts>=? AND event_ts<? GROUP BY event_type""", (day_start,day_end)).fetchall()
+                scheduler_by_type = {}
+                for etype, count, selected_sum, fetched_sum, processed_sum, failed_sum in scheduler_rows:
+                    scheduler_by_type[str(etype)] = {"events":int(count or 0),"selected":int(selected_sum or 0),
+                        "fetched":int(fetched_sum or 0),"processed":int(processed_sum or 0),"failed":int(failed_sum or 0)}
+                scheduler_reason_rows = conn.execute("""SELECT reason,COUNT(*) FROM v702_intraday_shadow_scheduler
+                    WHERE event_ts>=? AND event_ts<? AND reason!='' GROUP BY reason ORDER BY COUNT(*) DESC LIMIT 5""",
+                    (day_start,day_end)).fetchall()
+                # Each stage records the same symbols for traceability. Aggregate
+                # totals must count one authoritative stage only, or selected/fetched
+                # counts are multiplied by selection + start + completion events.
+                _selected_stage=scheduler_by_type.get("BATCH_SELECTED",{})
+                _completed_stage=scheduler_by_type.get("BATCH_COMPLETED",{})
+                _failed_stage=scheduler_by_type.get("BATCH_FAILED",{})
+                scheduler = {"status":"RECORDED" if scheduler_by_type else "NO_SCHEDULER_EVENTS",
+                    "by_event_type":scheduler_by_type,
+                    "top_reasons":{str(reason):int(count) for reason,count in scheduler_reason_rows},
+                    "event_count":sum(v["events"] for v in scheduler_by_type.values()),
+                    "selected_count":int(_selected_stage.get("selected",0) or 0),
+                    "fetched_count":int(_completed_stage.get("fetched",0) or 0),
+                    "processed_count":int(_completed_stage.get("processed",0) or 0),
+                    "failed_count":int(_completed_stage.get("failed",0) or 0)+int(_failed_stage.get("events",0) or 0)}
+                payload = {"schema_version": 3, "report_date": report_day.isoformat(), "timezone": tz_name,
                            "mode": "SHADOW_ONLY_NO_ORDERS", "strategies": strategy_rows,
+                           "scheduler":scheduler,
                            "totals": {"signals_created": sum(x["signals_created"] for x in strategy_rows.values()),
                                       "resolved": sum(x["resolved"] for x in strategy_rows.values()),
                                       "evaluations": sum(x["evaluations"] for x in strategy_rows.values()),
@@ -1798,10 +1856,11 @@ class V702IntradayShadow:
                     and node.func.attr in {"create_order", "create_market_buy", "submit_entry", "submit_order"}
                     for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
                 ),
-                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta","v702_intraday_shadow_alerts","v702_intraday_shadow_outcomes","v702_intraday_shadow_daily_outbox"}.issubset(tables),
+                "persistent_tables_present": {"v702_intraday_shadow_samples","v702_intraday_shadow_meta","v702_intraday_shadow_alerts","v702_intraday_shadow_outcomes","v702_intraday_shadow_daily_outbox","v702_intraday_shadow_scheduler"}.issubset(tables),
                 "shadow_alert_outbox_present": "v702_intraday_shadow_alerts" in tables,
                 "shadow_outcome_outbox_present": "v702_intraday_shadow_outcomes" in tables,
                 "daily_report_outbox_present": "v702_intraday_shadow_daily_outbox" in tables,
+                "scheduler_reason_telemetry_present": "v702_intraday_shadow_scheduler" in tables and callable(self.record_scheduler_event),
                 "balanced_core_micro_selector_available": callable(select_balanced_shadow_symbols),
                 "lsa_missing_data_fails_unavailable": self._assess_liquidation_spot_absorption({}).get("status") == "UNAVAILABLE",
             }

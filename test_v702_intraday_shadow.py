@@ -87,6 +87,30 @@ class IntradayShadowTests(unittest.TestCase):
         # Relax only the synthetic fixture's net-R floor; production defaults remain 0.75R.
         self.cfg["V702_INTRADAY_MICRO_ALERT_MIN_NET_R"] = 0.25
 
+    def test_scheduler_events_explain_empty_or_skipped_shadow_days(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz=ZoneInfo("Africa/Cairo")
+        day_start=datetime(2026,10,11,0,0,tzinfo=tz)
+        self.assertTrue(self.study.record_scheduler_event("SELECTION_EMPTY",reason="no_eligible_core_or_micro_symbols",
+            event_ts=datetime(2026,10,11,10,0,tzinfo=tz).timestamp()))
+        self.assertTrue(self.study.record_scheduler_event("BATCH_SELECTED",selected_count=4,
+            event_ts=datetime(2026,10,11,10,4,tzinfo=tz).timestamp()))
+        self.assertTrue(self.study.record_scheduler_event("BATCH_STARTED",selected_count=4,
+            event_ts=datetime(2026,10,11,10,5,tzinfo=tz).timestamp()))
+        self.assertTrue(self.study.record_scheduler_event("BATCH_COMPLETED",selected_count=4,fetched_count=3,
+            processed_count=3,failed_count=1,reason="partial_fetch_or_processing_failure",
+            event_ts=datetime(2026,10,11,10,6,tzinfo=tz).timestamp()))
+        report=self.study.ensure_daily_telegram_report(datetime(2026,10,12,1,0,tzinfo=tz).timestamp())
+        self.assertIsNotNone(report)
+        scheduler=report["payload"].get("scheduler",{})
+        self.assertEqual(scheduler.get("status"),"RECORDED")
+        self.assertEqual(scheduler.get("selected_count"),4)
+        self.assertEqual(scheduler.get("fetched_count"),3)
+        self.assertEqual(scheduler.get("failed_count"),1)
+        self.assertEqual(scheduler.get("by_event_type",{}).get("SELECTION_EMPTY",{}).get("events"),1)
+        self.assertIn("no_eligible_core_or_micro_symbols",scheduler.get("top_reasons",{}))
+
     def test_schema_selftest_and_shadow_only(self):
         result = self.study.self_test()
         self.assertTrue(result["pass"], result)
@@ -383,7 +407,7 @@ class IntradayShadowTests(unittest.TestCase):
                  post_cost_viable,quote_volume_24h,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
         report = self.study.ensure_daily_telegram_report(now_ts=report_due)
         self.assertIsNotNone(report)
-        self.assertEqual(report["payload"].get("schema_version"), 2)
+        self.assertEqual(report["payload"].get("schema_version"), 3)
         micro = report["payload"]["strategies"]["MICRO_MOMENTUM_1M"]
         self.assertEqual(micro["evaluations"], 2)
         self.assertEqual(micro["evaluation_rejections"], 1)

@@ -2488,9 +2488,10 @@ def test_a79_supplement_fetch_populates_isolated_read_only_research_map(monkeypa
     rows_by_tf = {}
     for tf, period in periods.items():
         last_closed_open = (now_ms // period) * period - period
+        history_rows = 401 if tf in ("1h", "4h") else 80
         rows_by_tf[tf] = [
             [last_closed_open - offset * period, 100.0, 101.0, 99.0, 100.0, 10.0]
-            for offset in range(79, -1, -1)
+            for offset in range(history_rows - 1, -1, -1)
         ]
 
     class PublicOhlcvOnly:

@@ -749,3 +749,28 @@ This section supersedes earlier A85 test totals and pending-status notes above.
 ## Not tested / limitations
 
 No authenticated MEXC private API, real order, Telegram network delivery, private fee retrieval, Docker build, Railway/Render resource load, long-duration soak or profitability was tested. Telegram photo ACK behavior is unit-tested with a mocked HTTP response, not a live Telegram delivery. A single skipped historical test depends on the missing A51 runtime log. These limitations are not presented as PASS.
+
+# A88 final production audit closure — 2026-11-21
+
+## Final A88 changes and regression evidence
+
+- Closed the effective A75 wrapper truncation path: the runtime `OpportunityHunter._closed_frame` wrapper now retains the configured 400 closed candles instead of silently clipping them to 240. BTC requests 401 raw 1H/4H OHLCV rows so a still-forming candle can be discarded while preserving 400 closed observations. The supplemental A79 read-only research fetch now defines the same `ema_fetch_limit` locally and requests the required history; its regression fixture verifies 401-row 1H/4H depth.
+- BTC macro regime is `UNKNOWN` when either the 1H/4H closed series lacks the configured EMA200 history or the latest closed candle exceeds its freshness limit. BTC 4H planning uses only verified 4H history and will not substitute 1H data.
+- A86's displayed shortlist excludes BTC and includes only qualified non-BTC candidates passing configured quality, ranking, cost-aware economics, Net RR, bullish 1H/4H/MTF and positive 1H/4H BTC-relative-strength conditions. Unqualified symbols remain in the internal radar; the report presents an explicit empty-qualified-result and funnel counts.
+- Forecast horizons are displayed as technical scenario points out of 100, not probability percentages. A bullish 15m reading against bearish 1H/4H is labelled a possible counter-trend rebound, not a higher-timeframe reversal.
+- Brain briefing admission is reserved transactionally with SQLite `BEGIN IMMEDIATE` before durable outbox admission. This protects concurrent publishers that share one database; it does not provide cross-database/host deduplication or prove Telegram delivery ACK.
+- Intraday Shadow scheduler events now distinguish empty selection, selected/started/completed, busy-skip and failed work. Daily selected/fetched/processed/failed metrics count authoritative stages rather than summing duplicate pipeline stages.
+- No live authority, trade mode, forbidden-asset rule, spot-only restriction, order protection, reconciliation, fee gate or risk threshold was weakened. Effective policy remains `MONITOR_ONLY_NO_NEW_BUYS`.
+
+## A88 validation results
+
+- All packaged regression modules: **58 modules across 6 isolated pytest runs; 668 passed, 1 skipped, 0 failed**. Per-run passed counts: **63, 59, 78, 183, 67, 218**. Each run used a distinct `SCALPER_DB` to isolate SQLite test state. The only skip requires a historical A51 runtime log that is not included in the clean release archive.
+- The six groups collectively covered every packaged `test_*.py` module once. An earlier batch invocation hit the command time limit before the third group completed; the affected groups were then rerun independently, and all six final independent groups passed.
+- Focused A87/A88/release-contract/shadow checks passed; those focused results overlap with, and are not added to, the 668 full-regression passes.
+- `python -m py_compile` for modified Python files and `python -m compileall -q .` passed. The archive contains **73 Python files**.
+- `python main.py --validate-only` completed with exit code 0, `bot_started=false`, and `live_threads=[]`. This is offline validation only, not a live exchange/Telegram test.
+- Final ZIP inventory is required to retain the original **99 unique archive paths**, with **0 added** and **0 removed**. The SHA ledger covers 98 files (excluding itself); final ZIP CRC, all ledger hashes and manifest agreement are checked at packaging time.
+
+## Deployment boundary
+
+No authenticated MEXC private API, real order/fill, private account fee retrieval, live Telegram delivery acknowledgement, Docker image build, Railway/Render resource-load test, long-duration soak or profitable-performance test was performed. The package remains a monitored, read-only market analyst; `MONITOR_ONLY_NO_NEW_BUYS` is intentionally retained. Do not enable unattended live trading based solely on offline tests or forecast scores.
