@@ -1,3 +1,21 @@
+# A91 — Verified Volume, Scheduler Evidence & Opportunity Watchlist (2026-11-21)
+
+**Active analytical revision:** `A91-VERIFIED-VOLUME-CORE-BOOKS-SCHEDULER-COUNTERFACTUAL-WATCHLIST-DIGEST-2026-11-21`.
+This revision modifies existing files only; archive inventory remains 99 paths.
+
+- **Volume provenance:** only explicit `quoteVolume` / normalized `quote_volume` fields are classified `EXACT` and allowed through the Core liquidity gate. Generic venue aliases such as `turnover` / `volValue` are retained as `UNVERIFIED` research evidence; `baseVolume × VWAP/last` is `ESTIMATED`. Neither unverified nor estimated volume may qualify Core. MEXC Spot documentation describes `quoteVolume` as quote-asset volume and examples can return it as null, so a missing value is not silently repaired into a Core pass.
+- **Core liquidity and execution depth:** the existing 3,000,000 USDT Core floor and spread ceiling are preserved. A separate maximum intended-notional / reported 24h quote-turnover share (default 0.50%) and top-five bid/ask depth requirement supplement the absolute floor. Lower-volume and unverified candidates remain in bounded Micro/Research only; they do not gain live authority.
+- **Intervals:** internal display labels are mapped explicitly (`1M→1m`, `5M→5m`, `15M→15m`, `1H→1h`, `4H→4h`, `1D→1d`) before the CCXT Spot request. Timestamp monotonicity, duplicate rows and interval cadence are checked; a bad 1m response is recorded as a data/cadence gap, not as a strategy rejection.
+- **A9 scheduler evidence:** each research cycle gets a `run_id` and persists started/skipped/batch/failure events, selected/fetched/processed counts, UTC event time and resolved SQLite path/identity. This makes an empty report distinguishable from a recorded no-selection, disabled lane, validate-only run, fetch problem or a database-scope mismatch. Deployment operation still needs runtime observation; offline tests do not prove a hosted scheduler is running.
+- **Order books:** Core and Micro use bounded, timestamped order-book prefetch with refetch for stale/missing snapshots. Spread decisions require a fresh validated BBO; missing/stale books are `DATA_INCOMPLETE` (`BOOK_MISSING` / `BOOK_STALE`), while a measured fresh spread above the ceiling remains `SPREAD_TOO_WIDE`. Bid/ask top-five depth is checked against intended order notional.
+- **Actionable watchlist:** an over-4% structural stop can become `WAITING_FOR_ENTRY` only where a bounded pullback price can preserve the same structural stop and 4% price-risk cap; the price is `stop/(1−0.04)`, is not an order, and requires full revalidation. A nearby resistance can become `BREAKOUT_RETEST_WATCH` only with a closed 15m/1h close above the buffered trigger, then a retest hold and a newly validated next target. No target is fabricated when the next resistance is unknown.
+- **Paper counterfactual accounting:** eligible closed-candle plans continue through the Paper ledger. Rejected rows without a valid signal-time entry/stop/TP1 geometry are persisted separately as `NOT_TESTABLE`; no hindsight entry, stop, target or profit is invented. Results remain OHLCV proxies rather than exchange queue/fill evidence.
+- **Telegram:** automatic A91 Brain delivery is a five-line state-change digest with BTC decision/data status, up to three qualified/watch candidates and their actual trigger, radar/book/A9 counts, Paper stress metrics and the monitor-only policy. The detailed `/brain` report remains available on demand.
+
+**Cost and safety boundary:** modeled economics remain conservative and do not assume maker fee discounts or guaranteed post-only fills. No live mode, maker-order execution, futures, shorts, leverage or order authority was added. All prior forbidden-asset, Spot-only, spread, liquidity, risk, fee, reconcile, protection and circuit-breaker guards remain in force. Effective entry policy remains `MONITOR_ONLY_NO_NEW_BUYS`.
+
+---
+
 # A90 — Spread/Book Truth, A9 History Scope & Funnel Diagnostics (2026-11-21)
 
 **Active analytical layer:** `A90-SPREAD-AND-BOOK-TRUTH-A9-HISTORY-SCOPE-AND-FUNNEL-COHERENCE-2026-11-21` (extends A89 in the existing `main.py` and `v702_intraday_shadow.py`). No package path is added.

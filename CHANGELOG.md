@@ -1,3 +1,16 @@
+# A91 — Verified Volume, A9 Scheduler, Book Freshness & Watchlist (2026-11-21)
+
+- Fixed the silent A9 candidate-selection failure caused by referencing an undefined quote-volume quality variable inside a swallowed per-symbol exception. The selector now reads provenance from the selected market snapshot, splits verified Core from isolated estimated/unverified Micro research, and preserves fair rotating selection.
+- Added explicit internal-to-CCXT Spot timeframe mapping and OHLCV timestamp/cadence checks for the A9 1m fetch. Invalid or hourly/monthly data cannot be evaluated as a 1m strategy sample.
+- Tightened quote-turnover provenance: only `quoteVolume` / `quote_volume` are `EXACT` for Core. Generic `turnover` / `volValue` fields are `UNVERIFIED`; `baseVolume × price` is `ESTIMATED`. Both remain barred from Core admission.
+- Added bounded Core order-book prefetch alongside the existing Micro lane, with capture timestamps, freshness refetch, exact level validation, and fresh-only spread measurement. A stale/missing book is a data gap, not a wide-spread rejection.
+- Added intended-notional / 24h quote-turnover share and top-five bid/ask depth tests without lowering the 3M Core floor or existing spread/risk/economic gates.
+- Added conditional risk-bounded pullback and breakout-retest watch scenarios. They retain the structural stop, do not create exchange orders, require later closed-candle confirmation and full revalidation, and do not invent an unavailable target.
+- Added persistent `NOT_TESTABLE` counterfactual rows for rejected candidates that lack valid signal-time plan geometry, including source rejection reason and snapshot data. These are explicitly excluded from win-rate / Net R as they have no defensible hypothetical trade plan.
+- Added A9 scheduler `run_id`, resolved SQLite identity/path and explicit cycle/batch/skip/failure evidence to distinguish no market selection from no execution evidence.
+- Replaced repeated automatic long Brain messages with a compact five-line A91 digest; detailed reports remain on demand. Notifications continue to distinguish queued from Telegram API ACK.
+- Preserved `MONITOR_ONLY_NO_NEW_BUYS`; no risk or quality gates relaxed, no live orders enabled, no additional files added.
+
 # A87 — Actionable Market Decision & Telegram Briefing (2026-11-20)
 
 - Added a deterministic Spot-Long market decision from verified BTC 1H/4H closed-candle regime, forecast scenario scores and BTC structural/ATR planning levels. Missing evidence maps to WAIT_DATA; no synthetic price or probability is generated.

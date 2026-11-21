@@ -1147,8 +1147,10 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         periods = {"1d": 86400, "4h": 14400, "1h": 3600, "15m": 900, "5m": 300, "1m": 60}
         md = {f"df_{name}": cls._frame(seconds, now, seed) for name, seconds in periods.items()}
         px = float(md["df_1h"]["close"].iloc[-2])
-        md.update({"quote_vol_24h": 5_000_000.0, "bid": px * 0.9999, "ask": px * 1.0001,
-                   "orderbook_ts": now,
+        md.update({"quote_vol_24h": 5_000_000.0, "quote_volume_quality": "EXACT",
+                   "quote_volume_source": "TEST_EXCHANGE_QUOTE_VOLUME",
+                   "quote_volume_facts": {"quote_volume_24h": 5_000_000.0, "quality": "EXACT", "source": "TEST_EXCHANGE_QUOTE_VOLUME"},
+                   "bid": px * 0.9999, "ask": px * 1.0001, "orderbook_ts": now,
                    "orderbook": {"bids": [[px * (0.9999 - i * 0.0001), 1000.0] for i in range(8)],
                                 "asks": [[px * (1.0001 + i * 0.0001), 1000.0] for i in range(8)]},
                    "ticker": {"quoteVolume": 5_000_000.0, "bid": px * 0.9999, "ask": px * 1.0001}})
@@ -1226,7 +1228,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         md["orderbook_ts"] = now - 120.0
         plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, {"1H": ind}, structure, 95, True)
         self.assertNotEqual(plan["status"], "READY_NOW")
-        self.assertEqual(plan["reason"], "STALE_OR_MISSING_BOOK")
+        self.assertEqual(plan["reason"], "BOOK_STALE")
         self.assertFalse(plan.get("book", {}).get("book_fresh"))
         self.assertIsNotNone(plan.get("book", {}).get("book_age_sec"))
 
@@ -1258,7 +1260,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
             self.assertGreaterEqual(plan["net_rr_tp1"], bot.CONFIG["A85_MIN_NET_RR_TP1"])
         else:
             self.assertNotIn(plan["status"], {"READY_NOW"})
-            self.assertIn(plan["reason"], {"NET_ECONOMICS_FAILED", "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "INVALID_TARGET_SEQUENCE", "STRUCTURAL_STOP_RISK_OVER_4_PERCENT"})
+            self.assertIn(plan["reason"], {"NET_ECONOMICS_FAILED", "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "INVALID_TARGET_SEQUENCE", "STRUCTURAL_STOP_RISK_OVER_4_PERCENT", "BOOK_STALE", "BOOK_MISSING"})
         md["orderbook"]["bids"] = [[md["bid"], 0.0001]]
         md["orderbook"]["asks"] = [[md["ask"], 0.0001]]
         low_depth = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, ind, structure, 95, True)
@@ -1292,7 +1294,106 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         structure={"swing_lows":[float(frames["df_1h"]["low"].iloc[-10])],"swing_highs":[],"resistance":None}
         plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frames["df_1h"]},inds,structure,95,True)
         self.assertNotEqual(plan["status"],"READY_NOW")
-        self.assertIn(plan["reason"],{"MISSING_1M_CONFIRMATION","STALE_OR_MISSING_BOOK","INSUFFICIENT_TOP5_BOOK_DEPTH","ENTRY_CHASE_DISTANCE_EXCEEDED","NET_ECONOMICS_FAILED","ORDERBOOK_IMBALANCE_BELOW_FLOOR","RESISTANCE_TOO_CLOSE_FOR_NET_TP1","STRUCTURAL_STOP_RISK_OVER_4_PERCENT"})
+        self.assertIn(plan["reason"],{"MISSING_1M_CONFIRMATION","BOOK_STALE","BOOK_MISSING","INSUFFICIENT_TOP5_BOOK_DEPTH","ENTRY_CHASE_DISTANCE_EXCEEDED","NET_ECONOMICS_FAILED","ORDERBOOK_IMBALANCE_BELOW_FLOOR","RESISTANCE_BREAKOUT_RETEST_REQUIRED","STRUCTURAL_STOP_REQUIRES_LOWER_ENTRY"})
+
+    def test_a91_quote_volume_estimates_never_pass_core(self):
+        ticker={"baseVolume":100_000.0,"last":0.10}
+        facts=bot._v702_a80_ticker_quote_volume_facts(ticker)
+        self.assertEqual(facts["quality"],"ESTIMATED")
+        self.assertAlmostEqual(facts["quote_volume_24h"],10_000.0)
+        ambiguous=bot._v702_a80_ticker_quote_volume_facts({"last":2.0,"info":{"volValue":"650000"}})
+        self.assertEqual(ambiguous["quality"],"UNVERIFIED")
+        self.assertEqual(ambiguous["source"],"UNVERIFIED_VENUE_INFO_VOLVALUE")
+        explicit=bot._v702_a80_ticker_quote_volume_facts({"quoteVolume":"5000000","info":{"volValue":"9"}})
+        self.assertEqual(explicit["quality"],"EXACT")
+        self.assertEqual(explicit["quote_volume_24h"],5_000_000.0)
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        md["quote_volume_quality"]="ESTIMATED"
+        md["quote_volume_source"]="ESTIMATED_BASE_VOLUME_X_LAST"
+        md["quote_volume_facts"]={**facts}
+        frame=md["df_1h"]; ind=bot.A85MarketIntelligence.indicators(frame)
+        structure={"swing_lows":[float(frame["low"].iloc[-10])],"swing_highs":[],"resistance":None}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frame},{"1H":ind},structure,95,True)
+        self.assertEqual(plan["status"],"DATA_INCOMPLETE")
+        self.assertEqual(plan["reason"],"QUOTE_VOLUME_NOT_VERIFIED")
+        self.assertFalse(plan.get("execution_authority",True))
+
+    def test_a91_spot_timeframe_mapping_and_cadence_are_explicit(self):
+        self.assertEqual(bot._v702_ccxt_spot_timeframe("1M"),"1m")
+        self.assertEqual(bot._v702_ccxt_spot_timeframe("1D"),"1d")
+        good=[[i*60_000,1,1.1,0.9,1.0,10] for i in range(1,6)]
+        bad=[[i*3_600_000,1,1.1,0.9,1.0,10] for i in range(1,6)]
+        self.assertTrue(bot._v702_validate_ohlcv_cadence(good,"1M")["valid"])
+        invalid=bot._v702_validate_ohlcv_cadence(bad,"1M")
+        self.assertFalse(invalid["valid"])
+        self.assertEqual(invalid["reason"],"CADENCE_MISMATCH")
+
+    def test_a91_brain_digest_is_five_lines_and_watch_only(self):
+        market={
+            "timestamp":1763726400.0,
+            "regime":{"regime":"BEARISH","btc":{"1D":"UNKNOWN","4H":"BEARISH","1H":"BEARISH"},
+                      "data_quality":{"status":"VERIFIED"}},
+            "a86_decision":{"action":"WAIT","display_ar":"انتظر"},
+            "btc_trade_levels":{"reference_price":58005.74},
+            "decision_candidates":[],
+            "near_candidates":[{"symbol":"SOL/USDT","status":"WAITING_FOR_ENTRY",
+                                 "wait_entry_max":67.56,"reason":"STRUCTURAL_STOP_REQUIRES_LOWER_ENTRY"}],
+            "fast_scan_available_symbols":1355,"radar_considered_symbols":500,
+            "deep_analyzed_symbols":24,"core_deep_eligible_symbols":80,
+        }
+        with patch.object(bot.A85MarketIntelligence,"paper_performance",return_value={
+            "sample_count":0,"net_expectancy_r_stress":None,"independent_days_utc":0,
+            "not_testable_rows":12,"status":"INSUFFICIENT_SAMPLE"}), \
+             patch.dict(bot.STATS,{"a85_core_orderbook_prefetch_last":{"eligible":20,"fetched_fresh":18,"reused_fresh":2},
+                                   "v702_intraday_shadow_batch_selected":8},clear=False):
+            digest=bot._v702_a86_brain_digest_text(market)
+        self.assertEqual(len(digest.splitlines()),5)
+        self.assertIn("A91 MARKET BRAIN",digest)
+        self.assertIn("SOL/USDT",digest)
+        self.assertIn("recheck",digest)
+        self.assertIn("MONITOR_ONLY_NO_NEW_BUYS",digest)
+
+    def test_a91_missing_orderbook_is_data_gap_not_spread_rejection(self):
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        md.pop("orderbook"); md.pop("orderbook_ts")
+        facts=bot.A85MarketIntelligence._book_facts(md,now)
+        self.assertEqual(facts["book_state"],"MISSING")
+        self.assertIsNone(facts["spread_pct"])
+        frame=md["df_1h"]; ind=bot.A85MarketIntelligence.indicators(frame)
+        structure={"swing_lows":[float(frame["low"].iloc[-10])],"swing_highs":[],"resistance":None}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frame},{"1H":ind},structure,95,True)
+        self.assertEqual(plan["status"],"DATA_INCOMPLETE")
+        self.assertEqual(plan["reason"],"BOOK_MISSING")
+
+    def test_a91_structural_stop_becomes_waiting_recheck_not_tighter_stop(self):
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        frame=md["df_1h"]; ind=bot.A85MarketIntelligence.indicators(frame)
+        entry=md["ask"]
+        structure={"swing_lows":[entry*0.94],"swing_highs":[],"resistance":None}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frame},{"1H":ind},structure,95,True)
+        self.assertEqual(plan["status"],"WAITING_FOR_ENTRY")
+        self.assertEqual(plan["reason"],"STRUCTURAL_STOP_REQUIRES_LOWER_ENTRY")
+        self.assertLess(plan["wait_entry_max"],entry)
+        self.assertTrue(plan["requires_full_revalidation"])
+        self.assertFalse(plan["execution_authority"])
+        self.assertFalse(plan["economic_pass"])
+
+    def test_a91_near_resistance_creates_breakout_retest_watch_only(self):
+        now=bot.WALL_NOW(); md=self._market_data(now)
+        frame=md["df_1h"]; ind=bot.A85MarketIntelligence.indicators(frame)
+        entry=md["ask"]
+        stop=min(float(frame["low"].iloc[-10])-0.12*ind["atr"],entry*(1-0.0035))
+        risk=entry-stop
+        resistance=entry+risk*1.02
+        structure={"swing_lows":[float(frame["low"].iloc[-10])],"swing_highs":[],
+                   "resistance":{"price":resistance},"resistances":[{"price":resistance},{"price":entry+risk*2.5}]}
+        plan=bot.A85MarketIntelligence._plan("SOL/USDT",md,{"1H":frame},{"1H":ind},structure,95,True)
+        self.assertEqual(plan["status"],"WAITING_FOR_ENTRY")
+        self.assertEqual(plan["reason"],"RESISTANCE_BREAKOUT_RETEST_REQUIRED")
+        self.assertEqual(plan["scenario"],"BREAKOUT_RETEST_WATCH")
+        self.assertEqual(plan["confirmation_contract"],"CLOSED_15M_OR_1H_CLOSE_ABOVE_TRIGGER_THEN_RETEST_HOLD")
+        self.assertFalse(plan["execution_authority"])
+        self.assertFalse(plan["economic_pass"])
 
     def test_a85_fair_rotation_is_persisted_and_bounded(self):
         import tempfile

@@ -821,3 +821,29 @@ No authenticated MEXC private API, real order/fill, private account fee retrieva
 - `MONITOR_ONLY_NO_NEW_BUYS` remains active. No live selector/entry/execution authority was added, no order was submitted, and no hard gate was weakened.
 - Paper/Shadow outcomes remain research evidence, not MEXC queue/fill simulation, realized wallet PnL or proof of profitability. The paper sample still requires at least 30 resolved observations and independent-day coverage plus later holdout validation.
 - No authenticated MEXC private API, real Telegram network delivery, real order/fill, wallet PnL, Docker/Render/Railway load test or long-duration deployment soak was performed.
+
+
+# A91 final production audit — 2026-11-21
+
+## Scope implemented
+- Corrected the A9 shadow selector's swallowed exception from an undefined quote-volume-quality variable; Core and Micro research candidates now use explicit data-provenance gates.
+- Restricted Core liquidity evidence to explicit quote-currency turnover fields. Venue aliases (`turnover`, `volValue`) are retained as `UNVERIFIED`, and base-volume × price is `ESTIMATED`; both are rejected from Core while remaining separately labelled research observations.
+- Mapped internal timeframe labels to explicit CCXT Spot intervals and added timestamp order/interval cadence checks before 1m strategy processing.
+- Added durable scheduler `run_id`, cycle and batch event details, skip/failure reasons, UTC timestamps and resolved database identity/path.
+- Added bounded fresh order-book capture for Core candidates as well as Micro, with stale refetch and explicit `BOOK_STALE` / `BOOK_MISSING` data-gap reasons. A fresh measured wide spread remains a separate rejection.
+- Added position-notional/24h-turnover share and actual top-five book-depth constraints without lowering the 3M Core quote-turnover floor or relaxing existing spread, score, MTF, RS, fee, risk or protection gates.
+- Added watch-only structural-pullback and breakout-retest scenarios. The former computes the maximum entry preserving the original structural stop and 4% risk cap; the latter requires a closed 15m/1h breakout close and a subsequent retest. Neither grants order authority or fabricates a target.
+- Added persistent counterfactual `NOT_TESTABLE` records for rejects without valid signal-time entry/stop/TP geometry. No hindsight plan is invented and such rows are excluded from performance denominators.
+- Added a five-line automatic Brain digest with near-candidate triggers, data/book/radar health and Paper stress status; detailed reports remain queryable.
+
+## Validation evidence and limitations
+- Focused A85/A91 release-contract regression: **59 passed, 45 deselected** after the final code changes; the A91 Brain-digest and ambiguous-volume checks are included in this focused set.
+- A9 scheduler + intraday-shadow regression: **44 passed**.
+- A80 supplemental-volume compatibility regression: **1 passed** (unverified alias remains research-only).
+- Python compilation passed for **73/73 packaged `.py` files**. `python main.py --validate-only` exited **0** with `bot_started=false` and `live_threads=[]`. The A91 terminal self-test passed all six A91 checks, including the no-live-authority check.
+- The full repository pytest run was attempted but did not complete within the execution timeout. It is **not** claimed as a full-suite pass; the release evidence is the explicit focused batches above.
+- The archive changes **10 existing files**, adds **0**, and removes **0**; the final package is constrained to the 99 original archive paths.
+- No authenticated MEXC private-account test, fee-tier lookup, real Telegram delivery, exchange order/fill, wallet PnL, deployment memory soak or profitability validation was performed.
+
+## Deployment boundary
+`MONITOR_ONLY_NO_NEW_BUYS` remains active. This release improves discovery and measurement; it does not prove profitability. The Paper model is candle-based and cannot prove queue position, post-only fill or actual execution cost. Require a sufficient sample across independent days, positive stress Net R, acceptable drawdown and later holdout performance before considering any live pilot.

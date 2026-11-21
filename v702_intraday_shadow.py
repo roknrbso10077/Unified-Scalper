@@ -36,7 +36,7 @@ try:
 except Exception:  # pragma: no cover - guarded by runtime install/validator
     pd = None
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 STRATEGIES = (
     "MICRO_MOMENTUM_1M",
     "MICRO_SWEEP_RECLAIM_1M",
@@ -435,30 +435,42 @@ class V702IntradayShadow:
                 event_id TEXT PRIMARY KEY, event_ts REAL NOT NULL, event_type TEXT NOT NULL,
                 selected_count INTEGER NOT NULL DEFAULT 0, fetched_count INTEGER NOT NULL DEFAULT 0,
                 processed_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
-                reason TEXT NOT NULL DEFAULT '', details_json TEXT NOT NULL DEFAULT '{}'
+                reason TEXT NOT NULL DEFAULT '', details_json TEXT NOT NULL DEFAULT '{}',
+                run_id TEXT NOT NULL DEFAULT ''
             )""")
+            _scheduler_columns = {str(r[1]) for r in conn.execute("PRAGMA table_info(v702_intraday_shadow_scheduler)").fetchall()}
+            if "run_id" not in _scheduler_columns:
+                conn.execute("ALTER TABLE v702_intraday_shadow_scheduler ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_scheduler_ts ON v702_intraday_shadow_scheduler(event_ts,event_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_v702_intraday_scheduler_run ON v702_intraday_shadow_scheduler(run_id,event_ts)")
 
     def record_scheduler_event(self, event_type: str, selected_count: int = 0,
                                fetched_count: int = 0, processed_count: int = 0,
                                failed_count: int = 0, reason: str = "",
                                details: Optional[Dict[str, Any]] = None,
-                               event_ts: Optional[float] = None) -> bool:
-        """Persist why the shadow lane ran, skipped, or failed; never affects trading."""
+                               event_ts: Optional[float] = None,
+                               run_id: Optional[str] = None) -> bool:
+        """Persist every scheduler run/skip with stable DB identity; shadow-only."""
         try:
             ts = float(event_ts if event_ts is not None else time.time())
             token = str(event_type or "UNKNOWN").upper()[:48]
             reason_text = str(reason or "")[:160]
-            payload = details if isinstance(details, dict) else {}
+            payload = dict(details) if isinstance(details, dict) else {}
+            resolved_db = str(Path(self.db_path).expanduser().resolve())
+            identity = hashlib.sha256(resolved_db.encode("utf-8")).hexdigest()[:16]
+            event_run_id = str(run_id or payload.get("run_id") or f"a9-{int(ts * 1000)}")[:96]
+            payload.setdefault("run_id", event_run_id)
+            payload.setdefault("db_identity", identity)
+            payload.setdefault("db_path", resolved_db[:240])
             event_id = hashlib.sha256(
-                f"{ts:.6f}|{token}|{reason_text}|{time.time_ns()}".encode("utf-8")
+                f"{ts:.6f}|{token}|{reason_text}|{event_run_id}|{time.time_ns()}".encode("utf-8")
             ).hexdigest()
             with self._db() as conn:
                 conn.execute("""INSERT OR IGNORE INTO v702_intraday_shadow_scheduler
-                    (event_id,event_ts,event_type,selected_count,fetched_count,processed_count,failed_count,reason,details_json)
-                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (event_id,event_ts,event_type,selected_count,fetched_count,processed_count,failed_count,reason,details_json,run_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (event_id,ts,token,max(0,int(selected_count)),max(0,int(fetched_count)),
-                     max(0,int(processed_count)),max(0,int(failed_count)),reason_text,_json(payload)))
+                     max(0,int(processed_count)),max(0,int(failed_count)),reason_text,_json(payload),event_run_id))
                 conn.execute("DELETE FROM v702_intraday_shadow_scheduler WHERE event_ts<?",
                              (ts-max(14*86400, int(self._cfg().get("V702_INTRADAY_SHADOW_SCHEDULER_RETENTION_SEC", 30*86400))),))
             return True
@@ -1559,6 +1571,28 @@ class V702IntradayShadow:
                 "max_retained_rows": int(max(1000, min(200000, _num(self._cfg().get("V702_INTRADAY_SHADOW_MAX_ROWS"), 50000) or 50000))),
                 "timezone": "UTC",
             }
+            try:
+                _scheduler_since = time.time() - 86400.0
+                with self._db() as conn:
+                    _scheduler_events = conn.execute("""SELECT event_type,COUNT(*),MAX(event_ts),
+                        SUM(selected_count),SUM(fetched_count),SUM(processed_count),SUM(failed_count)
+                        FROM v702_intraday_shadow_scheduler WHERE event_ts>=? GROUP BY event_type""",
+                        (_scheduler_since,)).fetchall()
+                    _scheduler_last = conn.execute("""SELECT event_type,event_ts,reason,run_id,details_json
+                        FROM v702_intraday_shadow_scheduler ORDER BY event_ts DESC LIMIT 1""").fetchone()
+                _db_identity = hashlib.sha256(_db_resolved.encode("utf-8")).hexdigest()[:16]
+                report["scheduler_identity"] = {
+                    "db_identity": _db_identity, "db_path": _db_resolved,
+                    "events_last_24h": {str(r[0]): {"events": int(r[1] or 0), "last_event_ts": r[2],
+                        "selected": int(r[3] or 0), "fetched": int(r[4] or 0),
+                        "processed": int(r[5] or 0), "failed": int(r[6] or 0)} for r in _scheduler_events},
+                    "last_event": ({"event_type": str(_scheduler_last[0]), "event_ts": float(_scheduler_last[1]),
+                        "reason": str(_scheduler_last[2] or ""), "run_id": str(_scheduler_last[3] or "")}
+                        if _scheduler_last else None),
+                    "scope": "SAME_RESOLVED_DB_PATH_USED_BY_INTRADAY_SERVICE"
+                }
+            except Exception as _scheduler_identity_exc:
+                report["scheduler_identity"] = {"status": "UNAVAILABLE", "reason": type(_scheduler_identity_exc).__name__}
             report["strategy_timeframe_contracts"] = {
                 "MICRO_MOMENTUM_1M": {"signal_timeframe": "1m", "context_timeframe": None},
                 "MICRO_SWEEP_RECLAIM_1M": {"signal_timeframe": "1m", "context_timeframe": None},
@@ -1785,9 +1819,20 @@ class V702IntradayShadow:
                 _fetched_count=int(_completed_stage.get("fetched",0) or 0)
                 _processed_count=int(_completed_stage.get("processed",0) or 0)
                 _eval_total=sum(int(v.get("evaluations",0) or 0) for v in strategy_rows.values())
+                _skip_stage = scheduler_by_type.get("CYCLE_SKIPPED", {})
+                _skip_reasons = {}
+                try:
+                    _skip_rows = conn.execute("SELECT reason,COUNT(*) FROM v702_intraday_shadow_scheduler "
+                        "WHERE event_ts>=? AND event_ts<? AND event_type='CYCLE_SKIPPED' AND reason!='' "
+                        "GROUP BY reason ORDER BY COUNT(*) DESC LIMIT 8", (day_start,day_end)).fetchall()
+                    _skip_reasons = {str(r[0]): int(r[1] or 0) for r in _skip_rows}
+                except Exception:
+                    _skip_reasons = {}
                 if not scheduler_by_type:
                     _scheduler_diagnosis="NO_SCHEDULER_RUN_RECORDED_IN_REPORT_WINDOW"
-                elif _selected_count<=0:
+                elif _skip_stage.get("events", 0) and not _selected_stage.get("events", 0) and not _completed_stage.get("events", 0):
+                    _scheduler_diagnosis="SCHEDULER_CYCLE_SKIPPED:" + (next(iter(_skip_reasons), "UNKNOWN"))
+                elif _selected_count<=0 and not _completed_stage.get("events", 0):
                     _scheduler_diagnosis="SCHEDULER_RAN_EMPTY_SELECTION"
                 elif _fetched_count<=0:
                     _scheduler_diagnosis="SELECTED_BUT_NOT_FETCHED"
@@ -1806,7 +1851,9 @@ class V702IntradayShadow:
                     "window_start_local":datetime.fromtimestamp(day_start,tz=tz).isoformat(),
                     "window_end_local":datetime.fromtimestamp(day_end,tz=tz).isoformat(),
                     "first_event_ts":_scheduler_first_ts,"last_event_ts":_scheduler_last_ts,
-                    "last_event":_scheduler_last_event,
+                    "last_event":_scheduler_last_event, "cycle_skip_reasons": _skip_reasons,
+                    "db_path": str(Path(self.db_path).expanduser().resolve()),
+                    "db_identity": hashlib.sha256(str(Path(self.db_path).expanduser().resolve()).encode("utf-8")).hexdigest()[:16],
                     "sqlite_scheduler_rows_present":bool(scheduler_bounds and int(scheduler_bounds[2] or 0)>0),
                     "sqlite_write_evidence_scope":"RETAINED_SCHEDULER_ROWS_ONLY_NOT_PROOF_OF_ALL_RUNTIME_ATTEMPTS",
                     "evaluation_rows_for_window":int(_eval_total)}

@@ -27156,11 +27156,13 @@ async def run_bot(universe: List[str]):
                     for _sym in scan_universe:
                         try:
                             _tk = _tickers.get(_sym) or {}
-                            _qv = float(_tk.get("quoteVolume") or 0.0)
+                            _qv_facts = _v702_a80_ticker_quote_volume_facts(_tk)
+                            _qv = float(_qv_facts.get("quote_volume_24h") or 0.0)
                             _px = float(_tk.get("last") or 0.0)
                             _pct = float(_tk.get("percentage") or 0.0)
                             if (
-                                not math.isfinite(_qv) or _qv <= 0.0
+                                _qv_facts.get("quality") != "EXACT"
+                                or not math.isfinite(_qv) or _qv <= 0.0
                                 or not math.isfinite(_px) or _px <= 0.0
                                 or not math.isfinite(_pct)
                                 or _qv < float(CONFIG.get("V650_LIQUIDITY500_MIN_QUOTE_VOLUME", 3_000_000.0))
@@ -27670,7 +27672,8 @@ async def run_bot(universe: List[str]):
                     ticker = dict(_v679_ticker_snapshot.get(_symbol) or {})
                     if not ticker:
                         raise ValueError("missing_shared_ticker")
-                    quote_vol_24h = float(ticker.get("quoteVolume") or 0.0)
+                    _qv_facts = _v702_a80_ticker_quote_volume_facts(ticker)
+                    quote_vol_24h = float(_qv_facts.get("quote_volume_24h") or 0.0)
                     if not _PDNP_OK:
                         _v650_rejected += 1
                         if _symbol in _v650_micro_symbol_set:
@@ -27728,6 +27731,9 @@ async def run_bot(universe: List[str]):
                         "df_btc_1d": shared_btc_1d,
                         "btc_context_age_sec": max(0.0, MONO_NOW() - shared_btc_context_ts),
                         "quote_vol_24h": quote_vol_24h,
+                        "quote_volume_facts": dict(_qv_facts),
+                        "quote_volume_quality": str(_qv_facts.get("quality") or "MISSING"),
+                        "quote_volume_source": str(_qv_facts.get("source") or "UNAVAILABLE"),
                         "tier": str(LiquidityTier.classify(quote_vol_24h)),
                         "v702_r30_micro_recall_lane": bool(_symbol in set(_v702_r30_micro_symbols)),
                     }
@@ -27994,10 +28000,35 @@ async def run_bot(universe: List[str]):
             # rotating subset to avoid turning the 1m research into a scan bottleneck.
             try:
                 _intraday_shadow = globals().get("_V702_INTRADAY_SHADOW")
+                _shadow_run_id = f"a9-{int(WALL_NOW() * 1000)}-{os.getpid()}"
+                _shadow_lane_enabled = bool(CONFIG.get("V702_INTRADAY_SHADOW_ENABLE", True))
+                _shadow_validate_only = bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
+                _shadow_map_available = isinstance(market_data_map, dict) and bool(market_data_map)
+                if _intraday_shadow is not None:
+                    try:
+                        _shadow_skip_reason = ("LANE_DISABLED" if not _shadow_lane_enabled else
+                            "VALIDATE_ONLY_MODE" if _shadow_validate_only else
+                            "EMPTY_CANONICAL_MARKET_MAP" if not _shadow_map_available else "")
+                        await asyncio.to_thread(_intraday_shadow.record_scheduler_event, "CYCLE_STARTED",
+                            0, 0, 0, 0, "", {"run_id": _shadow_run_id,
+                                "lane_enabled": _shadow_lane_enabled, "validate_only": _shadow_validate_only,
+                                "market_map_symbols": len(market_data_map) if isinstance(market_data_map, dict) else 0,
+                                "db_scope": "V702_INTRADAY_SHADOW_SERVICE_DB"})
+                        if _shadow_skip_reason:
+                            await asyncio.to_thread(_intraday_shadow.record_scheduler_event, "CYCLE_SKIPPED",
+                                0, 0, 0, 0, _shadow_skip_reason, {"run_id": _shadow_run_id,
+                                    "lane_enabled": _shadow_lane_enabled, "validate_only": _shadow_validate_only,
+                                    "market_map_symbols": len(market_data_map) if isinstance(market_data_map, dict) else 0})
+                    except Exception as _cycle_record_exc:
+                        STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
+                        logger.warning("[V702-A9-SCHEDULER] cycle evidence write failed: %s", type(_cycle_record_exc).__name__)
+                else:
+                    STATS["v702_intraday_shadow_service_missing_cycles"] = int(STATS.get("v702_intraday_shadow_service_missing_cycles",0) or 0)+1
+                    logger.error("[V702-A9-SCHEDULER] SERVICE_NOT_INSTALLED; cycle cannot be persisted")
                 if (_intraday_shadow is not None
-                        and bool(CONFIG.get("V702_INTRADAY_SHADOW_ENABLE", True))
-                        and not bool(globals().get("_V699_VALIDATE_ONLY_REQUEST", False))
-                        and isinstance(market_data_map, dict) and market_data_map):
+                        and _shadow_lane_enabled
+                        and not _shadow_validate_only
+                        and _shadow_map_available):
                     _shadow_min_qv = max(250_000.0, float(CONFIG.get("V702_INTRADAY_SHADOW_MIN_QUOTE_VOLUME_USDT", 500_000.0)))
                     _shadow_core_floor = max(_shadow_min_qv, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
                     _shadow_pool_core = []
@@ -28005,8 +28036,11 @@ async def run_bot(universe: List[str]):
                     _shadow_forbidden_fn = globals().get("_v587_is_forbidden_coin")
                     for _shadow_sym, _shadow_snap in _a79_research_market_data_map.items():
                         try:
-                            _shadow_qv = float((_shadow_snap or {}).get("quote_vol_24h", 0.0) or 0.0)
-                            if not math.isfinite(_shadow_qv) or _shadow_qv < _shadow_min_qv:
+                            _shadow_facts = (_shadow_snap or {}).get("quote_volume_facts") if isinstance((_shadow_snap or {}).get("quote_volume_facts"), dict) else {}
+                            _shadow_qv_quality = str((_shadow_snap or {}).get("quote_volume_quality") or _shadow_facts.get("quality") or "MISSING").upper()
+                            _shadow_qv = float((_shadow_snap or {}).get("quote_vol_24h", _shadow_facts.get("quote_volume_24h", 0.0)) or 0.0)
+                            if (_shadow_qv_quality not in {"EXACT", "ESTIMATED", "UNVERIFIED"}
+                                    or not math.isfinite(_shadow_qv) or _shadow_qv < _shadow_min_qv):
                                 continue
                             if callable(_shadow_forbidden_fn):
                                 try:
@@ -28019,7 +28053,10 @@ async def run_bot(universe: List[str]):
                                     STATS["v702_intraday_shadow_blacklist_errors"] = int(STATS.get("v702_intraday_shadow_blacklist_errors", 0) or 0) + 1
                                     continue
                             _row = (str(_shadow_sym), _shadow_qv)
-                            (_shadow_pool_core if _shadow_qv >= _shadow_core_floor else _shadow_pool_micro).append(_row)
+                            # Only verified quote turnover can enter the core research
+                            # cohort. Estimated/unknown turnover is quarantined in Micro.
+                            (_shadow_pool_core if (_shadow_qv >= _shadow_core_floor and _shadow_qv_quality == "EXACT")
+                             else _shadow_pool_micro).append(_row)
                         except Exception:
                             continue
                     _shadow_pool_core.sort(key=lambda x: x[1], reverse=True)
@@ -28056,22 +28093,27 @@ async def run_bot(universe: List[str]):
                             else "selector_returned_empty_batch")
                         await asyncio.to_thread(_intraday_shadow.record_scheduler_event,
                             _scheduler_type, len(_shadow_selected), 0, 0, 0, _scheduler_reason,
-                            {"core_pool":len(_shadow_pool_core),"micro_pool":len(_shadow_pool_micro),
+                            {"run_id": _shadow_run_id, "core_pool":len(_shadow_pool_core),"micro_pool":len(_shadow_pool_micro),
                              "core_selected":int(_shadow_selection.get("core_selected",0) or 0),
                              "micro_selected":int(_shadow_selection.get("micro_selected",0) or 0),
-                             "rs_leaders_selected":int(_shadow_selection.get("rs_leaders_selected",0) or 0)})
+                             "rs_leaders_selected":int(_shadow_selection.get("rs_leaders_selected",0) or 0),
+                             "core_floor_quote_volume": _shadow_core_floor, "micro_floor_quote_volume": _shadow_min_qv,
+                             "position_notional_usdt": max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0))),
+                             "max_position_24h_volume_share_pct": _shadow_max_share_pct,
+                             "core_requires_exact_quote_volume": True})
                     except Exception:
                         STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
-                    async def _v702_intraday_process_batch(_selected, _snapshots, _service=_intraday_shadow):
+                    async def _v702_intraday_process_batch(_selected, _snapshots, _service=_intraday_shadow, _run_id=_shadow_run_id):
                         """Run the research-only data lane away from the canonical scan critical path."""
                         await asyncio.to_thread(_service.record_scheduler_event, "BATCH_STARTED",
-                                                len(_selected), 0, 0, 0, "")
+                                                len(_selected), 0, 0, 0, "", {"run_id": _run_id,
+                                                    "symbols": list(_selected)[:40], "timeframe": "1m"})
                         async def _v702_intraday_fetch_1m(_sym):
                             async with _v650_sem:
                                 return await asyncio.wait_for(
                                     safe_api_call(
                                         f"ohlcv_1m_intraday_shadow_{_sym}",
-                                        lambda _sym=_sym: exchange.fetch_ohlcv(_sym, "1m", limit=max(80, min(240, int(CONFIG.get("V702_INTRADAY_SHADOW_1M_LIMIT", 180))))),
+                                        lambda _sym=_sym: exchange.fetch_ohlcv(_sym, _v702_ccxt_spot_timeframe("1M"), limit=max(80, min(240, int(CONFIG.get("V702_INTRADAY_SHADOW_1M_LIMIT", 180))))),
                                         retry_safe=True,
                                     ),
                                     timeout=max(1.0, min(6.0, float(CONFIG.get("V702_INTRADAY_SHADOW_FETCH_TIMEOUT_SEC", 5.0)))),
@@ -28100,6 +28142,13 @@ async def run_bot(universe: List[str]):
                                 if isinstance(_raw, BaseException) or not _raw:
                                     _fail_count += 1
                                     continue
+                                _cadence = _v702_validate_ohlcv_cadence(_raw, "1M")
+                                if not _cadence.get("valid"):
+                                    _fail_count += 1
+                                    await asyncio.to_thread(_service.record_scheduler_event, "CANDLE_CADENCE_INVALID",
+                                        1, 1, 0, 1, str(_cadence.get("reason") or "CADENCE_MISMATCH"),
+                                        {"symbol": _sym, "timeframe_label": "1M", "api_timeframe": _v702_ccxt_spot_timeframe("1M"), **_cadence})
+                                    continue
                                 _fetch_ok_count += 1
                                 _frame = pd.DataFrame(_raw, columns=_cols)
                                 _frame["ts"] = pd.to_datetime(_frame["ts"], unit="ms", utc=True)
@@ -28127,7 +28176,8 @@ async def run_bot(universe: List[str]):
                         await asyncio.to_thread(_service.record_scheduler_event, "BATCH_COMPLETED",
                             len(_selected), _fetch_ok_count, _ok_count, _fail_count,
                             "partial_fetch_or_processing_failure" if _fail_count else "",
-                            {"signals":_signal_count,"resolved":_resolved_count})
+                            {"run_id": _run_id, "signals":_signal_count,"resolved":_resolved_count,
+                             "symbols": list(_selected)[:40], "timeframe": "1m"})
                         # Independent, persistent Telegram notification lane for 1m
                         # micro research signals. It cannot select candidates or submit orders.
                         _micro_tg_queued = _micro_tg_blocked = 0
@@ -28360,7 +28410,8 @@ async def run_bot(universe: List[str]):
                             STATS["v702_intraday_shadow_lane_errors"] = int(STATS.get("v702_intraday_shadow_lane_errors", 0) or 0) + 1
                             try:
                                 _intraday_shadow.record_scheduler_event("BATCH_FAILED", len(_shadow_selected), 0, 0,
-                                len(_shadow_selected), f"{type(_batch_exc).__name__}:{str(_batch_exc)[:100]}")
+                                len(_shadow_selected), f"{type(_batch_exc).__name__}:{str(_batch_exc)[:100]}",
+                                {"run_id": _shadow_run_id, "symbols": list(_shadow_selected)[:40]})
                             except Exception:
                                 STATS["v702_intraday_shadow_scheduler_telemetry_errors"] = int(STATS.get("v702_intraday_shadow_scheduler_telemetry_errors",0) or 0)+1
                             logger.warning(f"[V702-A9-INTRADAY-SHADOW] detached research batch failed safely: {_batch_exc}")
@@ -28635,6 +28686,20 @@ async def run_bot(universe: List[str]):
                                type(_v702_hunter_scan_exc).__name__, str(_v702_hunter_scan_exc)[:180])
 
             # A85 market intelligence consumes the exact shared research map.
+            # Fetch a bounded, fresh orderbook cohort for Core candidates too; the
+            # separate A9 Micro prefetch is not a substitute for Core execution data.
+            try:
+                _a85_book_result = await _v702_a9_prefetch_micro_orderbooks(
+                    exchange, _a79_research_market_data_map, volume_band="CORE")
+                STATS["a85_core_orderbook_prefetch_last"] = {**dict(_a85_book_result or {}), "ts": float(WALL_NOW())}
+                logger.info("[A85-CORE-ORDERBOOK] eligible=%d attempted=%d fresh=%d reused=%d errors=%d deferred=%d",
+                    int(_a85_book_result.get("eligible",0) or 0), int(_a85_book_result.get("attempted",0) or 0),
+                    int(_a85_book_result.get("fetched_fresh",0) or 0), int(_a85_book_result.get("reused_fresh",0) or 0),
+                    int(_a85_book_result.get("api_errors",0) or 0)+int(_a85_book_result.get("timeouts",0) or 0)+int(_a85_book_result.get("empty_or_invalid",0) or 0),
+                    int(_a85_book_result.get("deferred_budget",0) or 0))
+            except Exception as _a85_book_exc:
+                STATS["a85_core_orderbook_prefetch_errors"] = int(STATS.get("a85_core_orderbook_prefetch_errors",0) or 0)+1
+                logger.warning("[A85-CORE-ORDERBOOK] failed closed: %s", type(_a85_book_exc).__name__)
             # It is isolated from GlobalOpportunityBrain, Builder, PreSend and
             # OrderExecutor; one bounded scan task and one bounded alert task.
             try:
@@ -35433,12 +35498,12 @@ async def _v45_build_top_liquidity_universe(exchange, max_symbols: int = 120) ->
                         if not bool(market.get("spot", False)) or market.get("active") is False:
                             continue
                         tk = ticker or {}
-                        qv = float(tk.get("quoteVolume") or 0.0)
-                        if not math.isfinite(qv) or qv <= 0:
-                            base_v = float(tk.get("baseVolume") or 0.0)
-                            last_px = float(tk.get("last") or tk.get("close") or 0.0)
-                            if math.isfinite(base_v) and math.isfinite(last_px) and base_v > 0 and last_px > 0:
-                                qv = base_v * last_px
+                        _turnover_facts = _v702_a80_ticker_quote_volume_facts(tk)
+                        qv = float(_turnover_facts.get("quote_volume_24h") or 0.0)
+                        # Base-volume conversions remain eligible for the separate
+                        # research universe only; Core requires measured quote turnover.
+                        if _turnover_facts.get("quality") != "EXACT":
+                            continue
                         if not math.isfinite(qv) or qv <= max(0.0, min_quote):
                             continue
                         # ---- v4.5.3 execution-aware filter (ticker data ONLY,
@@ -92040,6 +92105,7 @@ CONFIG.setdefault("V702_ADAPTIVE_RS_MAX_CHASE_ATR", 0.60)
 # This only supplies facts to the existing hard gates; it cannot authorize an order.
 CONFIG.setdefault("V702_A9_ORDERBOOK_PREFETCH_ENABLE", True)
 CONFIG.setdefault("V702_A9_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE", 24)
+CONFIG.setdefault("A85_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE", 24)
 CONFIG.setdefault("V702_A9_ORDERBOOK_PREFETCH_CONCURRENCY", 8)
 CONFIG.setdefault("V702_A9_ORDERBOOK_PREFETCH_TIMEOUT_SEC", 2.5)
 CONFIG.setdefault("V702_A9_ORDERBOOK_PREFETCH_BATCH_TIMEOUT_SEC", 6.0)
@@ -92568,12 +92634,12 @@ def _v702_a9_orderbook_levels_valid(ob: Any) -> Tuple[bool, str, Optional[Dict[s
     return True, "valid", metrics
 
 
-async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> Dict[str, Any]:
-    """Bounded, pre-prequal MEXC order-book capture for A7 MICRO candidates.
+async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any, *, volume_band="MICRO") -> Dict[str, Any]:
+    """Bounded MEXC order-book capture for isolated Micro or verified Core cohorts.
 
-    Fetch status is propagated with the exact snapshot. No quality threshold is
-    relaxed here; spread, depth, imbalance, structure, volume, chase and fee gates
-    remain authoritative downstream. When fetch budget is exhausted, we fail closed.
+    Core requires exchange-reported quote turnover; Micro shadow may retain a
+    separately labelled estimate. Both lanes use the same exact-book validation,
+    timestamp and hard spread/depth/economics gates.
     """
     out = {"eligible": 0, "attempted": 0, "fetched_fresh": 0, "reused_fresh": 0,
            "api_errors": 0, "timeouts": 0, "empty_or_invalid": 0, "deferred_budget": 0,
@@ -92590,8 +92656,13 @@ async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> 
     status_store = _v702_a9_ob_status_store()
     md_by_symbol = {str(k or "").strip().upper(): v for k, v in market_data_map.items() if isinstance(v, dict)}
     forbidden_bases = set(_V702_PREDECLARED_FORBIDDEN_BASES)
-    min_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MIN_QUOTE_VOLUME", 1_000_000.0))
-    max_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MAX_QUOTE_VOLUME_EXCLUSIVE", 3_000_000.0))
+    _volume_band = str(volume_band or "MICRO").upper()
+    if _volume_band == "CORE":
+        min_qv = max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
+        max_qv = float("inf")
+    else:
+        min_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MIN_QUOTE_VOLUME", 1_000_000.0))
+        max_qv = float(CONFIG.get("V702_A7_MICRO_HANDOFF_MAX_QUOTE_VOLUME_EXCLUSIVE", 3_000_000.0))
     max_age = max(1.0, float(CONFIG.get("V702_A9_ORDERBOOK_PREFETCH_MAX_AGE_SEC", 15.0)))
     now = float(WALL_NOW())
     pending = []
@@ -92674,7 +92745,12 @@ async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> 
             continue
         base = name.split("/", 1)[0]
         qv = _qv_of(md)
+        _facts = md.get("quote_volume_facts") if isinstance(md.get("quote_volume_facts"), dict) else {}
+        _qv_quality = str(md.get("quote_volume_quality") or _facts.get("quality") or "MISSING").upper()
         if qv is None or not (math.isfinite(qv) and min_qv <= qv < max_qv):
+            continue
+        if _volume_band == "CORE" and _qv_quality != "EXACT":
+            out["unverified_volume_skips"] = int(out.get("unverified_volume_skips", 0) or 0) + 1
             continue
         if base in forbidden_bases:
             out["forbidden_skips"] += 1
@@ -92718,7 +92794,9 @@ async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> 
             out["freshness_refetches"] += 1
         pending.append((name, md, qv, validation_reason, age))
 
-    cap = max(1, min(32, int(CONFIG.get("V702_A9_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE", 24) or 24)))
+    pending.sort(key=lambda item: float(item[2] or 0.0), reverse=True)
+    _cap_key = "A85_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE" if _volume_band == "CORE" else "V702_A9_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE"
+    cap = max(1, min(32, int(CONFIG.get(_cap_key, 24) or 24)))
     if pending:
         cursor = int(STATS.get("v702_a9_orderbook_prefetch_cursor", 0) or 0) % len(pending)
         rotated = pending[cursor:] + pending[:cursor]
@@ -92785,7 +92863,8 @@ async def _v702_a9_prefetch_micro_orderbooks(exchange, market_data_map: Any) -> 
                     out["task_errors"] += 1
                     _status(item[0], "FETCH_TASK_ERROR", source="MEXC.fetch_order_book",
                             error=_v703_route_orderbook_error_token(exc), api_error_type=type(exc).__name__)
-    for field in ("eligible", "attempted", "fetched_fresh", "reused_fresh", "api_errors", "timeouts", "empty_or_invalid", "deferred_budget", "forbidden_skips", "freshness_refetches", "batch_timed_out", "task_errors"):
+    out["volume_band"] = _volume_band
+    for field in ("eligible", "attempted", "fetched_fresh", "reused_fresh", "api_errors", "timeouts", "empty_or_invalid", "deferred_budget", "forbidden_skips", "freshness_refetches", "batch_timed_out", "task_errors", "unverified_volume_skips"):
         key = "v702_a9_orderbook_" + field
         STATS[key] = int(STATS.get(key, 0) or 0) + int(out.get(field, 0) or 0)
     return out
@@ -107755,29 +107834,129 @@ CONFIG.setdefault("V702_A79_SWING_RECOVERY_MIN_RS_DIFF_PCT", 0.75)
 
 
 
-def _v702_a80_ticker_quote_volume(ticker):
-    """Robust 24h USDT turnover; quoteVolume, baseVolume*last, then venue info."""
+def _v702_a80_ticker_quote_volume_facts(ticker):
+    """Return turnover with strict provenance; only quoteVolume can pass Core.
+
+    MEXC Spot's documented 24h field is quoteVolume. Generic `turnover` and
+    `volValue` aliases are retained for research discovery but are deliberately
+    marked UNVERIFIED because their unit/endpoint semantics are not guaranteed.
+    Base-volume conversions are estimates and can only enter isolated research.
+    """
+    facts = {"quote_volume_24h": None, "source": "UNAVAILABLE", "quality": "MISSING",
+             "window_start_ms": None, "window_end_ms": None, "window_coverage_sec": None}
     if not isinstance(ticker, dict):
-        return 0.0
-    try:
-        qv = float(ticker.get("quoteVolume") or 0.0)
-        last = float(ticker.get("last") or 0.0)
-        if math.isfinite(qv) and qv > 0.0:
-            return qv
-        base = float(ticker.get("baseVolume") or 0.0)
-        if math.isfinite(base) and base > 0.0 and math.isfinite(last) and last > 0.0:
-            return base * last
-        info = ticker.get("info") if isinstance(ticker.get("info"), dict) else {}
-        for key in ("quoteVolume", "quote_volume", "turnover", "amount", "volValue"):
+        return facts
+    info = ticker.get("info") if isinstance(ticker.get("info"), dict) else {}
+    # Explicit quote-currency turnover is the only production-Core evidence.
+    for _key in ("quoteVolume", "quote_volume"):
+        _value = ticker.get(_key)
+        _source = "CCXT_" + _key.upper()
+        if _value in (None, ""):
+            _value = info.get(_key)
+            _source = "VENUE_INFO_" + _key.upper()
+        try:
+            _number = float(_value or 0.0)
+        except (TypeError, ValueError):
+            _number = 0.0
+        if math.isfinite(_number) and _number > 0.0:
+            facts.update(quote_volume_24h=_number, source=_source, quality="EXACT")
+            break
+    # Preserve opaque venue aliases for diagnostics/research only, never Core.
+    if facts["quote_volume_24h"] is None:
+        for _key in ("turnover", "volValue"):
+            _value = ticker.get(_key)
+            _source = "UNVERIFIED_VENUE_FIELD_" + _key.upper()
+            if _value in (None, ""):
+                _value = info.get(_key)
+                _source = "UNVERIFIED_VENUE_INFO_" + _key.upper()
             try:
-                value = float(info.get(key) or 0.0)
+                _number = float(_value or 0.0)
             except (TypeError, ValueError):
-                value = 0.0
-            if math.isfinite(value) and value > 0.0:
-                return value
+                _number = 0.0
+            if math.isfinite(_number) and _number > 0.0:
+                facts.update(quote_volume_24h=_number, source=_source, quality="UNVERIFIED")
+                break
+    # Last-resort derived turnover is an explicit estimate, not quote-volume truth.
+    if facts["quote_volume_24h"] is None:
+        try:
+            _base = float(ticker.get("baseVolume") or 0.0)
+            _vwap = float(ticker.get("vwap") or ticker.get("average") or 0.0)
+            _last = float(ticker.get("last") or ticker.get("close") or 0.0)
+            _px = _vwap if math.isfinite(_vwap) and _vwap > 0 else _last
+            if math.isfinite(_base) and _base > 0 and math.isfinite(_px) and _px > 0:
+                facts.update(quote_volume_24h=_base * _px,
+                             source="ESTIMATED_BASE_VOLUME_X_VWAP" if _px == _vwap else "ESTIMATED_BASE_VOLUME_X_LAST",
+                             quality="ESTIMATED")
+        except Exception:
+            pass
+    # MEXC may expose rolling-window boundaries; preserve them for audit.
+    for _out, _keys in (("window_start_ms", ("openTime", "open_time")),
+                        ("window_end_ms", ("closeTime", "close_time"))):
+        _raw = next((ticker.get(k) for k in _keys if ticker.get(k) is not None), None)
+        if _raw is None:
+            _raw = next((info.get(k) for k in _keys if info.get(k) is not None), None)
+        try:
+            _n = int(float(_raw)) if _raw is not None else None
+            if _n is not None and _n < 10_000_000_000:
+                _n *= 1000
+            facts[_out] = _n
+        except Exception:
+            pass
+    if facts["window_start_ms"] and facts["window_end_ms"]:
+        facts["window_coverage_sec"] = max(0.0, (facts["window_end_ms"] - facts["window_start_ms"]) / 1000.0)
+    return facts
+
+
+def _v702_a80_ticker_quote_volume(ticker):
+    """Compatibility accessor; callers must inspect provenance before Core use."""
+    facts = _v702_a80_ticker_quote_volume_facts(ticker)
+    try:
+        value = float(facts.get("quote_volume_24h") or 0.0)
+        return value if math.isfinite(value) and value > 0 else 0.0
     except Exception:
         return 0.0
-    return 0.0
+
+
+_V702_CCXT_SPOT_TIMEFRAMES = {"1M": "1m", "5M": "5m", "15M": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
+_V702_TIMEFRAME_SECONDS = {"1M": 60, "5M": 300, "15M": 900, "1H": 3600, "4H": 14400, "1D": 86400}
+
+
+def _v702_ccxt_spot_timeframe(label):
+    """Translate internal display labels to explicit CCXT/MEXC Spot intervals."""
+    token = str(label or "").strip().upper()
+    if token not in _V702_CCXT_SPOT_TIMEFRAMES:
+        raise ValueError(f"unsupported_spot_timeframe:{token or 'EMPTY'}")
+    return _V702_CCXT_SPOT_TIMEFRAMES[token]
+
+
+def _v702_validate_ohlcv_cadence(raw_ohlcv, label, *, max_tail_gap_intervals=1.5):
+    """Check timestamp monotonicity and the expected cadence without fabricating bars."""
+    token = str(label or "").strip().upper()
+    expected_sec = _V702_TIMEFRAME_SECONDS.get(token)
+    if expected_sec is None:
+        return {"valid": False, "reason": "UNSUPPORTED_TIMEFRAME", "expected_sec": None, "rows": 0}
+    stamps = []
+    for row in raw_ohlcv or ():
+        try:
+            ts = int(row[0])
+            stamps.append(ts)
+        except Exception:
+            return {"valid": False, "reason": "INVALID_TIMESTAMP", "expected_sec": expected_sec, "rows": len(stamps)}
+    if len(stamps) < 2:
+        return {"valid": False, "reason": "INSUFFICIENT_CANDLES", "expected_sec": expected_sec, "rows": len(stamps)}
+    diffs = [b - a for a, b in zip(stamps, stamps[1:])]
+    if any(d <= 0 for d in diffs):
+        return {"valid": False, "reason": "NON_MONOTONIC_OR_DUPLICATE_TIMESTAMPS", "expected_sec": expected_sec, "rows": len(stamps)}
+    gaps = sum(1 for d in diffs if d > expected_sec * 1000 * max_tail_gap_intervals)
+    tail_diffs = diffs[-min(30, len(diffs)):]
+    tail_gaps = sum(1 for d in tail_diffs if d > expected_sec * 1000 * max_tail_gap_intervals)
+    median_ms = statistics.median(diffs) if diffs else None
+    cadence_ratio = (median_ms / (expected_sec * 1000)) if median_ms else None
+    return {"valid": bool(cadence_ratio is not None and 0.75 <= cadence_ratio <= 1.25),
+            "reason": "OK" if cadence_ratio is not None and 0.75 <= cadence_ratio <= 1.25 else "CADENCE_MISMATCH",
+            "expected_sec": expected_sec, "median_interval_sec": median_ms / 1000 if median_ms else None,
+            "gap_count": gaps, "tail_gap_count": tail_gaps, "rows": len(stamps),
+            "latest_timestamp_ms": stamps[-1]}
 
 def _v702_a80_build_research_universe(core_universe, ticker_snapshot, markets, *, max_symbols=500, min_quote_volume=250_000.0, forbidden_fn=None):
     """Wide read-only SPOT/USDT research universe; it never changes the 3M core universe."""
@@ -107950,7 +108129,8 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
         if not isinstance(ticker, dict):
             return symbol, None, "ticker_missing"
         try:
-            qv = _v702_a80_ticker_quote_volume(ticker)
+            _qv_facts = _v702_a80_ticker_quote_volume_facts(ticker)
+            qv = float(_qv_facts.get("quote_volume_24h") or 0.0)
             bid = float(ticker.get("bid") or 0.0)
             ask = float(ticker.get("ask") or 0.0)
             spread = None
@@ -107962,6 +108142,9 @@ async def _v702_a79_fetch_supplemental_snapshots(exchange, symbols, ticker_snaps
                 "df_btc_1h": (btc_frames or {}).get("df_btc_1h"),
                 "df_btc_4h": (btc_frames or {}).get("df_btc_4h"),
                 "quote_vol_24h": qv, "spread_pct": spread,
+                "quote_volume_facts": dict(_qv_facts),
+                "quote_volume_quality": str(_qv_facts.get("quality") or "MISSING"),
+                "quote_volume_source": str(_qv_facts.get("source") or "UNAVAILABLE"),
                 "ticker": {"bid": bid if bid > 0 else None, "ask": ask if ask > 0 else None},
                 "tier": str(LiquidityTier.classify(qv)), "symbol": symbol,
                 "v702_a79_research_recall_lane": True,
@@ -108620,13 +108803,15 @@ V702_A87_REVISION = "A87-ACTIONABLE-BTC-DIRECTION-PRICE-TARGETS-AND-TELEGRAM-DEC
 V702_A88_REVISION = "A88-EMA200-HISTORY-TRUTH-QUALIFIED-CANDIDATES-ATOMIC-BRAIN-DELIVERY-SHADOW-SCHEDULER-2026-11-21"
 V702_A89_REVISION = "A89-CANONICAL-BTC-FUNNEL-RECONCILIATION-EXECUTABLE-PAPER-AND-TELEGRAM-ACK-2026-11-21"
 V702_A90_REVISION = "A90-SPREAD-AND-BOOK-TRUTH-A9-HISTORY-SCOPE-AND-FUNNEL-COHERENCE-2026-11-21"
+V702_A91_REVISION = "A91-VERIFIED-VOLUME-CORE-BOOKS-SCHEDULER-COUNTERFACTUAL-WATCHLIST-DIGEST-2026-11-21"
 STATS["v702_a89_revision"] = V702_A89_REVISION
 STATS["v702_a90_revision"] = V702_A90_REVISION
+STATS["v702_a91_revision"] = V702_A91_REVISION
 STATS["v702_a88_revision"] = V702_A88_REVISION
 STATS["v702_a85_diagnostic_closure_revision"] = V702_A85_DIAGNOSTIC_CLOSURE_REVISION
 STATS["v702_a87_revision"] = V702_A87_REVISION
 CONFIG.setdefault("A85_INTELLIGENCE_ENABLE", True)
-CONFIG.setdefault("A85_MAX_ANALYSIS_SYMBOLS", 60)
+CONFIG.setdefault("A85_MAX_ANALYSIS_SYMBOLS", 24)
 CONFIG.setdefault("A85_INTERMEDIATE_SCAN_LIMIT", 150)
 CONFIG.setdefault("A85_DEEP_FETCH_SYMBOLS_PER_CYCLE", 16)
 CONFIG.setdefault("A85_EMA200_HISTORY_CANDLES", 400)
@@ -108698,6 +108883,10 @@ for _a85_spec in (
     ("A85_AUTO_CHART_ENABLE", "A85_AUTO_CHART_ENABLE", "bool", True, None, None),
     ("A85_SECTOR_CLASSIFICATION_ENABLE", "A85_SECTOR_CLASSIFICATION_ENABLE", "bool", True, None, None),
     ("A85_BOOK_DEPTH_MULTIPLIER", "A85_BOOK_DEPTH_MULTIPLIER", "float", 1.5, 1.0, 10.0),
+    ("A85_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE", "A85_ORDERBOOK_PREFETCH_MAX_SYMBOLS_PER_CYCLE", "int", 24, 1, 32),
+    ("A85_MAX_POSITION_24H_VOLUME_SHARE_PCT", "A85_MAX_POSITION_24H_VOLUME_SHARE_PCT", "float", 0.50, 0.001, 5.0),
+    ("A85_MAX_WAIT_ENTRY_PULLBACK_PCT", "A85_MAX_WAIT_ENTRY_PULLBACK_PCT", "float", 5.0, 0.5, 10.0),
+    ("A85_BREAKOUT_RETEST_BUFFER_PCT", "A85_BREAKOUT_RETEST_BUFFER_PCT", "float", 0.15, 0.05, 1.0),
     ("A85_MAX_CHASE_DISTANCE_PCT", "A85_MAX_CHASE_DISTANCE_PCT", "float", 0.35, 0.05, 2.0),
     ("A85_MIN_BOOK_IMBALANCE", "A85_MIN_BOOK_IMBALANCE", "float", -0.25, -1.0, 1.0),
     ("A85_RADAR_MAX_UNIVERSE", "A85_RADAR_MAX_UNIVERSE", "int", 500, 100, 500),
@@ -108708,6 +108897,7 @@ for _a85_spec in (
     ("A85_PAPER_RISK_PER_TRADE_PCT", "A85_PAPER_RISK_PER_TRADE_PCT", "float", 0.50, 0.10, 2.0),
     ("A85_PAPER_MAX_POSITION_USDT", "A85_PAPER_MAX_POSITION_USDT", "float", 75.0, 5.0, 1000000.0),
     ("A85_PAPER_MAX_ROWS", "A85_PAPER_MAX_ROWS", "int", 10000, 1000, 50000),
+    ("A85_PAPER_NOT_TESTABLE_MAX_ROWS", "A85_PAPER_NOT_TESTABLE_MAX_ROWS", "int", 10000, 500, 50000),
     ("A85_PAPER_RETENTION_DAYS", "A85_PAPER_RETENTION_DAYS", "int", 90, 30, 365),
     ("A85_PAPER_MAX_CANDLE_VOLUME_PARTICIPATION", "A85_PAPER_MAX_CANDLE_VOLUME_PARTICIPATION", "float", 0.01, 0.001, 0.05),
     ("A85_PAPER_STRESS_SLIPPAGE_ADD_PCT", "A85_PAPER_STRESS_SLIPPAGE_ADD_PCT", "float", 0.05, 0.0, 2.0),
@@ -108726,6 +108916,7 @@ for _a85_spec in (
     ("A86_AUTO_BRAIN_REPORT_ENABLE", "A86_AUTO_BRAIN_REPORT_ENABLE", "bool", True, None, None),
     ("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", "A86_AUTO_BRAIN_REPORT_INTERVAL_SEC", "float", 900.0, 300.0, 86400.0),
     ("A86_BRAIN_REPORT_MAX_CANDIDATES", "A86_BRAIN_REPORT_MAX_CANDIDATES", "int", 3, 1, 5),
+    ("A86_BRAIN_REPORT_MAX_NEAR_CANDIDATES", "A86_BRAIN_REPORT_MAX_NEAR_CANDIDATES", "int", 3, 1, 5),
     ("A86_MIN_CANDIDATE_QUALITY", "A86_MIN_CANDIDATE_QUALITY", "float", 55.0, 0.0, 100.0),
     ("A86_MIN_CANDIDATE_RANKING", "A86_MIN_CANDIDATE_RANKING", "float", 45.0, 0.0, 100.0),
     ("A86_MIN_CANDIDATE_NET_RR_TP1", "A86_MIN_CANDIDATE_NET_RR_TP1", "float", 1.20, 0.1, 10.0),
@@ -108874,7 +109065,16 @@ class A85MarketIntelligence:
                     attempted INTEGER NOT NULL DEFAULT 0, eligible INTEGER NOT NULL DEFAULT 0,
                     inserted INTEGER NOT NULL DEFAULT 0, duplicate INTEGER NOT NULL DEFAULT 0,
                     rejected INTEGER NOT NULL DEFAULT 0)""")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_paper_cohort_runs ON a85_paper_cohort_runs(cohort,recorded_at)")
+                _cohort_run_cols={str(r[1]) for r in conn.execute("PRAGMA table_info(a85_paper_cohort_runs)").fetchall()}
+                if "not_testable" not in _cohort_run_cols:
+                    conn.execute("ALTER TABLE a85_paper_cohort_runs ADD COLUMN not_testable INTEGER NOT NULL DEFAULT 0")
+                conn.execute("""CREATE TABLE IF NOT EXISTS a85_paper_not_testable (
+                    fingerprint TEXT PRIMARY KEY, symbol TEXT NOT NULL, candle_ts INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL, last_seen_at REAL NOT NULL, cohort TEXT NOT NULL,
+                    source_status TEXT NOT NULL, reason TEXT NOT NULL, occurrences INTEGER NOT NULL DEFAULT 1,
+                    details_json TEXT NOT NULL DEFAULT '{}')""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_paper_not_testable_symbol ON a85_paper_not_testable(symbol,last_seen_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_a85_paper_not_testable_reason ON a85_paper_not_testable(cohort,reason,last_seen_at)")
                 conn.execute("""CREATE TABLE IF NOT EXISTS a85_forecast_ledger (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT NOT NULL, horizon TEXT NOT NULL, candle_ts INTEGER NOT NULL,
@@ -109339,17 +109539,15 @@ class A85MarketIntelligence:
                             target.append((price, amount))
                     except Exception:
                         continue
-        fresh = bool(valid_bids and valid_asks and stamp and age is not None
-                     and -1.0 <= age <= float(CONFIG.get("A85_BOOK_MAX_AGE_SEC", 15.0)))
-        bid = cls._safe(md.get("bid", ticker.get("bid", md.get("best_bid"))))
-        ask = cls._safe(md.get("ask", ticker.get("ask", md.get("best_ask"))))
-        if bid is None and valid_bids:
-            bid = valid_bids[0][0]
-        if ask is None and valid_asks:
-            ask = valid_asks[0][0]
+        max_age = float(CONFIG.get("A85_BOOK_MAX_AGE_SEC", 15.0))
+        fresh = bool(valid_bids and valid_asks and stamp and age is not None and -1.0 <= age <= max_age)
+        # A stale depth snapshot must not be rescued by an untimestamped cached
+        # ticker spread. Only a fresh BBO/orderbook may supply execution prices.
+        bid = valid_bids[0][0] if fresh else None
+        ask = valid_asks[0][0] if fresh else None
         if not (bid is not None and ask is not None and bid > 0 and ask > bid):
             bid = ask = None
-        spread = ((ask - bid) / ((ask + bid) / 2.0) * 100.0) if bid and ask else cls._safe(md.get("spread_pct"))
+        spread = ((ask - bid) / ((ask + bid) / 2.0) * 100.0) if bid and ask else None
         bid_depth = sum(px * qty for px, qty in valid_bids[:5]) if fresh else None
         ask_depth = sum(px * qty for px, qty in valid_asks[:5]) if fresh else None
         imbalance = cls._safe(md.get("orderbook_imbalance"))
@@ -109359,33 +109557,57 @@ class A85MarketIntelligence:
                 "book_age_sec": age, "book_imbalance": imbalance,
                 "bid_depth_usdt_5": bid_depth, "ask_depth_usdt_5": ask_depth,
                 "book_min_depth_usdt_5": min(bid_depth, ask_depth) if bid_depth is not None and ask_depth is not None else None,
-                "book_source": md.get("v703_route_orderbook_source", "snapshot" if fresh else "unavailable")}
+                "book_source": md.get("v703_route_orderbook_source", "snapshot" if fresh else "unavailable"),
+                "book_state": "FRESH" if fresh else ("STALE" if book and stamp else "MISSING"),
+                "book_max_age_sec": max_age}
 
     @classmethod
     def _plan(cls, symbol, md, frames, ind, structure, quality, trigger, fib=None):
         now = float(WALL_NOW())
         book = cls._book_facts(md, now)
         entry = book.get("ask")
-        if entry is None or not ind.get("1H"):
-            return {"status": "DATA_INCOMPLETE", "reason": "FRESH_EXECUTABLE_ASK_UNAVAILABLE", "book": book}
-        quote_volume = cls._safe(md.get("quote_vol_24h", (md.get("ticker") or {}).get("quoteVolume")))
+        if not ind.get("1H"):
+            return {"status": "DATA_INCOMPLETE", "reason": "CLOSED_1H_HISTORY_UNAVAILABLE", "book": book}
+        if not book.get("book_fresh") or entry is None:
+            _book_reason = "BOOK_STALE" if book.get("book_state") == "STALE" else "BOOK_MISSING"
+            return {"status": "DATA_INCOMPLETE", "reason": _book_reason,
+                    "data_gap": True, "book": book, "execution_authority": False}
+        _qv_facts = md.get("quote_volume_facts") if isinstance(md.get("quote_volume_facts"), dict) else {}
+        quote_volume = cls._safe(md.get("quote_vol_24h", _qv_facts.get("quote_volume_24h", (md.get("ticker") or {}).get("quoteVolume"))))
+        quote_quality = str(md.get("quote_volume_quality") or _qv_facts.get("quality") or "MISSING").upper()
+        quote_source = str(md.get("quote_volume_source") or _qv_facts.get("source") or "UNSPECIFIED")
         core_floor = max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
         liquidity_tier = str(md.get("tier") or md.get("liquidity_tier") or "UNKNOWN").upper()[:24]
-        if quote_volume is None or quote_volume < core_floor:
+        if quote_volume is None or quote_quality != "EXACT":
+            return {"status": "DATA_INCOMPLETE", "reason": "QUOTE_VOLUME_NOT_VERIFIED",
+                    "quote_vol_24h": quote_volume, "quote_volume_quality": quote_quality,
+                    "quote_volume_source": quote_source, "required_quote_vol_24h": core_floor,
+                    "liquidity_tier": liquidity_tier, "book": book, "execution_authority": False}
+        if quote_volume < core_floor:
             return {"status": "REJECTED", "reason": "CORE_LIQUIDITY_FLOOR_NOT_MET", "quote_vol_24h": quote_volume,
-                    "required_quote_vol_24h": core_floor, "liquidity_tier": liquidity_tier, "book": book}
+                    "quote_volume_quality": quote_quality, "quote_volume_source": quote_source,
+                    "required_quote_vol_24h": core_floor, "liquidity_tier": liquidity_tier, "book": book, "execution_authority": False}
         spread = cls._safe(book.get("spread_pct"))
         spread_ceiling = max(0.0, float(CONFIG.get("MAX_SPREAD_PCT", 0.30)))
-        if spread is None or spread > spread_ceiling:
-            return {"status": "REJECTED", "reason": "SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN", "spread_pct": spread,
-                    "spread_ceiling_pct": spread_ceiling, "liquidity_tier": liquidity_tier, "book": book}
+        if spread is None:
+            return {"status": "DATA_INCOMPLETE", "reason": "BOOK_SPREAD_UNAVAILABLE", "spread_pct": None,
+                    "spread_ceiling_pct": spread_ceiling, "liquidity_tier": liquidity_tier, "book": book, "execution_authority": False}
+        if spread > spread_ceiling:
+            return {"status": "REJECTED", "reason": "SPREAD_TOO_WIDE", "spread_pct": spread,
+                    "spread_ceiling_pct": spread_ceiling, "liquidity_tier": liquidity_tier, "book": book, "execution_authority": False}
+        notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
+        position_volume_share_pct = notional / max(quote_volume, 1e-12) * 100.0
+        max_volume_share_pct = max(0.001, min(5.0, float(CONFIG.get("A85_MAX_POSITION_24H_VOLUME_SHARE_PCT", 0.50))))
+        if position_volume_share_pct > max_volume_share_pct:
+            return {"status": "REJECTED", "reason": "ORDER_SIZE_EXCEEDS_24H_TURNOVER_SHARE",
+                    "quote_vol_24h": quote_volume, "position_notional_usdt": notional,
+                    "position_volume_share_pct": position_volume_share_pct,
+                    "maximum_volume_share_pct": max_volume_share_pct, "book": book, "execution_authority": False}
         if book.get("book_fresh"):
-            notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
             required_depth = notional * max(1.0, float(CONFIG.get("A85_BOOK_DEPTH_MULTIPLIER", 1.5)))
             depth_ok = (book.get("book_min_depth_usdt_5") is not None
                         and book["book_min_depth_usdt_5"] >= required_depth)
         else:
-            notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
             required_depth = notional * max(1.0, float(CONFIG.get("A85_BOOK_DEPTH_MULTIPLIER", 1.5)))
             depth_ok = False
         i1 = ind["1H"]
@@ -109398,9 +109620,26 @@ class A85MarketIntelligence:
             return {"status": "DATA_INCOMPLETE", "reason": "INVALID_STRUCTURAL_STOP", "book": book}
         risk_pct = (entry - stop) / entry * 100.0
         if risk_pct > 4.0:
+            max_entry = stop / (1.0 - 0.04)
+            pullback_pct = max(0.0, (entry - max_entry) / max(entry, 1e-12) * 100.0)
+            max_watch_pullback = max(0.5, min(10.0, float(CONFIG.get("A85_MAX_WAIT_ENTRY_PULLBACK_PCT", 5.0))))
+            if max_entry > 0 and max_entry < entry and pullback_pct <= max_watch_pullback:
+                return {"status": "WAITING_FOR_ENTRY", "reason": "STRUCTURAL_STOP_REQUIRES_LOWER_ENTRY",
+                    "scenario": "RISK_BOUNDED_PULLBACK_RECHECK", "reference_entry": entry,
+                    "preferred_entry": max_entry, "entry_zone_low": max_entry * 0.9975,
+                    "entry_zone_high": max_entry, "wait_entry_max": max_entry,
+                    "stop_loss": stop, "risk_pct_at_wait_entry": 4.0,
+                    "risk_pct_at_reference_entry": risk_pct, "risk_limit_pct": 4.0,
+                    "required_pullback_pct": pullback_pct, "max_watch_pullback_pct": max_watch_pullback,
+                    "requires_full_revalidation": True, "order_intent": False,
+                    "execution_authority": False, "economic_pass": False,
+                    "paper_state": "NOT_TESTABLE_UNTIL_REVALIDATED", "book": book,
+                    "quote_vol_24h": quote_volume, "quote_volume_quality": quote_quality}
             return {"status": "REJECTED", "reason": "STRUCTURAL_STOP_RISK_OVER_4_PERCENT",
                     "entry": entry, "stop_loss": stop, "risk_pct": risk_pct,
-                    "risk_limit_pct": 4.0, "liquidity_tier": liquidity_tier, "book": book}
+                    "risk_limit_pct": 4.0, "required_pullback_pct": pullback_pct,
+                    "max_watch_pullback_pct": max_watch_pullback,
+                    "liquidity_tier": liquidity_tier, "book": book}
         if risk_pct < 0.35:
             stop = entry * (1.0 - 0.0035)
             risk_pct = (entry - stop) / entry * 100.0
@@ -109411,10 +109650,25 @@ class A85MarketIntelligence:
             # A nearby structural ceiling must not be ignored or placed above merely to manufacture RR.
             ceiling = float(resistance) * 0.995
             if ceiling <= entry + risk * 1.05:
-                return {"status": "REJECTED", "reason": "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "book": book,
-                        "entry": entry, "stop_loss": stop, "risk_pct": risk_pct,
-                        "resistance": float(resistance), "resistance_ceiling": ceiling,
-                        "required_tp1_price": entry + risk * 1.05, "minimum_clearance_r": 1.05,
+                _next_resistance = min([float((x or {}).get("price")) for x in (structure.get("resistances") or [])
+                    if cls._safe((x or {}).get("price")) is not None and float((x or {}).get("price")) > float(resistance)], default=None)
+                _breakout_buffer = max(0.05, min(1.0, float(CONFIG.get("A85_BREAKOUT_RETEST_BUFFER_PCT", 0.15))))
+                _breakout_trigger = float(resistance) * (1.0 + _breakout_buffer / 100.0)
+                return {"status": "WAITING_FOR_ENTRY", "reason": "RESISTANCE_BREAKOUT_RETEST_REQUIRED",
+                        "scenario": "BREAKOUT_RETEST_WATCH", "reference_entry": entry,
+                        "resistance": float(resistance), "effective_resistance_ceiling": ceiling,
+                        "resistance_haircut_pct": 0.50, "required_tp1_price": entry + risk * 1.05,
+                        "required_clearance_r": 1.05, "actual_clearance_r": (ceiling-entry)/max(risk,1e-12),
+                        "breakout_close_trigger": _breakout_trigger,
+                        "retest_zone_low": float(resistance) * (1.0 - _breakout_buffer / 100.0),
+                        "retest_zone_high": float(resistance) * (1.0 + _breakout_buffer / 100.0),
+                        "next_resistance_reference": _next_resistance,
+                        "target_validation": "REQUIRES_NEXT_RESISTANCE_AND_FULL_REVALIDATION" if _next_resistance else "UNAVAILABLE_WAIT_FOR_NEXT_STRUCTURE",
+                        "confirmation_contract": "CLOSED_15M_OR_1H_CLOSE_ABOVE_TRIGGER_THEN_RETEST_HOLD",
+                        "stop_loss_reference": stop, "risk_pct_at_current_entry": risk_pct,
+                        "requires_full_revalidation": True, "economic_pass": False,
+                        "order_intent": False, "execution_authority": False,
+                        "paper_state": "NOT_TESTABLE_UNTIL_BREAKOUT_RETEST_CONFIRMED", "book": book,
                         "liquidity_tier": liquidity_tier}
             raw_targets[0] = min(raw_targets[0], ceiling)
         # Further targets prefer the next observed supply/resistance or a valid
@@ -109523,6 +109777,9 @@ class A85MarketIntelligence:
                 "top5_depth_usdt": book.get("book_min_depth_usdt_5"),
                 "required_top5_depth_usdt": required_depth, "quote_vol_24h": quote_volume,
                 "required_quote_vol_24h": core_floor,
+                "quote_volume_quality": quote_quality, "quote_volume_source": quote_source,
+                "position_volume_share_pct": position_volume_share_pct,
+                "maximum_volume_share_pct": max_volume_share_pct,
                 "entry_expiry_ts": now + ttl, "invalidation_level": stop,
                 "invalidation_conditions": ["1H close below structural stop", "stale/missing order book",
                     "top-five depth falls below required notional", "15M volume confirmation fails at trigger",
@@ -109681,7 +109938,10 @@ class A85MarketIntelligence:
                 "relative_strength_vs_btc_pct":rs,"relative_strength_vs_btc_1h_pct":rs,
                 "relative_strength_vs_btc_4h_pct":rs4h,"relative_strength_vs_btc_24h_pct":rs24h,
                 "return_1h_pct":ret1,"return_6h_pct":ret6h,"return_24h_pct":ret24h,"return_4h_pct":ret4h,
-                "quote_vol_24h":cls._safe(md.get("quote_vol_24h")),"spread_pct":book.get("spread_pct"),"sector":sector,
+                "quote_vol_24h":cls._safe(md.get("quote_vol_24h")),
+                "quote_volume_quality":str(md.get("quote_volume_quality") or "UNKNOWN"),
+                "quote_volume_source":str(md.get("quote_volume_source") or "UNKNOWN"),
+                "spread_pct":book.get("spread_pct"),"sector":sector,
                 "execution_quality_score":execution_quality,"base_ranking_score":round(base_ranking_score,1),
                 "strategy_conflict_penalty":consensus_penalty,"adaptive_strategy_adjustment":strategy_adjustment,
                 "ranking_score":ranking_score,
@@ -110305,7 +110565,11 @@ class A85MarketIntelligence:
 
     @classmethod
     def _paper_record_rows(cls, rows, now=None, cohort="RESEARCH"):
-        """Create cohort-separated Paper plans without assuming signal-time fills."""
+        """Record testable plans; persist all other research rows as NOT_TESTABLE.
+
+        No entry/stop/target is invented for candidates that lack a valid signal-time
+        geometry. Those candidates remain attributable counterfactual evidence only.
+        """
         cohort_token=str(cohort or "RESEARCH").upper()
         allowed_statuses={"RESEARCH":{"READY_NOW","WAITING_FOR_ENTRY","EARLY_SETUP"},
                           "QUALIFIED":{"READY_NOW","WAITING_FOR_ENTRY"},
@@ -110313,8 +110577,9 @@ class A85MarketIntelligence:
                           "RS_ONLY_ABSOLUTE_WEAK":{"READY_NOW","WAITING_FOR_ENTRY","EARLY_SETUP"}}
         allowed=allowed_statuses.get(cohort_token, allowed_statuses["RESEARCH"])
         attempted=len(rows or [])
-        result={"cohort":cohort_token,"attempted":attempted,"eligible":0,"inserted":0,"duplicate":0,
-                "rejected":0,"status":"OK","execution_authority":False,
+        result={"cohort":cohort_token,"attempted":attempted,"eligible":0,"inserted":0,"recorded":0,
+                "duplicate":0,"rejected":0,"not_testable":0,"not_testable_reasons":{},
+                "status":"OK","execution_authority":False,
                 "entry_model":"READY_NEXT_CLOSED_BAR_OPEN_OR_WAITING_EXACT_LIMIT_TOUCH",
                 "exit_model":"TP1_FULL_BASELINE_AND_PARTIAL_TP1_TP2_OR_STOP_COUNTERFACTUAL"}
         if not bool(CONFIG.get("A85_PAPER_LEDGER_ENABLE", True)):
@@ -110327,17 +110592,53 @@ class A85MarketIntelligence:
                 conn=cls._connect()
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    def _record_not_testable(_row, _status, _reason, _plan):
+                        _symbol=str((_row or {}).get("symbol") or "").upper()
+                        if not _symbol or _symbol=="BTC/USDT":
+                            return
+                        _created=float(cls._safe((_row or {}).get("analyzed_at"),now) or now)
+                        _candle=int(cls._safe((_row or {}).get("candle_ts"),0) or 0)
+                        _reason=str(_reason or "NO_VALID_SIGNAL_TIME_GEOMETRY")[:160]
+                        _details={"source":"A85_COUNTERFACTUAL_REJECT_LEDGER","cohort":cohort_token,
+                            "policy_version":"A91_COUNTERFACTUAL_COHORT_V1","source_status":_status,
+                            "row_reason":str((_row or {}).get("reason") or "")[:180],
+                            "plan":_plan if isinstance(_plan,dict) else {},
+                            "quality_score":cls._safe((_row or {}).get("quality_score")),
+                            "ranking_score":cls._safe((_row or {}).get("ranking_score")),
+                            "quote_vol_24h":cls._safe((_row or {}).get("quote_vol_24h")),
+                            "quote_volume_quality":str((_row or {}).get("quote_volume_quality") or "UNKNOWN"),
+                            "candle_ts":_candle,"execution_authority":False,
+                            "paper_state":"NOT_TESTABLE_NO_FABRICATED_ENTRY_OR_TARGET"}
+                        _fingerprint_src=(cohort_token,_symbol,_candle,_status,_reason)
+                        _fingerprint=hashlib.sha256(json.dumps(_fingerprint_src,sort_keys=True).encode()).hexdigest()
+                        conn.execute("""INSERT INTO a85_paper_not_testable
+                            (fingerprint,symbol,candle_ts,created_at,last_seen_at,cohort,source_status,reason,occurrences,details_json)
+                            VALUES(?,?,?,?,?,?,?,?,1,?) ON CONFLICT(fingerprint) DO UPDATE SET
+                            last_seen_at=excluded.last_seen_at,occurrences=a85_paper_not_testable.occurrences+1,
+                            details_json=excluded.details_json""",
+                            (_fingerprint,_symbol,_candle,_created,now,cohort_token,_status,_reason,json.dumps(_details,ensure_ascii=False,separators=(",",":"),default=str)))
+                        result["not_testable"]+=1
+                        result["not_testable_reasons"][_reason]=int(result["not_testable_reasons"].get(_reason,0) or 0)+1
+
                     for row in rows or []:
-                        if not isinstance(row,dict) or str(row.get("status") or "UNKNOWN").upper() not in allowed:
+                        if not isinstance(row,dict):
                             result["rejected"]+=1; continue
+                        source_status=str(row.get("status") or "UNKNOWN").upper()
                         plan=row.get("plan") if isinstance(row.get("plan"),dict) else {}
+                        if source_status not in allowed:
+                            result["rejected"]+=1
+                            if cohort_token=="RESEARCH":
+                                _record_not_testable(row,source_status,plan.get("reason") or row.get("reason") or "FILTER_REJECTED_BEFORE_VALID_PLAN",plan)
+                            continue
                         entry=cls._safe(plan.get("preferred_entry")); stop=cls._safe(plan.get("stop_loss"))
                         targets=plan.get("targets") if isinstance(plan.get("targets"),list) else []
                         tp1=cls._safe((targets[0] or {}).get("price")) if targets else None
                         tp2=cls._safe((targets[1] or {}).get("price")) if len(targets)>1 else None
                         if (not plan.get("economic_pass") or entry is None or stop is None or tp1 is None
                                 or entry<=stop or tp1<=entry):
-                            result["rejected"]+=1; continue
+                            result["rejected"]+=1
+                            _record_not_testable(row,source_status,plan.get("reason") or "NO_VERIFIED_ENTRY_STOP_TP1_ECONOMICS",plan)
+                            continue
                         symbol=str(row.get("symbol") or "").upper()
                         if not symbol or symbol=="BTC/USDT":
                             result["rejected"]+=1; continue
@@ -110346,13 +110647,13 @@ class A85MarketIntelligence:
                         candle_ts=int(cls._safe(row.get("candle_ts"),0) or 0)
                         family=str(row.get("primary_strategy") or "UNKNOWN").upper()
                         regime=str(row.get("market_regime") or "UNKNOWN").upper()
-                        source_status=str(row.get("status") or "UNKNOWN").upper()
                         # A delivered cohort starts its clock at verified Telegram ACK,
                         # not at analysis/enqueue time. Expired plans are not paper-traded.
                         expires=float(cls._safe(plan.get("entry_expiry_ts"),created_at+3600.0) or created_at+3600.0)
                         if expires<=created_at or (cohort_token=="DELIVERED" and expires<=now):
-                            result["rejected"]+=1; continue
-                        import hashlib
+                            result["rejected"]+=1
+                            _record_not_testable(row,source_status,"PLAN_EXPIRED_BEFORE_PAPER_ELIGIBILITY",plan)
+                            continue
                         fingerprint_source=(cohort_token,symbol,candle_ts,family,round(entry,10),round(stop,10))
                         fingerprint=hashlib.sha256(json.dumps(fingerprint_source,sort_keys=True).encode()).hexdigest()
                         base_cost=max(0.0,cls._safe(plan.get("round_trip_cost_pct"),0.0) or 0.0)
@@ -110363,8 +110664,11 @@ class A85MarketIntelligence:
                         source_entry_model=("NEXT_CLOSED_BAR_OPEN_MARKET_PROXY" if source_status=="READY_NOW"
                                             else "FUTURE_EXACT_LIMIT_PRICE_TOUCH_PROXY")
                         detail={"cohort":cohort_token,"source_status":source_status,
-                                "source":"A85_CLOSED_CANDLE_PLAN","execution_authority":False,
-                                "entry_model":source_entry_model,
+                                "source":"A85_CLOSED_CANDLE_PLAN","policy_version":"A91_COUNTERFACTUAL_COHORT_V1",
+                                "filter_rejection_reason":str(row.get("reason") or plan.get("reason") or "")[:180],
+                                "quote_volume_quality":str(row.get("quote_volume_quality") or plan.get("quote_volume_quality") or "UNKNOWN"),
+                                "quote_volume_source":str(row.get("quote_volume_source") or plan.get("quote_volume_source") or "UNKNOWN"),
+                                "execution_authority":False,"entry_model":source_entry_model,
                                 "fill_model":"NEXT_BAR_OPEN_OR_EXACT_LIMIT_TOUCH_WITH_CANDLE_QUOTE_VOLUME_PARTICIPATION_PROXY_NOT_EXCHANGE_QUEUE_SIMULATION",
                                 "max_candle_quote_volume_participation":float(CONFIG.get("A85_PAPER_MAX_CANDLE_VOLUME_PARTICIPATION",0.01)),
                                 "maximum_chase_distance_pct":cls._safe(plan.get("maximum_chase_distance_pct"),0.35),
@@ -110384,35 +110688,30 @@ class A85MarketIntelligence:
                              last_candle_ts,details_json,cohort,eligible_after_ts,fill_ratio,filled_notional_usdt,
                              entry_simulation_model,exit_simulation_model,source_status,delivered_at)
                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (fingerprint,symbol,family,regime,"1M",candle_ts,created_at,expires,
+                            (fingerprint,symbol,family,regime,"1m",candle_ts,created_at,expires,
                              entry,cls._safe(plan.get("entry_zone_low")),cls._safe(plan.get("entry_zone_high")),
                              stop,tp1,tp2,None,base_cost,risk_pct,notional,"WAITING_ENTRY",None,None,
                              0,json.dumps(detail,ensure_ascii=False,separators=(",",":")),cohort_token,0.0,0.0,0.0,
                              source_entry_model,detail["partial_exit_model"],source_status,now if cohort_token=="DELIVERED" else None))
                         result["eligible"]+=1
-                        if cur.rowcount:
-                            result["inserted"]+=1
-                        else:
-                            result["duplicate"]+=1
+                        if cur.rowcount: result["inserted"]+=1
+                        else: result["duplicate"]+=1
                     conn.execute("""INSERT INTO a85_paper_cohort_runs
-                        (cohort,recorded_at,attempted,eligible,inserted,duplicate,rejected) VALUES(?,?,?,?,?,?,?)""",
-                        (cohort_token,now,int(result["attempted"]),int(result["eligible"]),int(result["inserted"]),int(result["duplicate"]),int(result["rejected"])))
-                    max_rows=max(1000,int(CONFIG.get("A85_PAPER_MAX_ROWS",10000)))
-                    conn.execute("DELETE FROM a85_paper_ledger WHERE id NOT IN (SELECT id FROM a85_paper_ledger ORDER BY created_at DESC LIMIT ?)",(max_rows,))
-                    conn.execute("DELETE FROM a85_paper_cohort_runs WHERE recorded_at<?",(now-max(30,int(CONFIG.get("A85_PAPER_RETENTION_DAYS",90)))*86400.0,))
+                        (cohort,recorded_at,attempted,eligible,inserted,duplicate,rejected,not_testable) VALUES(?,?,?,?,?,?,?,?)""",
+                        (cohort_token,now,int(result["attempted"]),int(result["eligible"]),int(result["inserted"]),
+                         int(result["duplicate"]),int(result["rejected"]),int(result["not_testable"])))
+                    conn.execute("DELETE FROM a85_paper_ledger WHERE id NOT IN (SELECT id FROM a85_paper_ledger ORDER BY created_at DESC LIMIT ?)",
+                                 (max(100,min(10000,int(CONFIG.get("A85_PAPER_MAX_ROWS",5000) or 5000))),))
+                    conn.execute("DELETE FROM a85_paper_not_testable WHERE rowid NOT IN (SELECT rowid FROM a85_paper_not_testable ORDER BY last_seen_at DESC LIMIT ?)",
+                                 (max(500,min(50000,int(CONFIG.get("A85_PAPER_NOT_TESTABLE_MAX_ROWS",10000) or 10000))),))
                     conn.commit()
-                finally: conn.close()
-            result["status"]="OK"
-            result["recorded"]=result["inserted"]
-            STATS[f"a89_paper_{cohort_token.lower()}_attempted"]=int(STATS.get(f"a89_paper_{cohort_token.lower()}_attempted",0) or 0)+attempted
-            STATS[f"a89_paper_{cohort_token.lower()}_inserted"]=int(STATS.get(f"a89_paper_{cohort_token.lower()}_inserted",0) or 0)+result["inserted"]
-            STATS["a85_paper_ledger_records"]=int(STATS.get("a85_paper_ledger_records",0) or 0)+result["inserted"]
+                finally:
+                    conn.close()
+            result["recorded"]=int(result.get("inserted",0) or 0)
             return result
         except Exception as exc:
-            result.update(inserted=0,status=f"ERROR:{type(exc).__name__}",error=str(exc)[:160],execution_authority=False)
-            STATS["a85_paper_ledger_errors"]=int(STATS.get("a85_paper_ledger_errors",0) or 0)+1
-            logger.warning("[A89-PAPER] record failed: %s",type(exc).__name__)
-            return result
+            result["recorded"]=int(result.get("inserted",0) or 0)
+            return {**result,"status":f"ERROR:{type(exc).__name__}","error":str(exc)[:180]}
 
     @classmethod
     def _paper_update_market(cls, market_map, now=None):
@@ -110698,18 +110997,24 @@ class A85MarketIntelligence:
                 conn=cls._connect()
                 try:
                     rows=conn.execute("SELECT * FROM a85_paper_ledger ORDER BY created_at DESC LIMIT ?",(max(100,min(10000,int(limit))),)).fetchall()
-                    run_rows=conn.execute("SELECT cohort,attempted,eligible,inserted,duplicate,rejected,recorded_at FROM a85_paper_cohort_runs WHERE recorded_at>=? ORDER BY recorded_at ASC",
+                    run_rows=conn.execute("SELECT cohort,attempted,eligible,inserted,duplicate,rejected,not_testable,recorded_at FROM a85_paper_cohort_runs WHERE recorded_at>=? ORDER BY recorded_at ASC",
                                           (float(WALL_NOW())-max(30,int(CONFIG.get("A85_PAPER_RETENTION_DAYS",90)))*86400.0,)).fetchall()
+                    not_testable_rows=conn.execute("SELECT cohort,reason,COUNT(*),SUM(occurrences) FROM a85_paper_not_testable GROUP BY cohort,reason").fetchall()
                 finally: conn.close()
             data=[dict(x) for x in rows]
-            run_totals=defaultdict(lambda:{"attempted":0,"eligible":0,"inserted":0,"duplicate":0,"rejected":0,"runs":0})
+            run_totals=defaultdict(lambda:{"attempted":0,"eligible":0,"inserted":0,"duplicate":0,"rejected":0,"not_testable":0,"runs":0})
+            not_testable_totals=defaultdict(lambda:{"rows":0,"occurrences":0,"reasons":{}})
+            for _co,_reason,_rows_count,_occurrences in not_testable_rows:
+                _bucket=not_testable_totals[str(_co or "LEGACY")]
+                _bucket["rows"]+=int(_rows_count or 0); _bucket["occurrences"]+=int(_occurrences or 0)
+                _bucket["reasons"][str(_reason or "UNKNOWN")]=int(_rows_count or 0)
             run_dates=defaultdict(set)
             for rr in run_rows:
                 _co=str(rr[0] or "LEGACY")
-                for _i,_key in enumerate(("attempted","eligible","inserted","duplicate","rejected"),1):
+                for _i,_key in enumerate(("attempted","eligible","inserted","duplicate","rejected","not_testable"),1):
                     run_totals[_co][_key]+=int(rr[_i] or 0)
                 run_totals[_co]["runs"]+=1
-                try: run_dates[_co].add(datetime.fromtimestamp(float(rr[6]),timezone.utc).date().isoformat())
+                try: run_dates[_co].add(datetime.fromtimestamp(float(rr[7]),timezone.utc).date().isoformat())
                 except Exception: pass
             final=[x for x in data if x.get("outcome_status") in {"TP1","SL","TIMEOUT"} and cls._safe(x.get("outcome_net_r_stress",x.get("outcome_net_r"))) is not None]
             final.sort(key=lambda x:float(x.get("resolved_at") or x.get("created_at") or 0))
@@ -110736,12 +111041,16 @@ class A85MarketIntelligence:
                 inserted=int(_run.get("inserted",len(cohort_rows)))
                 attempted=int(_run.get("attempted",0)); eligible=int(_run.get("eligible",0))
                 duplicate=int(_run.get("duplicate",0)); rejected=int(_run.get("rejected",0))
+                not_testable=int(_run.get("not_testable",0) or not_testable_totals.get(cohort,{}).get("occurrences",0))
                 filled=sum(1 for x in cohort_rows if float(x.get("fill_ratio") or 0)>=0.999)
                 avg_fill=(sum(float(x.get("fill_ratio") or 0.0) for x in cohort_rows)/len(cohort_rows)*100.0) if cohort_rows else None
                 _days={datetime.fromtimestamp(float(x.get("created_at") or 0),timezone.utc).date().isoformat()
                        for x in cohort_final if float(x.get("created_at") or 0)>0}
                 cohorts[cohort]={"attempted":attempted,"eligible":eligible,"inserted":inserted,"duplicate":duplicate,
-                    "rejected":rejected,"runs":int(_run.get("runs",0)),"paper_rows":len(cohort_rows),
+                    "rejected":rejected,"not_testable":not_testable,
+                    "not_testable_unique_rows":int(not_testable_totals.get(cohort,{}).get("rows",0)),
+                    "not_testable_reasons":dict(not_testable_totals.get(cohort,{}).get("reasons",{})),
+                    "runs":int(_run.get("runs",0)),"paper_rows":len(cohort_rows),
                     "resolved":len(cohort_final),"independent_days_utc":len(_days),
                     "partial_unverified":sum(1 for x in cohort_rows if x.get("status")=="PARTIAL_UNVERIFIED"),
                     "data_gap":sum(1 for x in cohort_rows if x.get("status") in {"DATA_GAP","TP1_REMAINDER_DATA_GAP"}),
@@ -110778,7 +111087,9 @@ class A85MarketIntelligence:
                 vals=[float(x.get("outcome_net_r_stress",x.get("outcome_net_r") or 0.0)) for x in items]
                 return {"n":len(vals),"expectancy_r_stress":round(statistics.fmean(vals),4) if vals else None}
             return {"status":"OK" if n>=minimum else "INSUFFICIENT_SAMPLE","sample_count":n,"minimum_sample":minimum,
-                "observed_rows":len(data),"open_rows":status_counts.get("OPEN",0)+status_counts.get("TP1_REMAINDER_OPEN",0),
+                "observed_rows":len(data),"not_testable_rows":sum(int(x.get("rows",0) or 0) for x in not_testable_totals.values()),
+                "not_testable_occurrences":sum(int(x.get("occurrences",0) or 0) for x in not_testable_totals.values()),
+                "open_rows":status_counts.get("OPEN",0)+status_counts.get("TP1_REMAINDER_OPEN",0),
                 "waiting_entry_rows":status_counts.get("WAITING_ENTRY",0),
                 "independent_days_utc":len(_all_days),"average_fill_ratio_pct":round(statistics.fmean(_all_fills)*100.0,2) if _all_fills else None,
                 "net_expectancy_r_normal":round(statistics.fmean([float(x.get("outcome_net_r_normal",x.get("outcome_net_r") or 0.0)) for x in final]),4) if final else None,
@@ -110958,7 +111269,7 @@ class A85MarketIntelligence:
         # Copy the dictionary, not the DataFrames; source snapshots remain shared and immutable.
         symbols=sorted(str(s).upper() for s in market_map if str(s).upper().endswith("/USDT"))
         symbols=[s for s in symbols if not cls._forbidden_or_stable(s)[0]]
-        max_symbols=max(8,min(60,int(CONFIG.get("A85_MAX_ANALYSIS_SYMBOLS",60))))
+        max_symbols=max(8,min(60,int(CONFIG.get("A85_MAX_ANALYSIS_SYMBOLS",24))))
         active=[]
         try:
             active=[r for r in OpportunityHunter.snapshot(300) if str(r.get("status") or "").upper() in {"WATCH","CONFIRMED","TRADEABLE"}]
@@ -110983,20 +111294,39 @@ class A85MarketIntelligence:
             sym=str(raw_symbol or "").upper().strip()
             if sym not in symbols or not isinstance(ticker,dict):
                 continue
-            qv=cls._safe(_v702_a80_ticker_quote_volume(ticker))
-            if qv is None or qv<research_floor:
+            _qvf = _v702_a80_ticker_quote_volume_facts(ticker)
+            qv=cls._safe(_qvf.get("quote_volume_24h"))
+            _qv_quality=str(_qvf.get("quality") or "MISSING").upper()
+            if qv is None or qv<research_floor or _qv_quality not in {"EXACT", "ESTIMATED"}:
                 continue
             change=cls._safe(ticker.get("percentage",ticker.get("change_pct_24h",ticker.get("change_24h_pct"))),0.0) or 0.0
             bid=cls._safe(ticker.get("bid")); ask=cls._safe(ticker.get("ask"))
             spread=((ask-bid)/((ask+bid)/2.0)*100.0) if bid and ask and ask>bid else None
-            radar_candidates.append((sym,qv,abs(change),spread))
+            if _qv_quality == "EXACT" and qv >= max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0))):
+                radar_candidates.append((sym,qv,abs(change),spread))
         radar_candidates.sort(key=lambda x:(x[1],x[2],-(x[3] if x[3] is not None else 99.0)),reverse=True)
         fast_cap=min(max(0,int(CONFIG.get("A85_RADAR_REFRESH_TOP",15))),max(0,max_symbols//4))
         fast_priority=[x[0] for x in radar_candidates if x[0] not in set(priority)][:fast_cap]
         hunter_cap=max(1,max_symbols//3)
         chosen=list(dict.fromkeys(priority[:hunter_cap]+fast_priority))
         # Keep at least a rotating lane after urgent Hunter and fast-radar refresh slots.
-        normal=[s for s in symbols if s not in set(chosen)]
+        _core_floor = max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
+        _core_eligible = []
+        _research_screened = 0
+        for _sym in symbols:
+            _md = market_map.get(_sym) if isinstance(market_map.get(_sym), dict) else {}
+            _facts = _md.get("quote_volume_facts") if isinstance(_md.get("quote_volume_facts"), dict) else {}
+            _quality = str(_md.get("quote_volume_quality") or _facts.get("quality") or "MISSING").upper()
+            _qv = cls._safe(_md.get("quote_vol_24h", _facts.get("quote_volume_24h")))
+            if _quality == "EXACT" and _qv is not None and _qv >= _core_floor:
+                _core_eligible.append(_sym)
+            else:
+                _research_screened += 1
+        # Research/Micro symbols remain visible to their own shadow lanes; they do
+        # not consume the scarce A85 Core deep-analysis budget or pretend to pass
+        # the Core liquidity contract.
+        chosen = [s for s in chosen if s in set(_core_eligible)]
+        normal=[s for s in _core_eligible if s not in set(chosen)]
         offset=cls.get_rotation_offset("A85")
         room=max(0,max_symbols-len(chosen))
         if room and normal:
@@ -111042,19 +111372,21 @@ class A85MarketIntelligence:
             sym=str(raw_symbol or "").upper()
             if not sym.endswith("/USDT") or not isinstance(ticker,dict) or cls._forbidden_or_stable(sym)[0]:
                 continue
-            qv=cls._safe(ticker.get("quoteVolume",ticker.get("quote_volume")))
+            _qvf = _v702_a80_ticker_quote_volume_facts(ticker)
+            qv=cls._safe(_qvf.get("quote_volume_24h"))
             pct=cls._safe(ticker.get("percentage",ticker.get("change_pct_24h",ticker.get("change_24h_pct"))))
             bid=cls._safe(ticker.get("bid")); ask=cls._safe(ticker.get("ask"))
             spread24=((ask-bid)/((ask+bid)/2.0)*100.0) if bid and ask and ask>bid else None
-            ticker_rows.append({"symbol":sym,"quote_volume_24h":qv,"change_24h_pct":pct,"spread_pct":spread24,
+            ticker_rows.append({"symbol":sym,"quote_volume_24h":qv,"quote_volume_quality":_qvf.get("quality"),
+                                "quote_volume_source":_qvf.get("source"),"change_24h_pct":pct,"spread_pct":spread24,
                                 "last":cls._safe(ticker.get("last")),"timestamp":cls._safe(ticker.get("timestamp"))})
         radar_available_count=len(ticker_rows)
         radar_limit=max(100,min(500,int(CONFIG.get("A85_RADAR_MAX_UNIVERSE",500))))
         ticker_rows.sort(key=lambda x:(float(x.get("quote_volume_24h") or 0.0),abs(float(x.get("change_24h_pct") or 0.0))),reverse=True)
         ticker_rows=ticker_rows[:radar_limit]
-        eligible_tickers=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=max(3_000_000.0,float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME",3_000_000.0)))]
+        eligible_tickers=[x for x in ticker_rows if x.get("quote_volume_quality")=="EXACT" and x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=max(3_000_000.0,float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME",3_000_000.0)))]
         research_floor=max(100_000.0,float(CONFIG.get("V702_A80_RESEARCH_MIN_QUOTE_VOLUME_USDT",250_000.0)))
-        intermediate_pool=[x for x in ticker_rows if x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=research_floor]
+        intermediate_pool=[x for x in ticker_rows if x.get("quote_volume_quality")=="EXACT" and x.get("quote_volume_24h") is not None and x["quote_volume_24h"]>=research_floor]
         intermediate_pool.sort(key=lambda x:(float(x.get("quote_volume_24h") or 0),float(x.get("change_24h_pct") or -999)),reverse=True)
         intermediate_limit=max(100,min(150,int(CONFIG.get("A85_INTERMEDIATE_SCAN_LIMIT",150))))
         intermediate_selected=intermediate_pool[:intermediate_limit]
@@ -111080,6 +111412,8 @@ class A85MarketIntelligence:
                 "btc_canonical_source":(canonical_btc or {}).get("_canonical_btc_source","UNAVAILABLE"),
                 "btc_shared_raw_counts":dict((canonical_btc or {}).get("_canonical_btc_raw_counts") or {}),
                 "scanned_symbols":len(chosen),"deep_analyzed_symbols":len(rows),
+                "core_deep_eligible_symbols":len(_core_eligible),
+                "research_screened_out_before_core_deep":int(_research_screened),
                 "analyzed_symbols":len(rows),"deep_analysis_limit":max_symbols,"rotated_symbols":len(chosen),
                 "skipped_symbols":max(0,len(symbols)-len(chosen)),"remaining_budget":max(0,max_symbols-len(chosen)),
                 "top_ranked_opportunities":rows_by_ranking,
@@ -111266,6 +111600,26 @@ class A85MarketIntelligence:
             "timeframes":r.get("timeframes"),"structure":r.get("structure"),
         } for r in decision_candidates[:max(1,min(5,int(CONFIG.get("A86_BRAIN_REPORT_MAX_CANDIDATES",3))))]]
         market["decision_candidates_count"]=len(decision_candidates)
+        _near_status_rank={"WAITING_FOR_ENTRY":0,"EARLY_SETUP":1,"DATA_INCOMPLETE":2}
+        _near_rows=[r for r in rows if str(r.get("symbol") or "").upper()!="BTC/USDT"
+                    and str(r.get("status") or "").upper() in _near_status_rank
+                    and ((cls._safe(r.get("quality_score")) or 0.0)>=45.0
+                         or (cls._safe(r.get("ranking_score")) or 0.0)>=35.0)]
+        _near_rows.sort(key=lambda r:(_near_status_rank.get(str(r.get("status") or "").upper(),9),
+            -(cls._safe(r.get("ranking_score")) or 0.0),-(cls._safe(r.get("quality_score")) or 0.0)))
+        market["near_candidates"]=[{
+            "symbol":r.get("symbol"),"status":r.get("status"),"reason":(r.get("plan") or {}).get("reason") or r.get("reason"),
+            "quality_score":r.get("quality_score"),"ranking_score":r.get("ranking_score"),
+            "primary_strategy":r.get("primary_strategy"),"current_price":((r.get("timeframes") or {}).get("1H") or {}).get("close"),
+            "preferred_entry":(r.get("plan") or {}).get("preferred_entry"),
+            "wait_entry_max":(r.get("plan") or {}).get("wait_entry_max"),
+            "required_pullback_pct":(r.get("plan") or {}).get("required_pullback_pct"),
+            "breakout_close_trigger":(r.get("plan") or {}).get("breakout_close_trigger"),
+            "retest_zone_low":(r.get("plan") or {}).get("retest_zone_low"),
+            "retest_zone_high":(r.get("plan") or {}).get("retest_zone_high"),
+            "data_gap":bool((r.get("plan") or {}).get("data_gap")),
+            "execution_authority":False
+        } for r in _near_rows[:max(3,min(5,int(CONFIG.get("A86_BRAIN_REPORT_MAX_NEAR_CANDIDATES",3))))]]
         market["candidate_funnel"]=candidate_funnel
         market["candidate_quality_floors"]={"quality":min_quality,"ranking":min_ranking,"net_rr_tp1":min_net_rr,
                                             "required_mtf":"BULLISH_1H_AND_4H","relative_strength_vs_btc":"POSITIVE_1H_AND_4H"}
@@ -111645,7 +111999,7 @@ def _v702_a86_brain_report_text(market=None):
     levels = market.get("btc_trade_levels") or {}
     decision = market.get("a86_decision") or {}
     lines = ["<b>A86 MARKET BRAIN — قرار السوق وخطة التداول</b>"]
-    lines.append(f"Build: <code>{esc(V702_A90_REVISION)}</code>")
+    lines.append(f"Build: <code>{esc(V702_A91_REVISION)}</code>")
     try:
         import hashlib
         with open(__file__,"rb") as _build_fh:
@@ -111763,17 +112117,67 @@ def _v702_a86_brain_report_text(market=None):
     _tf_fail_text=", ".join(f"{k}:{fmt(v)}%" for k,v in sorted(_tf_fails.items())) or "n/a"
     lines.append(f"<b>4) تغطية الرادار</b> | تيكرات متاحة/مدروسة: {market.get('fast_scan_available_symbols',0)}/{market.get('radar_considered_symbols',0)} | تحليل عميق هذه الدورة: {market.get('deep_analyzed_symbols',0)} | أزواج فريدة 24h: {_coverage.get('unique_symbols','n/a')} | أقدم تحليل: {fmt(_coverage.get('oldest_symbol_age_sec'))} ثانية")
     lines.append(f"فشل توفر الأطر في السجلات العميقة 24h: {esc(_tf_fail_text)} — التغطية لا تعني تحليل كل تيكر متاح.")
-    lines.append("نطاق التغطية: هذه النسب تخص سجلات A85 للتحليل العميق المحفوظة فقط؛ استراتيجيات A9 Micro على 1M/5M تستخدم مسار جلب وتقييم Shadow مستقلًا، لذلك لا تُقارن الأرقام مباشرة. إطار 1D مساعد، بينما سياق BTC الأساسي يعتمد شموع 1H/4H المغلقة الموثقة.")
+    lines.append("نطاق التغطية: هذه النسب تخص سجلات A85 للتحليل العميق المحفوظة فقط؛ استراتيجيات A9 Micro على 1m/5m تستخدم مسار جلب وتقييم Shadow مستقلًا، لذلك لا تُقارن الأرقام مباشرة. إطار 1D مساعد، بينما سياق BTC الأساسي يعتمد شموع 1H/4H المغلقة الموثقة.")
     _paper_update=paper.get("update") or {}
     _paper_perf=A85MarketIntelligence.paper_performance()
     _cohorts=_paper_perf.get("cohorts") or {}
-    lines.append(f"Paper current-cycle cohorts (attempted/eligible/inserted/duplicate/rejected): "+" | ".join(f"{name} {item.get('attempted',0)}/{item.get('eligible',0)}/{item.get('inserted',0)}/{item.get('duplicate',0)}/{item.get('rejected',0)}" for name,item in sorted((paper_rec.get('cohorts') or {}).items()))+f" | resolved={_paper_update.get('resolved',0)} data_gap={_paper_update.get('data_gap',0)} chase_reject={_paper_update.get('entry_chase_exceeded',0)} ambiguous_stop_first={_paper_update.get('ambiguous_stop_first',0)}")
-    lines.append(f"Paper accumulated: n={_paper_perf.get('sample_count',0)} | independent UTC days={_paper_perf.get('independent_days_utc',0)} | avg fill ratio={fmt(_paper_perf.get('average_fill_ratio_pct'))}% | Net R normal/stress={fmt(_paper_perf.get('net_expectancy_r_normal'))}/{fmt(_paper_perf.get('net_expectancy_r_stress'))} | Net USDT normal/stress={fmt(_paper_perf.get('net_profit_usdt_normal'))}/{fmt(_paper_perf.get('net_profit_usdt_stress'))} | max DD R={fmt(_paper_perf.get('max_drawdown_r_stress'))} | minimum n={_paper_perf.get('minimum_sample',30)} | status={esc(_paper_perf.get('status','UNKNOWN'))}")
+    lines.append(f"Paper current-cycle cohorts (attempted/eligible/inserted/duplicate/rejected/not_testable): "+" | ".join(f"{name} {item.get('attempted',0)}/{item.get('eligible',0)}/{item.get('inserted',0)}/{item.get('duplicate',0)}/{item.get('rejected',0)}/{item.get('not_testable',0)}" for name,item in sorted((paper_rec.get('cohorts') or {}).items()))+f" | resolved={_paper_update.get('resolved',0)} data_gap={_paper_update.get('data_gap',0)} chase_reject={_paper_update.get('entry_chase_exceeded',0)} ambiguous_stop_first={_paper_update.get('ambiguous_stop_first',0)}")
+    lines.append(f"Paper accumulated: n={_paper_perf.get('sample_count',0)} resolved; NOT_TESTABLE unique={_paper_perf.get('not_testable_rows',0)} occurrences={_paper_perf.get('not_testable_occurrences',0)} | independent UTC days={_paper_perf.get('independent_days_utc',0)} | avg fill ratio={fmt(_paper_perf.get('average_fill_ratio_pct'))}% | Net R normal/stress={fmt(_paper_perf.get('net_expectancy_r_normal'))}/{fmt(_paper_perf.get('net_expectancy_r_stress'))} | Net USDT normal/stress={fmt(_paper_perf.get('net_profit_usdt_normal'))}/{fmt(_paper_perf.get('net_profit_usdt_stress'))} | max DD R={fmt(_paper_perf.get('max_drawdown_r_stress'))} | minimum n={_paper_perf.get('minimum_sample',30)} | status={esc(_paper_perf.get('status','UNKNOWN'))}")
     lines.append(f"Paper cohort rows: RESEARCH={(_cohorts.get('RESEARCH') or {}).get('paper_rows',0)} QUALIFIED={(_cohorts.get('QUALIFIED') or {}).get('paper_rows',0)} DELIVERED={(_cohorts.get('DELIVERED') or {}).get('paper_rows',0)} RS_COUNTERFACTUAL={(_cohorts.get('RS_ONLY_ABSOLUTE_WEAK') or {}).get('paper_rows',0)} | chronologic later 30%={fmt(((_paper_perf.get('chronological_descriptive_split') or {}).get('later_holdout_descriptive_only') or {}).get('expectancy_r_stress'))}R descriptive only")
     lines.append(f"Telegram delivery state: brain report queue accepted is not delivery; last state={esc((market.get('brain_delivery_state') or {}).get('state','tracked_on_ack_callback'))} | alert cohorts enter DELIVERED only after Telegram API ACK.")
     lines.append("ملاحظة Paper: محاكاة شموع وحجم تداول تقريبي وتكاليف عادية/مشددة؛ ليست محاكاة طابور أو تعبئة MEXC ولا أرباحًا حقيقية.")
     lines.append("<b>سياسة الأمان:</b> MONITOR_ONLY_NO_NEW_BUYS — لا توجد صلاحية شراء أو تنفيذ حي.")
     return "\n".join(lines)
+
+
+def _v702_a86_brain_digest_text(market=None):
+    """Five-line state-change digest for automatic Telegram delivery."""
+    market = market if isinstance(market, dict) else A85MarketIntelligence.market_snapshot()
+    fmt = lambda value: (f"{float(value):.6g}" if A85MarketIntelligence._safe(value) is not None else "n/a")
+    esc = lambda value: str(value if value is not None else "n/a").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    regime=market.get("regime") or {}; btc=regime.get("btc") or {}; decision=market.get("a86_decision") or {}
+    levels=market.get("btc_trade_levels") or {}; dataq=regime.get("data_quality") or {}
+    stamp=A85MarketIntelligence._safe(market.get("timestamp"))
+    try:
+        from zoneinfo import ZoneInfo
+        stamp_text=datetime.fromtimestamp(float(stamp),ZoneInfo("Africa/Cairo")).strftime("%Y-%m-%d %H:%M") if stamp else "n/a"
+    except Exception:
+        stamp_text=datetime.fromtimestamp(float(stamp),timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if stamp else "n/a"
+    line1=f"<b>A91 MARKET BRAIN</b> · {esc(stamp_text)} · <code>{esc(V702_A91_REVISION)}</code>"
+    line2=(f"BTC {esc(regime.get('regime','UNKNOWN'))} | Spot Long: <b>{esc(decision.get('display_ar') or decision.get('action') or 'WAIT')}</b> | "
+           f"1D/4H/1H={esc(btc.get('1D','?'))}/{esc(btc.get('4H','?'))}/{esc(btc.get('1H','?'))} | "
+           f"4H close={fmt(levels.get('reference_price'))} | data={esc(dataq.get('status','UNKNOWN'))}")
+    candidates=market.get("decision_candidates") or []
+    candidate_source="QUALIFIED"
+    if not candidates:
+        candidates=market.get("near_candidates") or []
+        candidate_source="WATCH / NEAR-QUALIFIED"
+    candidate_bits=[]
+    for row in candidates[:3]:
+        plan=row.get("plan") or {}
+        wait_price=plan.get("wait_entry_max",plan.get("preferred_entry"))
+        if wait_price is None:
+            wait_price=row.get("wait_entry_max",row.get("preferred_entry"))
+        trigger=plan.get("breakout_close_trigger",row.get("breakout_close_trigger"))
+        if trigger is not None:
+            detail=f"close>{fmt(trigger)} then retest"
+        elif wait_price is not None:
+            detail=f"recheck≤{fmt(wait_price)}"
+        else:
+            detail=str(plan.get("reason") or row.get("reason") or "data/confirmation pending")[:55]
+        candidate_bits.append(f"{esc(row.get('symbol'))} [{esc(row.get('status'))}] {esc(detail)}")
+    line3=(f"{candidate_source}: " + (" · ".join(candidate_bits) if candidate_bits else "لا توجد فرص مؤهلة/قريبة قابلة لخطة موثوقة؛ لا تطارد السعر."))
+    core_book=STATS.get("a85_core_orderbook_prefetch_last") or {}
+    a9_selected=int(STATS.get("v702_intraday_shadow_batch_selected",0) or 0)
+    line4=(f"Radar {int(market.get('fast_scan_available_symbols',0) or 0)}/{int(market.get('radar_considered_symbols',0) or 0)} | "
+           f"Core {int(market.get('deep_analyzed_symbols',0) or 0)}/{int(market.get('core_deep_eligible_symbols',0) or 0)} analyzed/eligible | "
+           f"research-screened={int(market.get('research_screened_out_before_core_deep',0) or 0)} | "
+           f"Books fresh {int(core_book.get('fetched_fresh',0) or 0)+int(core_book.get('reused_fresh',0) or 0)}/{int(core_book.get('eligible',0) or 0)} | A9 selected={a9_selected}")
+    paper=A85MarketIntelligence.paper_performance()
+    line5=(f"Paper n={int(paper.get('sample_count',0) or 0)} · Net R stress={fmt(paper.get('net_expectancy_r_stress'))} · "
+           f"days={int(paper.get('independent_days_utc',0) or 0)} · NOT_TESTABLE={int(paper.get('not_testable_rows',0) or 0)} · "
+           f"{esc(paper.get('status','UNKNOWN'))} · <b>MONITOR_ONLY_NO_NEW_BUYS</b>")
+    return "\n".join((line1,line2,line3,line4,line5))
 
 
 async def _v702_a86_publish_brain_report():
@@ -111785,8 +112189,9 @@ async def _v702_a86_publish_brain_report():
     market=A85MarketIntelligence.market_snapshot()
     if not isinstance(market,dict) or not market.get("timestamp"):
         return {"sent":False,"status":"MARKET_NOT_SCANNED"}
-    body=_v702_a86_brain_report_text(market)
+    body=_v702_a86_brain_digest_text(market)
     decision=market.get("a86_decision") or {}; candidates=market.get("decision_candidates") or []
+    near_candidates=market.get("near_candidates") or []
     regime=market.get("regime") or {}; data_quality=regime.get("data_quality") or {}
     btc=(regime.get("btc") or {})
     forecast=(market.get("btc_forecast") or {}).get("horizons") or {}
@@ -111803,13 +112208,16 @@ async def _v702_a86_publish_brain_report():
              "levels_status":(market.get("btc_trade_levels") or {}).get("status"),
              "forecast":{k:{"scenario":v.get("predicted_scenario"),"status":v.get("status")}
                          for k,v in forecast.items() if isinstance(v,dict)},
-             "candidates":fp_candidates}
+             "candidates":fp_candidates,
+             "watch_candidates":[{"symbol":x.get("symbol"),"status":x.get("status"),"reason":x.get("reason"),
+                                 "wait_entry_max":x.get("wait_entry_max"),"breakout_close_trigger":x.get("breakout_close_trigger")}
+                                for x in near_candidates[:3]]}
     import hashlib
     fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
     try:
         with open(__file__,"rb") as _fh: build_sha=hashlib.sha256(_fh.read()).hexdigest()
     except Exception: build_sha="UNAVAILABLE"
-    build_revision=str(V702_A90_REVISION)
+    build_revision=str(V702_A91_REVISION)
     now=float(WALL_NOW())
     interval=max(300.0,float(CONFIG.get("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC",900.0) or 900.0))
     min_change_gap=max(60.0,min(900.0,float(CONFIG.get("A86_REPORT_CHANGE_GAP_SEC",90.0) or 90.0)))
@@ -112258,6 +112666,15 @@ FINAL_CANONICAL_RUNTIME.update({
     "active_a88_revision_current": V702_A88_REVISION,
     "active_a89_revision_current": V702_A89_REVISION,
     "active_a90_revision_current": V702_A90_REVISION,
+    "active_a91_revision_current": V702_A91_REVISION,
+    "a91_exact_quote_volume_required_for_core": True,
+    "a91_estimated_quote_volume_quarantined_from_core": True,
+    "a91_scheduler_logs_skips_and_database_identity": True,
+    "a91_core_and_micro_orderbook_prefetch_are_bounded": True,
+    "a91_near_candidates_are_watch_only": True,
+    "a91_counterfactual_non_testable_rows_are_persisted": True,
+    "a91_automatic_brain_message_is_compact": True,
+    "a91_deep_funnel_reports_core_eligible_and_research_screened_counts": True,
     "a90_spread_digest_preserves_measured_spread_and_ceiling": True,
     "a90_rejection_funnel_exposes_numeric_book_liquidity_and_risk_evidence": True,
     "a90_qualified_candidates_split_ready_now_from_waiting_entry": True,
@@ -112309,6 +112726,12 @@ def _v702_a85_self_test_terminal():
     checks["a88_publisher_reservation_is_atomic"] = "BEGIN IMMEDIATE" in _v702_read_source_text() and "RESERVATION_BUSY" in _v702_read_source_text()
     checks["a89_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a89_revision_current") == V702_A89_REVISION
     checks["a90_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a90_revision_current") == V702_A90_REVISION
+    checks["a91_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a91_revision_current") == V702_A91_REVISION
+    checks["a91_core_quote_volume_is_provenance_gated"] = 'or "MISSING").upper()' in _v702_read_source_text() and '"EXACT"' in _v702_read_source_text() and "QUOTE_VOLUME_NOT_VERIFIED" in _v702_read_source_text()
+    checks["a91_scheduler_persists_run_and_database_identity"] = '"db_identity"' in Path(__file__).with_name("v702_intraday_shadow.py").read_text(encoding="utf-8") and '"CYCLE_SKIPPED"' in _v702_read_source_text()
+    checks["a91_counterfactual_not_testable_is_recorded"] = "a85_paper_not_testable" in _v702_read_source_text() and "NOT_TESTABLE_NO_FABRICATED_ENTRY_OR_TARGET" in _v702_read_source_text()
+    checks["a91_no_live_authority"] = FINAL_CANONICAL_RUNTIME.get("effective_entry_policy") == "MONITOR_ONLY_NO_NEW_BUYS" and FINAL_CANONICAL_RUNTIME.get("a89_live_orders_enabled") is False and FINAL_CANONICAL_RUNTIME.get("a91_near_candidates_are_watch_only") is True
+    checks["a91_deep_funnel_reports_core_eligibility"] = '"core_deep_eligible_symbols":len(_core_eligible)' in _v702_read_source_text() and '"research_screened_out_before_core_deep":int(_research_screened)' in _v702_read_source_text()
     checks["a90_spread_digest_is_numeric_and_complete"] = _v702_reason_summary_token("liquidity.spread=0.4002%>ceil=0.3000%:tier=MICRO", 40) == "spread:0.4002>0.3000:MICRO"
     checks["a90_a9_scope_is_explicit"] = (FINAL_CANONICAL_RUNTIME.get("a90_a9_evaluation_totals_carry_retained_history_time_range") is True
         and '"scope": "RETAINED_DB_ALL_DATES_NOT_DAILY_REPORT_WINDOW"' in Path(__file__).with_name("v702_intraday_shadow.py").read_text(encoding="utf-8")
