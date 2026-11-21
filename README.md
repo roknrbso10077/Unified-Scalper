@@ -580,3 +580,17 @@ A84 regression coverage includes scan authorization, research-map isolation, non
 ## A88 limitations
 
 These changes improve evidence quality and report correctness; they do not make technical scores predictive probabilities or establish profitable performance. BTC and other OHLCV data still depend on MEXC public-data availability. SQLite-based publisher deduplication requires all competing workers to share the same database. Offline tests cannot prove MEXC availability, Telegram delivery, Docker/host resource behavior, long-duration stability or profitability.
+
+
+# A89 — canonical market evidence and execution-aware Paper (2026-11-21)
+
+A89 closes the main A88 evidence gaps without enabling live entries:
+
+- **One BTC source per scan:** macro, forecast, levels and relative-strength calculations use the same shared BTC 1H/4H snapshot. The BTC history budget remains independent from the normal altcoin scan budget. Stale last-good data is display-only and cannot authorize a current entry. Forecast calibration requires the exact target candle timestamp and records a missing candle as `DATA_GAP`.
+- **Reconciled A86 opportunity funnel:** every analyzed symbol receives one primary disposition; early/not-yet-eligible, unavailable data, quality/rank, cost/Net-RR, MTF, relative strength, BTC exclusion, qualified, and unattributed totals are visible. The established floors and strategy/risk gates are not weakened.
+- **HTF and RS research cohorts:** missing HTF evidence is distinguished from a genuinely weak numeric reading. Positive BTC-relative strength with non-positive absolute return is tracked separately for counterfactual analysis, not used as a new buy signal.
+- **Conservative Paper fills:** READY_NOW waits for a later bar and uses a next-bar-open proxy; WAITING_FOR_ENTRY requires an exact limit-price touch. Participation is volume-capped. Plan creation, fill and expiry timestamps control which candles are eligible. A full TP1 baseline is compared with a separate fixed partial-TP1 exit model; ambiguous same-candle stop/target outcomes use conservative stop-first treatment.
+- **Honest performance cohorts:** RESEARCH, QUALIFIED and DELIVERED are separate. `QUEUED` is not `DELIVERED`; delivery requires Telegram API success acknowledgement for all message parts. Reports show attempts, eligible/inserted/duplicate/rejected, fills, Net R/USDT under normal/stress costs, sample days and drawdown. Insufficient samples are not represented as proven edge.
+- **Lower-noise and more complete reporting:** material decision/data changes trigger A86 reports; routine scan counts remain periodic. Reports split by complete sections. The Micro daily report distinguishes scheduler absence from empty selection and non-persisted evaluation, and radar reporting adds rolling 24-hour unique-symbol coverage and timeframe failure rates.
+
+A89 keeps `MONITOR_ONLY_NO_NEW_BUYS`. Candle-volume participation and next-bar-open fills are conservative simulation proxies, not MEXC matching-engine behavior or guaranteed fills. Offline tests do not prove live MEXC/Telegram integration, production-host reliability, wallet PnL or profitability. See `CHANGELOG.md` and `FINAL_AUDIT_REPORT.md` for the complete closure record.

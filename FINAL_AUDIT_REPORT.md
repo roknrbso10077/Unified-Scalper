@@ -774,3 +774,30 @@ No authenticated MEXC private API, real order, Telegram network delivery, privat
 ## Deployment boundary
 
 No authenticated MEXC private API, real order/fill, private account fee retrieval, live Telegram delivery acknowledgement, Docker image build, Railway/Render resource-load test, long-duration soak or profitable-performance test was performed. The package remains a monitored, read-only market analyst; `MONITOR_ONLY_NO_NEW_BUYS` is intentionally retained. Do not enable unattended live trading based solely on offline tests or forecast scores.
+
+
+# A89 final production audit — 2026-11-21
+
+## Scope implemented
+- Unified the BTC 1H/4H source consumed by A86 macro, forecasts, planning levels and candidate relative-strength. The long-history BTC request is bounded and separate from regular per-symbol scan budgets. A stale last-good observation is diagnostic only; a missing/old required frame blocks a directional entry decision.
+- Reconciled the A86 candidate funnel with one primary exit disposition per analyzed symbol and explicit `UNATTRIBUTED` remainder. Existing quality, ranking, TP1 Net RR, MTF, RS and safety thresholds are retained.
+- Added independent counterfactual diagnostics for missing HTF evidence versus a numeric weak-HTF rejection, and for BTC-relative strength without positive absolute return. Neither comparison alters canonical admission policy.
+- Reworked the Paper fill lifecycle so READY_NOW waits for a later bar; WAITING_FOR_ENTRY requires an exact limit touch, not a zone touch; candle-volume participation is capped; plan creation/fill/expiry timestamps bound eligible outcome bars; unfilled plans expire; same-candle stop/target cases use a flagged conservative stop-first baseline.
+- Added a full-TP1 baseline and a separately reported fixed partial-TP1 counterfactual. Costs are represented under normal and stressed assumptions. Per-cohort reporting separates RESEARCH, QUALIFIED, DELIVERED and RS_ONLY_ABSOLUTE_WEAK, and exposes attempt/eligibility/insertion/duplicate/rejection counts, fill ratios, Net R/USDT, days, drawdown and strategy/regime/timeframe slices.
+- A86 report delivery distinguishes queued from delivered; delivered cohorts require successful Telegram API callbacks for every message part. Material-change notifications are separated from routine periodic summaries.
+- Micro Shadow reporting distinguishes scheduler absence, empty selection, selected/fetched/processed outcomes and persisted evaluation evidence. Radar coverage uses unique symbols over a rolling 24-hour window with age and timeframe failure diagnostics.
+
+## Interpretation and limitations
+- `MONITOR_ONLY_NO_NEW_BUYS` remains the active entry policy. No live entry path or execution authority was added. Existing forbidden-asset, Spot-only, HTF, liquidity, spread, fee, score, reconciliation, position-protection and circuit-breaker controls were not relaxed.
+- The Paper fill model is an OHLCV proxy with a capped volume-participation assumption, not exchange queue simulation. A next-bar open cannot prove an achievable real-world fill. The partial-exit cohort is a fixed counterfactual, not an adopted execution policy.
+- Telegram `DELIVERED` is based on the application's Telegram API success callback. It is not evidence of a user's device displaying/reading the message. External authenticated connectivity and multi-host behavior have not been tested by offline regression.
+- Chronological 70/30 breakdowns are descriptive only and are not an untouched out-of-sample proof. Performance remains unproven until adequate independent trade/day samples and later holdout validation are collected.
+- No live MEXC order, authenticated fee verification, actual wallet PnL, Render/Railway soak, or profitability claim is made.
+
+## A89 final regression and release validation
+- Packaged test inventory: **58 test modules / 674 collected tests**. The modules were executed in isolated, non-overlapping batches, with the affected legacy contract tests rerun after the manifest/schema updates: **673 passed, 1 skipped, 0 failed**. The single skip is the historical A51 log-fixture test; that historical log is not included in the clean 99-file release archive.
+- The new A89 source-contract self-test passed all nine A89 checks: unified BTC frame use across macro/forecast/RS; exact future-candle forecast resolution; no signal-time Paper fill; separate RESEARCH/QUALIFIED/DELIVERED cohorts; Telegram ACK gating; explicit QUEUED vs DELIVERED; reconciled candidate funnel; and unchanged monitor-only/no-live-order authority.
+- `python main.py --validate-only`: **exit 0**, with `bot_started=false` and `live_threads=[]`. This validates startup contracts only and does not start a persistent trading process.
+- `py_compile`: **73/73 packaged Python files passed**; `compileall` also completed successfully.
+- Final artifact inventory is preserved at **99 unique original paths**, with 12 existing files modified and no files added or removed. SHA-256 ledger contains 98 non-self entries; final ZIP CRC and clean-extraction verification passed with all 99 paths and 98 hashes matching.
+- Test execution was offline and deterministic. No authenticated MEXC request, real Telegram network send, exchange order, matching-engine fill, wallet PnL, long-duration deployment soak or profitability was tested or established.

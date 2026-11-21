@@ -2771,3 +2771,39 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 - Added Intraday Shadow scheduler-stage telemetry and corrected daily aggregates to avoid double-counting selected/fetched/processed counts.
 - Fixed the supplemental A79 1H/4H read-only fetch to define and use its own 401-raw-bar request limit; expanded its regression fixture to verify 400 closed-bar history and prevent an undefined-variable runtime error.
 - Kept all existing safety gates, hard exclusions, Spot-only rules, execution protections and `MONITOR_ONLY_NO_NEW_BUYS` unchanged.
+
+
+# A89 — canonical BTC snapshot, reconciled candidate funnel, executable Paper and acknowledged Telegram (2026-11-21)
+
+## Canonical BTC evidence and forecasting
+- A86 macro regime, price levels, forecast horizons, and candidate relative-strength comparisons now consume one canonical shared BTC snapshot per scan. The 1H/4H shared fetch retains 401 raw rows to provide at least 400 closed rows when the current candle is open; unrelated pair-scan limits are not increased.
+- Short per-symbol BTC history can no longer overwrite the warmed shared BTC frame. The same canonical snapshot is attached to the latest read-only analysis map used by the direct symbol-analysis path.
+- A prior valid snapshot may be shown for diagnostics with its timestamp and stale state, but cannot validate a current Spot-Long entry. The report distinguishes technical BEARISH context from incomplete/stale data and from unavailable forecasts.
+- Forecast outcomes resolve only against the exact target-candle timestamp. A missing target candle after the horizon is marked `DATA_GAP`; a later candle is not silently substituted for the promised horizon.
+- The optional 1D BTC frame is supplementary: a 1D fetch failure does not invalidate otherwise valid 1H/4H macro evidence.
+
+## Opportunity funnel and rejection evidence
+- The A86 candidate funnel now exposes one primary exit reason per analyzed symbol, with separate statuses for not-yet-eligible/early setup, missing or stale data, quality floor, ranking floor, cost/Net-RR economics, MTF direction, relative strength, BTC reference exclusion, and qualified candidates.
+- Funnel totals reconcile to analyzed symbols. Any unresolved remainder is explicitly counted as `UNATTRIBUTED`; the report emits one canonical funnel summary instead of repeating equivalent rows.
+- The existing admission floors remain unchanged (quality 55, ranking 45, Net RR TP1 1.20, bullish 1H/4H and positive 1H/4H BTC-relative strength). The stricter upstream EARLY_SETUP classification is exposed instead of being hidden or bypassed.
+- HTF rejection Shadow now distinguishes missing/non-finite evidence from an observed numeric strength below the floor. This is diagnostic/counterfactual only; no HTF, liquidity, spread, score, or risk gate is relaxed.
+- A research-only relative-strength cohort separately marks symbols whose BTC-relative strength is positive while their absolute local return is not positive. The baseline qualification policy is not changed by this comparison.
+
+## Conservative Paper execution model
+- `READY_NOW` no longer creates an immediate assumed fill. It waits for a later closed candle and uses a clearly named next-bar-open market proxy with a chase guard. `WAITING_FOR_ENTRY` requires the actual limit price to be touched; merely entering the wider suggested zone is not a fill.
+- Simulated fill quantity is capped by a configurable fraction of candle quote volume. This is a conservative OHLCV participation proxy, not a real MEXC order-book queue, exchange fill, or proof of executable capacity.
+- Every plan is bounded by creation/entry/expiry timestamps. Candles before plan creation, before the fill event, or after expiry cannot resolve the simulated trade. Unfilled orders expire; data gaps remain data gaps.
+- Baseline evaluation uses a full TP1 exit. A separate counterfactual models a fixed partial TP1 allocation and the remaining quantity to TP2/stop/time exit. Same-candle stop/target ambiguity is resolved stop-first in the conservative baseline and remains visibly flagged.
+- Normal and stressed costs are recorded separately. Performance reports expose attempted/eligible/inserted/duplicate/rejected counts, filled and average fill ratios, resolved samples, independent days, Net R, Net USDT, max drawdown, strategy/regime/timeframe groups, and a chronological descriptive split. The split is explicitly not an untouched holdout proof; sample sizes below the configured floor remain `INSUFFICIENT_SAMPLE`.
+- Paper data is partitioned into `RESEARCH`, `QUALIFIED`, `DELIVERED`, and `RS_ONLY_ABSOLUTE_WEAK` cohorts. These cohorts prevent outcomes for unqualified research plans from being mistaken for the results of opportunities that were qualified or actually delivered.
+
+## Telegram, scheduler and coverage observability
+- The A86 report fingerprint emphasizes material decision, macro/data-integrity and opportunity-qualification changes; routine scan-count fluctuations are left to the periodic report. Material updates have a configurable minimum gap.
+- Reports are split at complete section/line boundaries rather than blindly truncating at a character count. The build revision is shown in the report.
+- Queue admission (`QUEUED`) is not considered delivery. Candidate `DELIVERED` Paper cohort rows and the report's delivered state require Telegram API success callbacks for every relevant message chunk; failed or partially acknowledged sends remain distinguishable.
+- The daily Micro report records its Cairo-local reporting window, scheduler run/selection/fetch/process outcomes, first/last event evidence and database-backed evaluation rows. It distinguishes no scheduler run, empty selection, selected-but-not-fetched, fetched-without-evaluation, and evaluation/write outcomes rather than interpreting all zero rows as the same failure.
+- Radar coverage includes unique deep-analyzed symbols over the rolling 24-hour window, analysis age and timeframe fetch-failure rates. Existing bounded rotation and priorities remain; the advertised 500-symbol radar universe is not represented as 500 deep OHLCV analyses per cycle.
+
+## Safety and limitations
+- `MONITOR_ONLY_NO_NEW_BUYS` remains active. A89 adds no exchange order path or execution authority and does not weaken forbidden-asset, Spot-only, spread, fee, liquidity, HTF, position-protection, reconciliation, or circuit-breaker controls.
+- The Paper model remains a candle-based proxy. It cannot prove order-book queue position, partial fills at the matching engine, actual fee tier, real Telegram delivery outside ACK callbacks, MEXC authenticated connectivity, realized wallet PnL or profitability. No strategy has been promoted based on these changes.

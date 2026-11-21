@@ -1741,21 +1741,55 @@ class V702IntradayShadow:
                 scheduler_reason_rows = conn.execute("""SELECT reason,COUNT(*) FROM v702_intraday_shadow_scheduler
                     WHERE event_ts>=? AND event_ts<? AND reason!='' GROUP BY reason ORDER BY COUNT(*) DESC LIMIT 5""",
                     (day_start,day_end)).fetchall()
+                scheduler_bounds = conn.execute("""SELECT MIN(event_ts),MAX(event_ts),COUNT(*)
+                    FROM v702_intraday_shadow_scheduler WHERE event_ts>=? AND event_ts<?""",
+                    (day_start,day_end)).fetchone()
+                scheduler_last = conn.execute("""SELECT event_type,event_ts,reason,selected_count,fetched_count,
+                    processed_count,failed_count FROM v702_intraday_shadow_scheduler
+                    WHERE event_ts>=? AND event_ts<? ORDER BY event_ts DESC LIMIT 1""",
+                    (day_start,day_end)).fetchone()
+                _scheduler_first_ts = float(scheduler_bounds[0]) if scheduler_bounds and scheduler_bounds[0] is not None else None
+                _scheduler_last_ts = float(scheduler_bounds[1]) if scheduler_bounds and scheduler_bounds[1] is not None else None
+                _scheduler_last_event = ({"event_type":str(scheduler_last[0]),"event_ts":float(scheduler_last[1]),
+                    "reason":str(scheduler_last[2] or ""),"selected":int(scheduler_last[3] or 0),
+                    "fetched":int(scheduler_last[4] or 0),"processed":int(scheduler_last[5] or 0),
+                    "failed":int(scheduler_last[6] or 0)} if scheduler_last else None)
                 # Each stage records the same symbols for traceability. Aggregate
                 # totals must count one authoritative stage only, or selected/fetched
                 # counts are multiplied by selection + start + completion events.
                 _selected_stage=scheduler_by_type.get("BATCH_SELECTED",{})
                 _completed_stage=scheduler_by_type.get("BATCH_COMPLETED",{})
                 _failed_stage=scheduler_by_type.get("BATCH_FAILED",{})
+                _selected_count=int(_selected_stage.get("selected",0) or 0)
+                _fetched_count=int(_completed_stage.get("fetched",0) or 0)
+                _processed_count=int(_completed_stage.get("processed",0) or 0)
+                _eval_total=sum(int(v.get("evaluations",0) or 0) for v in strategy_rows.values())
+                if not scheduler_by_type:
+                    _scheduler_diagnosis="NO_SCHEDULER_RUN_RECORDED_IN_REPORT_WINDOW"
+                elif _selected_count<=0:
+                    _scheduler_diagnosis="SCHEDULER_RAN_EMPTY_SELECTION"
+                elif _fetched_count<=0:
+                    _scheduler_diagnosis="SELECTED_BUT_NOT_FETCHED"
+                elif _eval_total<=0:
+                    _scheduler_diagnosis="FETCHED_BUT_NO_EVALUATION_ROWS_RECORDED"
+                else:
+                    _scheduler_diagnosis="EVALUATION_ACTIVITY_RECORDED"
                 scheduler = {"status":"RECORDED" if scheduler_by_type else "NO_SCHEDULER_EVENTS",
-                    "by_event_type":scheduler_by_type,
+                    "diagnosis":_scheduler_diagnosis,"by_event_type":scheduler_by_type,
                     "top_reasons":{str(reason):int(count) for reason,count in scheduler_reason_rows},
                     "event_count":sum(v["events"] for v in scheduler_by_type.values()),
-                    "selected_count":int(_selected_stage.get("selected",0) or 0),
-                    "fetched_count":int(_completed_stage.get("fetched",0) or 0),
-                    "processed_count":int(_completed_stage.get("processed",0) or 0),
-                    "failed_count":int(_completed_stage.get("failed",0) or 0)+int(_failed_stage.get("events",0) or 0)}
-                payload = {"schema_version": 3, "report_date": report_day.isoformat(), "timezone": tz_name,
+                    "selected_count":_selected_count,"fetched_count":_fetched_count,
+                    "processed_count":_processed_count,
+                    "failed_count":int(_completed_stage.get("failed",0) or 0)+int(_failed_stage.get("events",0) or 0),
+                    "window_start_ts":day_start,"window_end_ts":day_end,
+                    "window_start_local":datetime.fromtimestamp(day_start,tz=tz).isoformat(),
+                    "window_end_local":datetime.fromtimestamp(day_end,tz=tz).isoformat(),
+                    "first_event_ts":_scheduler_first_ts,"last_event_ts":_scheduler_last_ts,
+                    "last_event":_scheduler_last_event,
+                    "sqlite_scheduler_rows_present":bool(scheduler_bounds and int(scheduler_bounds[2] or 0)>0),
+                    "sqlite_write_evidence_scope":"RETAINED_SCHEDULER_ROWS_ONLY_NOT_PROOF_OF_ALL_RUNTIME_ATTEMPTS",
+                    "evaluation_rows_for_window":int(_eval_total)}
+                payload = {"schema_version": 4, "report_date": report_day.isoformat(), "timezone": tz_name,
                            "mode": "SHADOW_ONLY_NO_ORDERS", "strategies": strategy_rows,
                            "scheduler":scheduler,
                            "totals": {"signals_created": sum(x["signals_created"] for x in strategy_rows.values()),

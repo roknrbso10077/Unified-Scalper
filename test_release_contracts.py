@@ -1632,7 +1632,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
                 finally:
                     conn.close()
         self.assertEqual(result["recorded"],1)
-        self.assertEqual(saved["status"],"OPEN")
+        self.assertEqual(saved["status"],"WAITING_ENTRY")
         self.assertAlmostEqual(saved["notional_usdt"],50.0)
         self.assertIsNone(saved["outcome_status"])
         self.assertFalse(result["execution_authority"])
@@ -1711,7 +1711,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
             updated = bot.A85MarketIntelligence._paper_update_market({"SOL/USDT": future_md}, now=future_now)
             conn = bot.A85MarketIntelligence._connect()
             try:
-                saved = conn.execute("SELECT status,outcome_status,outcome_net_r,outcome_net_return_pct FROM a85_paper_ledger").fetchone()
+                saved = conn.execute("SELECT status,outcome_status,outcome_net_r,outcome_net_return_pct,ambiguous_flag,partial_exit_state FROM a85_paper_ledger").fetchone()
             finally:
                 conn.close()
         return recorded, updated, dict(saved)
@@ -1723,8 +1723,9 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
             recorded, updated, saved = self._a86_paper_resolution_fixture(db, ambiguous=False)
         self.assertEqual(recorded["recorded"], 1)
         self.assertEqual(updated["updated"], 1)
-        self.assertEqual(saved["status"], "TP1")
+        self.assertEqual(saved["status"], "TP1_REMAINDER_OPEN")
         self.assertEqual(saved["outcome_status"], "TP1")
+        self.assertEqual(saved["partial_exit_state"], "REMAINDER_OPEN")
         self.assertIsNotNone(saved["outcome_net_r"])
         self.assertGreater(saved["outcome_net_r"], 0)
         self.assertFalse(updated["execution_authority"])
@@ -1738,10 +1739,12 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
                 performance = bot.A85MarketIntelligence.paper_performance()
         self.assertEqual(recorded["recorded"], 1)
         self.assertEqual(updated["updated"], 1)
-        self.assertEqual(saved["status"], "AMBIGUOUS")
-        self.assertEqual(saved["outcome_status"], "AMBIGUOUS")
-        self.assertIsNone(saved["outcome_net_r"])
-        self.assertEqual(performance["sample_count"], 0)
+        self.assertEqual(saved["status"], "SL")
+        self.assertEqual(saved["outcome_status"], "SL")
+        self.assertEqual(saved["ambiguous_flag"], 1)
+        self.assertLess(saved["outcome_net_r"], 0)
+        self.assertEqual(performance["sample_count"], 1)
+        self.assertEqual(performance["ambiguous_rows"], 1)
         self.assertFalse(updated["execution_authority"])
 
     def test_a86_paper_ledger_closes_unobserved_rows_without_fabricating_performance(self):
@@ -1774,10 +1777,155 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
                 performance = bot.A85MarketIntelligence.paper_performance()
         self.assertEqual(recorded["recorded"], 2)
         self.assertEqual(updated["updated"], 2)
-        self.assertEqual(statuses["SOL/USDT"], ("DATA_GAP", "DATA_GAP", None))
+        self.assertEqual(statuses["SOL/USDT"], ("EXPIRED", "EXPIRED", None))
         self.assertEqual(statuses["AVAX/USDT"], ("EXPIRED", "EXPIRED", None))
         self.assertEqual(performance["sample_count"], 0)
         self.assertFalse(updated["execution_authority"])
+
+    def test_a89_canonical_btc_snapshot_never_falls_back_to_short_pair_history(self):
+        now = bot.WALL_NOW()
+        shared_1h = self._frame(3600, now, seed=31)
+        shared_4h = self._frame(14400, now, seed=32)
+        local_1h = shared_1h.tail(260).copy()
+        local_4h = shared_4h.tail(220).copy()
+        market_map = {"BTC/USDT": {"df_1h": local_1h, "df_4h": local_4h,
+                                   "df_btc_1h": shared_1h, "df_btc_4h": shared_4h}}
+        snapshot = bot.A85MarketIntelligence._canonical_btc_market_data(market_map)
+        self.assertIs(snapshot["df_1h"], shared_1h)
+        self.assertIs(snapshot["df_4h"], shared_4h)
+        self.assertEqual(snapshot["_canonical_btc_raw_counts"]["1H"], 401)
+        self.assertEqual(snapshot["_canonical_btc_raw_counts"]["4H"], 401)
+        self.assertEqual(snapshot["_canonical_btc_source"], "DEDICATED_SHARED_BTC_CONTEXT")
+
+    def test_a89_forecast_missing_exact_target_candle_is_recorded_as_data_gap(self):
+        import tempfile
+        now = bot.WALL_NOW()
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a89-forecast-gap.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db}, clear=False):
+                bot.A85MarketIntelligence._ensure_schema()
+                frame = self._frame(900, now, seed=41)
+                missing_target = int(frame.index[-80].timestamp())
+                frame = frame.drop(bot.pd.to_datetime(missing_target, unit="s", utc=True))
+                conn = bot.A85MarketIntelligence._connect()
+                try:
+                    conn.execute("""INSERT INTO a85_forecast_ledger
+                        (symbol,horizon,candle_ts,target_ts,reference_price,forecast_label,bull_score,bear_score,range_score,range_band_pct,created_at)
+                        VALUES('BTC/USDT','15M',?,?,?,?,?,?,?,?,?)""",
+                        (missing_target - 900, missing_target, 100.0, "BULLISH", 50.0, 25.0, 25.0, 0.2, now - 1800))
+                    conn.commit()
+                finally:
+                    conn.close()
+                resolved = bot.A85MarketIntelligence._resolve_forecast_rows(frame, "15M", 900, now=now)
+                conn = bot.A85MarketIntelligence._connect()
+                try:
+                    row = conn.execute("SELECT resolved_label,future_return_pct FROM a85_forecast_ledger WHERE symbol='BTC/USDT' AND horizon='15M'").fetchone()
+                finally:
+                    conn.close()
+        self.assertEqual(resolved, 1)
+        self.assertEqual(row[0], "DATA_GAP")
+        self.assertIsNone(row[1])
+
+    def test_a89_ready_now_paper_plan_waits_for_a_future_bar_before_fill(self):
+        import tempfile
+        now = bot.WALL_NOW()
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a89-next-bar.sqlite3")
+            plan = {"economic_pass": True, "preferred_entry": 102.0, "stop_loss": 98.0,
+                    "entry_zone_low": 101.8, "entry_zone_high": 102.2,
+                    "entry_expiry_ts": now + 3600, "round_trip_cost_pct": 0.2,
+                    "risk_pct_including_costs": 4.1,
+                    "targets": [{"price": 104.0}, {"price": 106.0}],
+                    "paper_sizing": {"suggested_position_size_usdt": 50.0}}
+            row = {"symbol": "SOL/USDT", "status": "READY_NOW", "primary_strategy": "PULLBACK",
+                   "market_regime": "BULLISH", "candle_ts": int(now // 60) * 60 - 60,
+                   "analyzed_at": now, "plan": plan}
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_PAPER_LEDGER_ENABLE": True}, clear=False):
+                recorded = bot.A85MarketIntelligence._paper_record_rows([row], now=now, cohort="QUALIFIED")
+                conn = bot.A85MarketIntelligence._connect()
+                try:
+                    saved = conn.execute("SELECT status,entry_filled_at,fill_ratio,source_status FROM a85_paper_ledger").fetchone()
+                    run = conn.execute("SELECT attempted,eligible,inserted,duplicate,rejected FROM a85_paper_cohort_runs WHERE cohort='QUALIFIED'").fetchone()
+                finally:
+                    conn.close()
+        self.assertEqual(recorded["inserted"], 1)
+        self.assertEqual(saved[0], "WAITING_ENTRY")
+        self.assertIsNone(saved[1])
+        self.assertEqual(saved[2], 0.0)
+        self.assertEqual(saved[3], "READY_NOW")
+        self.assertEqual(tuple(run), (1, 1, 1, 0, 0))
+        self.assertFalse(recorded["execution_authority"])
+
+
+    def test_a89_brain_report_is_delivered_only_after_all_api_ack_callbacks(self):
+        import tempfile
+        from unittest.mock import patch
+        market={"timestamp":1000.0,"regime":{"regime":"BEARISH","btc":{"1H":"BEARISH","4H":"BEARISH"}},
+                "btc_forecast":{"horizons":{}},"btc_trade_levels":{"status":"DATA_INCOMPLETE"},
+                "a86_decision":{"action":"WAIT_FOR_LONG_CONFIRMATION","display_ar":"انتظر","reason":"bearish"},
+                "decision_candidates":[],"fast_scan_available_symbols":10,"radar_considered_symbols":10,
+                "deep_analyzed_symbols":3,"paper_ledger_cycle":{"record":{"recorded":0,"status":"OK"}}}
+        with tempfile.TemporaryDirectory() as td:
+            db=str(Path(td)/"a89-delivery-ack.sqlite3")
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            async def acking_enqueue(_body,on_success=None,on_failure=None):
+                if callable(on_success): on_success("synthetic_telegram_api_success_ack")
+                return True
+            async def run():
+                with patch.dict(bot.CONFIG,{"DB_PATH":db,"TELEGRAM_ENABLED":True,"A86_AUTO_BRAIN_REPORT_ENABLE":True,
+                    "A86_AUTO_BRAIN_REPORT_INTERVAL_SEC":900},clear=False), \
+                     patch.dict(bot.ENV,{"TELEGRAM_TOKEN":"TEST_TOKEN","TELEGRAM_CHAT":"123"},clear=False), \
+                     patch.object(bot.A85MarketIntelligence,"market_snapshot",return_value=market), \
+                     patch.object(bot.TelegramDispatcher,"enqueue",new=acking_enqueue), \
+                     patch.object(bot,"WALL_NOW",return_value=1000.0):
+                    return await bot._v702_a86_publish_brain_report()
+            result=asyncio.run(run())
+            with patch.dict(bot.CONFIG,{"DB_PATH":db},clear=False):
+                conn=bot.A85MarketIntelligence._connect()
+                try: row=conn.execute("SELECT state,parts_total,parts_delivered,parts_failed FROM a86_brain_delivery_state WHERE state_key='GLOBAL'").fetchone()
+                finally: conn.close()
+        self.assertEqual(result["status"],"DELIVERED")
+        self.assertEqual(row[0],"DELIVERED")
+        self.assertEqual(row[1],row[2])
+        self.assertEqual(row[3],0)
+
+    def test_a89_waiting_limit_does_not_fill_from_entry_zone_touch_alone(self):
+        import tempfile
+        now0 = bot.WALL_NOW()
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "a89-limit-exact-touch.sqlite3")
+            base = self._market_data(now0, seed=52)
+            candle_ts = int(base["df_1m"].index[-1].timestamp())
+            row = {"symbol": "AVAX/USDT", "status": "WAITING_FOR_ENTRY", "primary_strategy": "PULLBACK",
+                   "market_regime": "RANGE", "candle_ts": candle_ts, "analyzed_at": now0,
+                   "plan": {"economic_pass": True, "preferred_entry": 102.0, "stop_loss": 98.0,
+                            "entry_zone_low": 102.2, "entry_zone_high": 102.5,
+                            "entry_expiry_ts": now0 + 3600, "round_trip_cost_pct": 0.2,
+                            "risk_pct_including_costs": 4.1, "targets": [{"price": 104.0}],
+                            "paper_sizing": {"suggested_position_size_usdt": 50.0}}}
+            bot.A85MarketIntelligence._schema_paths.discard(db)
+            with patch.dict(bot.CONFIG, {"DB_PATH": db, "A85_PAPER_LEDGER_ENABLE": True}, clear=False):
+                recorded = bot.A85MarketIntelligence._paper_record_rows([row], now=now0, cohort="RESEARCH")
+                future_now = now0 + 180.0
+                future = self._frame(60, future_now, seed=53)
+                mask = future.index > bot.pd.to_datetime(candle_ts, unit="s", utc=True)
+                future.loc[mask, "open"] = 102.4
+                future.loc[mask, "high"] = 102.5
+                future.loc[mask, "low"] = 102.3
+                future.loc[mask, "close"] = 102.4
+                future.loc[mask, "volume"] = 100000.0
+                bot.A85MarketIntelligence._paper_update_market({"AVAX/USDT": {"df_1m": future}}, now=future_now)
+                conn = bot.A85MarketIntelligence._connect()
+                try:
+                    saved = conn.execute("SELECT status,entry_filled_at,fill_ratio FROM a85_paper_ledger WHERE symbol='AVAX/USDT'").fetchone()
+                finally:
+                    conn.close()
+        self.assertEqual(recorded["inserted"], 1)
+        self.assertEqual(saved[0], "WAITING_ENTRY")
+        self.assertIsNone(saved[1])
+        self.assertEqual(saved[2], 0.0)
 
     def test_a86_500_pair_radar_is_bounded_to_available_verified_tickers(self):
         import tempfile
@@ -1953,7 +2101,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
                      patch.dict(bot.ENV, {"TELEGRAM_TOKEN": "TEST_TOKEN", "TELEGRAM_CHAT": "123"}, clear=False), \
                      patch.object(bot.A85MarketIntelligence, "market_snapshot", return_value=market), \
                      patch.object(bot.TelegramDispatcher, "enqueue", new=enqueue), \
-                     patch.object(bot, "WALL_NOW", side_effect=[1000.0, 1001.0]):
+                     patch.object(bot, "WALL_NOW", return_value=1000.0):
                     first = await bot._v702_a86_publish_brain_report()
                     second = await bot._v702_a86_publish_brain_report()
                     return first, second
@@ -1985,6 +2133,8 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         now=bot.WALL_NOW()
         market={"BTC/USDT":self._market_data(now,seed=72),"ETH/USDT":self._market_data(now,seed=74)}
         market["BTC/USDT"]["df_4h"]=market["BTC/USDT"]["df_4h"].tail(180)
+        market["BTC/USDT"]["df_btc_1h"]=market["BTC/USDT"]["df_1h"]
+        market["BTC/USDT"]["df_btc_4h"]=market["BTC/USDT"]["df_4h"]
         result=bot.A85MarketIntelligence._macro_context(market,now)
         self.assertEqual(result.get("regime"),"UNKNOWN")
         self.assertEqual(result.get("reason"),"BTC_EMA200_HISTORY_INSUFFICIENT")
@@ -1994,10 +2144,11 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         now=bot.WALL_NOW()
         market={"BTC/USDT":self._market_data(now,seed=73),"ETH/USDT":self._market_data(now,seed=75)}
         # Shift both BTC frames far enough into the past while retaining all 400 bars.
-        for key,interval in (("df_1h",3600),("df_4h",14400)):
+        for key,shared_key,interval in (("df_1h","df_btc_1h",3600),("df_4h","df_btc_4h",14400)):
             frame=market["BTC/USDT"][key].copy()
             frame.index=frame.index-(bot.pd.Timedelta(seconds=interval*1.5))
             market["BTC/USDT"][key]=frame
+            market["BTC/USDT"][shared_key]=frame
         result=bot.A85MarketIntelligence._macro_context(market,now)
         self.assertEqual(result.get("regime"),"UNKNOWN")
         self.assertEqual(result.get("reason"),"BTC_CLOSED_CANDLE_STALE")
@@ -2032,7 +2183,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
             db=str(Path(td)/"a88-concurrent.sqlite3")
             bot.A85MarketIntelligence._schema_paths.discard(db)
             calls=[]
-            async def slow_enqueue(_body):
+            async def slow_enqueue(_body, **callbacks):
                 calls.append(_body)
                 await asyncio.sleep(0.03)
                 return True
@@ -2043,7 +2194,7 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
                      patch.dict(bot.ENV,{"TELEGRAM_TOKEN":"TEST_TOKEN","TELEGRAM_CHAT":"123"},clear=False), \
                      patch.object(bot.A85MarketIntelligence,"market_snapshot",return_value=market), \
                      patch.object(bot.TelegramDispatcher,"enqueue",new=enqueue), \
-                     patch.object(bot,"WALL_NOW",side_effect=[1000.0,1000.1]):
+                     patch.object(bot,"WALL_NOW",return_value=1000.0):
                     return await asyncio.gather(bot._v702_a86_publish_brain_report(),bot._v702_a86_publish_brain_report())
             results=asyncio.run(run())
         self.assertEqual(enqueue.await_count,1)

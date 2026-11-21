@@ -355,6 +355,7 @@ class V702CounterfactualShadow:
                 "phase": _text(snap.get("market_phase") or getattr(c, "market_phase", ""), 40),
                 "engine_id": _text(getattr(c, "engine_id", ""), 48),
                 "spread_pct": spread_value,
+                "htf_strength_data_status": _text(snap.get("htf_strength_data_status") or ("OBSERVED_NUMERIC" if strength is not None else "MISSING_OR_NONFINITE"), 40),
                 "target_policy": "UNIFIED_COST_MODEL_V65" if bool(cfg.get("V702_SMALL_NET_PROFIT_MODE_ENABLE", False)) else "CANDIDATE_TP1_RR",
                 "candidate_tp1_rr_original": original_rr,
                 "candidate_tp1_rr_projected": rr,

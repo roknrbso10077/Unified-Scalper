@@ -407,7 +407,7 @@ class IntradayShadowTests(unittest.TestCase):
                  post_cost_viable,quote_volume_24h,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
         report = self.study.ensure_daily_telegram_report(now_ts=report_due)
         self.assertIsNotNone(report)
-        self.assertEqual(report["payload"].get("schema_version"), 3)
+        self.assertEqual(report["payload"].get("schema_version"), 4)
         micro = report["payload"]["strategies"]["MICRO_MOMENTUM_1M"]
         self.assertEqual(micro["evaluations"], 2)
         self.assertEqual(micro["evaluation_rejections"], 1)
