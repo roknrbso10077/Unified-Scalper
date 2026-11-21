@@ -801,3 +801,23 @@ No authenticated MEXC private API, real order/fill, private account fee retrieva
 - `py_compile`: **73/73 packaged Python files passed**; `compileall` also completed successfully.
 - Final artifact inventory is preserved at **99 unique original paths**, with 12 existing files modified and no files added or removed. SHA-256 ledger contains 98 non-self entries; final ZIP CRC and clean-extraction verification passed with all 99 paths and 98 hashes matching.
 - Test execution was offline and deterministic. No authenticated MEXC request, real Telegram network send, exchange order, matching-engine fill, wallet PnL, long-duration deployment soak or profitability was tested or established.
+
+# A90 final production audit — 2026-11-21
+
+## Scope implemented
+- Fixed spread-rejection compaction so operator digests retain the measured spread, full ceiling and liquidity tier as numeric evidence. A reason such as `spread=0.4002%>ceil=0.3000%:tier=MICRO` now remains fully readable and cannot be misrepresented as `ceil=0` by a mid-token truncation.
+- Enriched A85 rejection details with observed versus required quote volume, A85 spread ceiling and tier, book freshness/age/depth, structural entry/stop/risk values, and the resistance clearance required for TP1. These fields improve root-cause attribution only; no liquidity, spread, structural-risk, economics, quality, ranking, MTF, RS or protection thresholds were relaxed.
+- Split the A86 funnel's qualified total into `READY_NOW` and `WAITING_FOR_ENTRY` sub-counts, retaining the same admission checks, total qualified count and one-primary-outcome accounting per analyzed symbol.
+- Marked A85 rolling deep-coverage figures as persisted A85 snapshots only and explicitly distinguished them from the independent A9 Micro 1M/5M fetch/evaluation store. A9 cumulative evaluation totals now include retained row count and first/last UTC timestamps; the previous-Cairo-day daily report remains a separate date-scoped window.
+- Made the adaptive RS Pullback timeframe contract explicit: 15m context with a 5m trigger. The strategy's existing signal logic is unchanged.
+
+## A90 regression and release validation
+- Packaged regression: **58 test modules / 676 collected; 675 passed, 1 historical skip, 0 failed**. Seven non-overlapping isolated batches passed with counts **63, 49, 64, 74, 159, 55 and 211**. The single skip is the historical A51 log-fixture test; that runtime log is not bundled in the source archive.
+- Focused A24/A85/A9/release-contract tests: **139 passed, 1 historical skip, 0 failed**. These results overlap with the full regression total and are not added a second time.
+- `python -m compileall -q .`: all **73/73 packaged Python files** passed. `python main.py --validate-only`: **exit 0**, `bot_started=false`, `live_threads=[]`.
+- Final delivery contains **99 unique original archive paths**, **0 added**, **0 removed**; 11 existing files are modified. The SHA-256 ledger covers 98 non-self files. ZIP CRC, clean extraction, manifest inventory and all 98 ledger entries are verified in the delivered artifact.
+
+## Safety and limitations
+- `MONITOR_ONLY_NO_NEW_BUYS` remains active. No live selector/entry/execution authority was added, no order was submitted, and no hard gate was weakened.
+- Paper/Shadow outcomes remain research evidence, not MEXC queue/fill simulation, realized wallet PnL or proof of profitability. The paper sample still requires at least 30 resolved observations and independent-day coverage plus later holdout validation.
+- No authenticated MEXC private API, real Telegram network delivery, real order/fill, wallet PnL, Docker/Render/Railway load test or long-duration deployment soak was performed.

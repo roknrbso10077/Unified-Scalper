@@ -1536,7 +1536,7 @@ class V702IntradayShadow:
         try:
             with self._db() as conn:
                 sample_rows = conn.execute("SELECT strategy_mode,status,net_r,net_pct,gross_r,created_ts,resolved_ts,note,cost_pct,features_json,tp1_hit FROM v702_intraday_shadow_samples ORDER BY created_ts ASC").fetchall()
-                eval_rows = conn.execute("SELECT strategy_mode,outcome,reason,cost_pct,post_cost_viable,quote_volume_24h,features_json FROM v702_intraday_shadow_evaluations ORDER BY evaluated_ts ASC").fetchall()
+                eval_rows = conn.execute("SELECT strategy_mode,outcome,reason,cost_pct,post_cost_viable,quote_volume_24h,features_json,evaluated_ts FROM v702_intraday_shadow_evaluations ORDER BY evaluated_ts ASC").fetchall()
                 pending = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples WHERE status='PENDING'").fetchone()[0])
                 total = int(conn.execute("SELECT COUNT(*) FROM v702_intraday_shadow_samples").fetchone()[0])
                 alert_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_alerts GROUP BY state").fetchall()
@@ -1545,6 +1545,27 @@ class V702IntradayShadow:
                 outcome_states = {str(k): int(v) for k, v in outcome_state_rows}
                 daily_state_rows = conn.execute("SELECT state,COUNT(*) FROM v702_intraday_shadow_daily_outbox GROUP BY state").fetchall()
                 daily_states = {str(k): int(v) for k, v in daily_state_rows}
+            _eval_ts = [float(r[7]) for r in eval_rows if r[7] is not None]
+            _eval_first = min(_eval_ts) if _eval_ts else None
+            _eval_last = max(_eval_ts) if _eval_ts else None
+            report["evaluation_coverage"] = {
+                "scope": "RETAINED_DB_ALL_DATES_NOT_DAILY_REPORT_WINDOW",
+                "row_count": len(eval_rows),
+                "first_evaluated_epoch": _eval_first,
+                "last_evaluated_epoch": _eval_last,
+                "first_evaluated_utc": datetime.fromtimestamp(_eval_first, tz=ZoneInfo("UTC")).isoformat() if _eval_first is not None else None,
+                "last_evaluated_utc": datetime.fromtimestamp(_eval_last, tz=ZoneInfo("UTC")).isoformat() if _eval_last is not None else None,
+                "span_seconds": max(0.0, _eval_last - _eval_first) if _eval_first is not None and _eval_last is not None else None,
+                "max_retained_rows": int(max(1000, min(200000, _num(self._cfg().get("V702_INTRADAY_SHADOW_MAX_ROWS"), 50000) or 50000))),
+                "timezone": "UTC",
+            }
+            report["strategy_timeframe_contracts"] = {
+                "MICRO_MOMENTUM_1M": {"signal_timeframe": "1m", "context_timeframe": None},
+                "MICRO_SWEEP_RECLAIM_1M": {"signal_timeframe": "1m", "context_timeframe": None},
+                "MICRO_PULLBACK_RECLAIM_1M": {"signal_timeframe": "1m", "context_timeframe": None},
+                "VWAP_RECLAIM_RS_5M": {"signal_timeframe": "5m", "context_timeframe": None},
+                "ADAPTIVE_RS_PULLBACK_15M": {"signal_timeframe": "5m", "context_timeframe": "15m"},
+            }
             all_eval_signals = all_eval_rejects = all_eval_skips = all_eval_count = 0
             for mode in STRATEGIES:
                 subset = [r for r in sample_rows if r[0] == mode]

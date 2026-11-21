@@ -28332,6 +28332,9 @@ async def run_bot(universe: List[str]):
                             logger.info("[V702-A9-DAILY-TG] queued=%d blocked=%d timezone=%s", _daily_tg_queued, _daily_tg_blocked, CONFIG.get("V702_INTRADAY_SHADOW_DAILY_TIMEZONE", "Africa/Cairo"))
 
                         _report = await asyncio.to_thread(_service.periodic_report_if_due)
+                        _eval_coverage = (_report.get("evaluation_coverage") or {}) if isinstance(_report, dict) else {}
+                        if _eval_coverage:
+                            STATS["v702_a9_engine_evaluation_coverage"] = dict(_eval_coverage)
                         return {
                             "v702_intraday_shadow_fetch_ok": _ok_count,
                             "v702_intraday_shadow_fetch_fail": _fail_count,
@@ -28417,7 +28420,7 @@ async def run_bot(universe: List[str]):
                                 }
                                 logger.info(
                                     "[V702-A9-ENGINE] name=%s timeframe=%s mode=SHADOW_ONLY_NO_ORDERS eval=%d signals=%d rejects=%d skipped=%d viable_after_cost=%d capped_after_cost=%d avg_cost_pct=%s samples=%d resolved=%d pending=%d net_win_rate=%s expectancy_net_R=%s median_net_R=%s profit_factor_net_R=%s max_drawdown_R=%s sample_quality=%s reasons=%s",
-                                    _label, "5m" if _code in {"VWAP_RECLAIM_RS_5M", "ADAPTIVE_RS_PULLBACK_15M"} else "1m",
+                                    _label, "5m(trigger)+15m(context)" if _code == "ADAPTIVE_RS_PULLBACK_15M" else ("5m" if _code == "VWAP_RECLAIM_RS_5M" else "1m"),
                                     int(_m.get("evaluations", 0) or 0), int(_m.get("signals", 0) or 0),
                                     int(_m.get("rejections", 0) or 0), int(_m.get("skipped_evaluations", 0) or 0),
                                     int(_m.get("post_cost_target_viable_signals", 0) or 0), int(_m.get("post_cost_target_capped_signals", 0) or 0),
@@ -89871,6 +89874,19 @@ def _v702_reason_summary_token(reason: Any, width: int = 32) -> str:
             # Compact but actionable: unlike a hashed prefix, this exposes the
             # measured TP1/ATR distance and the exact family floor.
             return f"tp1_floor:{_tp1_match.group(1)}<{_tp1_match.group(2)}"
+        # Preserve the measured spread and configured ceiling as complete numeric
+        # tokens. Generic prefix truncation used to cut after ``ceil=0`` and made
+        # a valid 0.30% ceiling look like a zero-percent limit in operator digests.
+        _spread_match = re.search(
+            r"spread(?:_pct)?=([0-9]+(?:\.[0-9]+)?)%>(?:ceil|ceiling)=([0-9]+(?:\.[0-9]+)?)%(?::tier=([A-Z0-9_ -]+))?",
+            raw, re.IGNORECASE,
+        )
+        if _spread_match:
+            _tier = re.sub(r"[^A-Z0-9_-]+", "", str(_spread_match.group(3) or "").upper())
+            _token = f"spread:{_spread_match.group(1)}>{_spread_match.group(2)}"
+            if _tier:
+                _token += f":{_tier}"
+            return _token[:width]
         if raw == "score_below_feasible_floor" or raw.startswith("score_below_feasible_floor:"):
             return "score_below_feasible_floor"[:width]
         if len(raw) <= width:
@@ -106465,7 +106481,14 @@ def _v702_a75_digest_postprocess(cls, base):
                           ("adaptive_rs_pullback_15m", "ADAPTRS15m")):
         _em = STATS.get("v702_a9_engine_" + _code) if isinstance(STATS.get("v702_a9_engine_" + _code), dict) else {}
         _a79_engine_parts.append(f"{_label}={int(_em.get('evaluations', 0) or 0)}/{int(_em.get('signals', 0) or 0)}/{int(_em.get('rejections', 0) or 0)}")
-    _a79_engine_line = "A9 eval/signal/reject " + " ".join(_a79_engine_parts)
+    _a9_eval_cov = STATS.get("v702_a9_engine_evaluation_coverage") if isinstance(STATS.get("v702_a9_engine_evaluation_coverage"), dict) else {}
+    _a9_scope = "scope=unknown"
+    if _a9_eval_cov:
+        _a9_first = _a9_eval_cov.get("first_evaluated_utc") or "n/a"
+        _a9_last = _a9_eval_cov.get("last_evaluated_utc") or "n/a"
+        _a9_scope = (f"scope=RETAINED_DB_ALL_DATES rows={int(_a9_eval_cov.get('row_count',0) or 0)} "
+                     f"utc={_a9_first}..{_a9_last}")
+    _a79_engine_line = "A9 retained-DB eval/signal/reject " + " ".join(_a79_engine_parts) + " | " + _a9_scope
     section = "\n".join(("HTF/SWING", policy_line, hunter_line, _a79_cov_line, _a79_swing_line, d1_line, _a79_engine_line, cohort_line))
     try:
         limit = max(800, int(CONFIG.get("V702_R28_TELEGRAM_DIGEST_MAX_CHARS", 4200)))
@@ -108596,7 +108619,9 @@ V702_A85_DIAGNOSTIC_CLOSURE_REVISION = "A85-DEPLOY-IDENTITY-MICRO-REJECTION-AND-
 V702_A87_REVISION = "A87-ACTIONABLE-BTC-DIRECTION-PRICE-TARGETS-AND-TELEGRAM-DECISION-BRIEFING-2026-11-20"
 V702_A88_REVISION = "A88-EMA200-HISTORY-TRUTH-QUALIFIED-CANDIDATES-ATOMIC-BRAIN-DELIVERY-SHADOW-SCHEDULER-2026-11-21"
 V702_A89_REVISION = "A89-CANONICAL-BTC-FUNNEL-RECONCILIATION-EXECUTABLE-PAPER-AND-TELEGRAM-ACK-2026-11-21"
+V702_A90_REVISION = "A90-SPREAD-AND-BOOK-TRUTH-A9-HISTORY-SCOPE-AND-FUNNEL-COHERENCE-2026-11-21"
 STATS["v702_a89_revision"] = V702_A89_REVISION
+STATS["v702_a90_revision"] = V702_A90_REVISION
 STATS["v702_a88_revision"] = V702_A88_REVISION
 STATS["v702_a85_diagnostic_closure_revision"] = V702_A85_DIAGNOSTIC_CLOSURE_REVISION
 STATS["v702_a87_revision"] = V702_A87_REVISION
@@ -109345,12 +109370,15 @@ class A85MarketIntelligence:
             return {"status": "DATA_INCOMPLETE", "reason": "FRESH_EXECUTABLE_ASK_UNAVAILABLE", "book": book}
         quote_volume = cls._safe(md.get("quote_vol_24h", (md.get("ticker") or {}).get("quoteVolume")))
         core_floor = max(3_000_000.0, float(CONFIG.get("LIQUIDITY_UNIVERSE_MIN_QUOTE_VOLUME", 3_000_000.0)))
+        liquidity_tier = str(md.get("tier") or md.get("liquidity_tier") or "UNKNOWN").upper()[:24]
         if quote_volume is None or quote_volume < core_floor:
             return {"status": "REJECTED", "reason": "CORE_LIQUIDITY_FLOOR_NOT_MET", "quote_vol_24h": quote_volume,
-                    "required_quote_vol_24h": core_floor, "book": book}
+                    "required_quote_vol_24h": core_floor, "liquidity_tier": liquidity_tier, "book": book}
         spread = cls._safe(book.get("spread_pct"))
-        if spread is None or spread > float(CONFIG.get("MAX_SPREAD_PCT", 0.30)):
-            return {"status": "REJECTED", "reason": "SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN", "spread_pct": spread, "book": book}
+        spread_ceiling = max(0.0, float(CONFIG.get("MAX_SPREAD_PCT", 0.30)))
+        if spread is None or spread > spread_ceiling:
+            return {"status": "REJECTED", "reason": "SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN", "spread_pct": spread,
+                    "spread_ceiling_pct": spread_ceiling, "liquidity_tier": liquidity_tier, "book": book}
         if book.get("book_fresh"):
             notional = max(1.0, float(CONFIG.get("FIXED_POSITION_SIZE_USDT", 75.0)))
             required_depth = notional * max(1.0, float(CONFIG.get("A85_BOOK_DEPTH_MULTIPLIER", 1.5)))
@@ -109370,7 +109398,9 @@ class A85MarketIntelligence:
             return {"status": "DATA_INCOMPLETE", "reason": "INVALID_STRUCTURAL_STOP", "book": book}
         risk_pct = (entry - stop) / entry * 100.0
         if risk_pct > 4.0:
-            return {"status": "REJECTED", "reason": "STRUCTURAL_STOP_RISK_OVER_4_PERCENT", "book": book}
+            return {"status": "REJECTED", "reason": "STRUCTURAL_STOP_RISK_OVER_4_PERCENT",
+                    "entry": entry, "stop_loss": stop, "risk_pct": risk_pct,
+                    "risk_limit_pct": 4.0, "liquidity_tier": liquidity_tier, "book": book}
         if risk_pct < 0.35:
             stop = entry * (1.0 - 0.0035)
             risk_pct = (entry - stop) / entry * 100.0
@@ -109382,7 +109412,10 @@ class A85MarketIntelligence:
             ceiling = float(resistance) * 0.995
             if ceiling <= entry + risk * 1.05:
                 return {"status": "REJECTED", "reason": "RESISTANCE_TOO_CLOSE_FOR_NET_TP1", "book": book,
-                        "resistance": float(resistance)}
+                        "entry": entry, "stop_loss": stop, "risk_pct": risk_pct,
+                        "resistance": float(resistance), "resistance_ceiling": ceiling,
+                        "required_tp1_price": entry + risk * 1.05, "minimum_clearance_r": 1.05,
+                        "liquidity_tier": liquidity_tier}
             raw_targets[0] = min(raw_targets[0], ceiling)
         # Further targets prefer the next observed supply/resistance or a valid
         # swing-derived Fibonacci extension; otherwise retain R-multiple baselines.
@@ -109485,7 +109518,11 @@ class A85MarketIntelligence:
                 "risk_pct_before_costs":risk_pct,"risk_pct_including_costs": stop_cost_pct,
                 "entry_price_source":"BEST_ASK_FROM_MARKET_SNAPSHOT","exit_cost_model":"TWO_SIDE_FEES_PLUS_SPREAD_AND_TWO_SIDE_SLIPPAGE",
                 "book": book,
+                "liquidity_tier": liquidity_tier, "spread_ceiling_pct": spread_ceiling,
+                "book_fresh": bool(book.get("book_fresh")), "book_age_sec": book.get("book_age_sec"),
+                "top5_depth_usdt": book.get("book_min_depth_usdt_5"),
                 "required_top5_depth_usdt": required_depth, "quote_vol_24h": quote_volume,
+                "required_quote_vol_24h": core_floor,
                 "entry_expiry_ts": now + ttl, "invalidation_level": stop,
                 "invalidation_conditions": ["1H close below structural stop", "stale/missing order book",
                     "top-five depth falls below required notional", "15M volume confirmation fails at trigger",
@@ -110874,7 +110911,9 @@ class A85MarketIntelligence:
         now=float(now or WALL_NOW())
         out={"status":"UNAVAILABLE","window_start":now-86400.0,"window_end":now,
              "unique_symbols":0,"symbol_ages_sec":{},"timeframe_failure_rates_pct":{},
-             "rows":0,"data_source":"a85_market_intelligence"}
+             "rows":0,"data_source":"a85_market_intelligence",
+             "scope":"A85_DEEP_PERSISTED_SNAPSHOTS_ONLY",
+             "excludes":"A9_MICRO_STRATEGIES_USE_SEPARATE_SHADOW_FETCH_AND_EVALUATION_STORE"}
         try:
             cls._ensure_schema()
             with cls._db_lock:
@@ -110901,7 +110940,8 @@ class A85MarketIntelligence:
                         "oldest_symbol_age_sec":round(max((max(0.0,now-v) for v in latest.values()),default=0.0),1),
                         "timeframe_failure_rates_pct":{tf:round(tf_fail[tf]/max(1,tf_total[tf])*100,1) for tf in tf_total},
                         "timeframe_rows":dict(tf_total),"timeframe_failures":dict(tf_fail),
-                        "scope":"UNIQUE_SYMBOLS_WITH_PERSISTED_DEEP_ANALYSIS_IN_LAST_24H_NOT_EXCHANGE_UNIVERSE_COVERAGE"})
+                        "scope":"A85_DEEP_PERSISTED_SNAPSHOTS_ONLY_UNIQUE_SYMBOLS_LAST_24H_NOT_EXCHANGE_UNIVERSE_COVERAGE",
+                        "excludes":"A9_MICRO_1M_5M_SEPARATE_FETCH_AND_EVALUATION_STORE"})
             return out
         except Exception as exc:
             out["reason"]=f"{type(exc).__name__}"
@@ -111080,10 +111120,13 @@ class A85MarketIntelligence:
         # relative strength, and verified cost-aware economics. Weak setups stay
         # in the internal radar but cannot masquerade as best opportunities.
         candidate_funnel = {"analyzed":len(rows),"btc_reference_excluded":0,"status_not_eligible":0,
-                            "status_not_eligible_reasons":{},"quality_below_floor":0,"ranking_below_floor":0,
+                            "status_not_eligible_reasons":{},"status_counts":{},
+                            "quality_below_floor":0,"ranking_below_floor":0,
                             "economics_failed":0,"net_rr_below_floor":0,"mtf_not_bullish":0,
-                            "relative_strength_not_positive":0,"qualified":0,"exit_reason_counts":{},
-                            "primary_exit_reasons":[],"rs_positive_absolute_nonpositive_shadow":0}
+                            "relative_strength_not_positive":0,"qualified":0,
+                            "qualified_ready_now":0,"qualified_waiting_for_entry":0,
+                            "exit_reason_counts":{},"primary_exit_reasons":[],
+                            "rs_positive_absolute_nonpositive_shadow":0}
         decision_candidates=[]
         min_quality=float(CONFIG.get("A86_MIN_CANDIDATE_QUALITY",55.0))
         min_ranking=float(CONFIG.get("A86_MIN_CANDIDATE_RANKING",45.0))
@@ -111092,6 +111135,7 @@ class A85MarketIntelligence:
         for candidate in rows:
             symbol=str(candidate.get("symbol") or "UNKNOWN").upper()
             status=str(candidate.get("status") or "UNKNOWN").upper()
+            candidate_funnel["status_counts"][status]=int(candidate_funnel["status_counts"].get(status,0))+1
             plan=candidate.get("plan") or {}
             quality=cls._safe(candidate.get("quality_score"))
             ranking=cls._safe(candidate.get("ranking_score"))
@@ -111106,8 +111150,31 @@ class A85MarketIntelligence:
                 if status in {"EARLY_SETUP","EARLY","WATCH_ONLY"}:
                     detail=(f"EARLY_SETUP_A85_MIN_QUALITY_{upstream_quality_floor:g}" if quality is not None and quality < upstream_quality_floor
                             else "EARLY_SETUP_OR_CONFIRMATION_NOT_READY")
-                elif status=="DATA_INCOMPLETE": detail="DATA_INCOMPLETE_OR_STALE_INPUT"
-                elif status=="REJECTED": detail=str(plan.get("reason") or candidate.get("reason") or "UPSTREAM_REJECTION")[:120]
+                elif status=="DATA_INCOMPLETE":
+                    _book=plan.get("book") or {}
+                    detail=(f"DATA_INCOMPLETE_OR_STALE_INPUT:book_fresh={bool(_book.get('book_fresh'))}:"
+                            f"book_age_sec={cls._safe(_book.get('book_age_sec'))}:source={str(_book.get('book_source') or 'unknown')[:24]}")
+                elif status=="REJECTED":
+                    _why=str(plan.get("reason") or candidate.get("reason") or "UPSTREAM_REJECTION")
+                    _book=plan.get("book") or {}
+                    if _why=="CORE_LIQUIDITY_FLOOR_NOT_MET":
+                        detail=(f"{_why}:quote_vol_24h={cls._safe(plan.get('quote_vol_24h'))}:"
+                                f"required={cls._safe(plan.get('required_quote_vol_24h'))}:tier={plan.get('liquidity_tier','UNKNOWN')}")
+                    elif _why=="SPREAD_ABOVE_CORE_CEILING_OR_UNKNOWN":
+                        detail=(f"{_why}:spread_pct={cls._safe(plan.get('spread_pct'))}:"
+                                f"A85_ceiling_pct={cls._safe(plan.get('spread_ceiling_pct'))}:tier={plan.get('liquidity_tier','UNKNOWN')}:"
+                                f"book_fresh={bool(_book.get('book_fresh'))}:age_sec={cls._safe(_book.get('book_age_sec'))}")
+                    elif _why=="STRUCTURAL_STOP_RISK_OVER_4_PERCENT":
+                        detail=(f"{_why}:risk_pct={cls._safe(plan.get('risk_pct'))}:limit_pct={cls._safe(plan.get('risk_limit_pct'))}:"
+                                f"entry={cls._safe(plan.get('entry'))}:stop={cls._safe(plan.get('stop_loss'))}")
+                    elif _why=="RESISTANCE_TOO_CLOSE_FOR_NET_TP1":
+                        detail=(f"{_why}:entry={cls._safe(plan.get('entry'))}:resistance={cls._safe(plan.get('resistance'))}:"
+                                f"required_tp1={cls._safe(plan.get('required_tp1_price'))}:risk_pct={cls._safe(plan.get('risk_pct'))}")
+                    elif _why=="INSUFFICIENT_TOP5_BOOK_DEPTH":
+                        detail=(f"{_why}:observed_depth={cls._safe(_book.get('book_min_depth_usdt_5'))}:"
+                                f"required_depth={cls._safe(plan.get('required_top5_depth_usdt'))}:book_age_sec={cls._safe(_book.get('book_age_sec'))}")
+                    else:
+                        detail=_why[:120]
                 elif status=="EXPIRED": detail="PLAN_EXPIRED"
                 else: detail=f"STATUS_{status}"
                 reason="STATUS_NOT_ELIGIBLE"
@@ -111145,7 +111212,11 @@ class A85MarketIntelligence:
                         else:
                             candidate_funnel["qualified"] += 1; decision_candidates.append(candidate); qualified_this=True
             if qualified_this:
-                reason="QUALIFIED"; detail="ALL_A86_QUALIFICATION_CHECKS_PASSED"
+                if status == "READY_NOW":
+                    candidate_funnel["qualified_ready_now"] += 1
+                elif status == "WAITING_FOR_ENTRY":
+                    candidate_funnel["qualified_waiting_for_entry"] += 1
+                reason="QUALIFIED"; detail=f"ALL_A86_QUALIFICATION_CHECKS_PASSED:{status}"
             elif reason is None:
                 reason="UNATTRIBUTED"; detail="UNEXPECTED_FUNNEL_BRANCH"
             counts=candidate_funnel["exit_reason_counts"]
@@ -111574,7 +111645,7 @@ def _v702_a86_brain_report_text(market=None):
     levels = market.get("btc_trade_levels") or {}
     decision = market.get("a86_decision") or {}
     lines = ["<b>A86 MARKET BRAIN — قرار السوق وخطة التداول</b>"]
-    lines.append(f"Build: <code>{esc(V702_A89_REVISION)}</code>")
+    lines.append(f"Build: <code>{esc(V702_A90_REVISION)}</code>")
     try:
         import hashlib
         with open(__file__,"rb") as _build_fh:
@@ -111662,6 +111733,8 @@ def _v702_a86_brain_report_text(market=None):
         lines.append(f"الدخول المرجعي: {fmt(plan.get('preferred_entry'))} | المنطقة: {fmt(plan.get('entry_zone_low'))}–{fmt(plan.get('entry_zone_high'))}")
         lines.append(f"وقف الخسارة: {fmt(plan.get('stop_loss'))} | الأهداف: {fmt((targets[0] if len(targets)>0 else {}).get('price'))} / {fmt((targets[1] if len(targets)>1 else {}).get('price'))} / {fmt((targets[2] if len(targets)>2 else {}).get('price'))}")
         lines.append(f"صافي TP1 التقديري: {fmt(plan.get('estimated_net_profit_usdt_tp1'))} USDT | Net RR: {fmt(plan.get('net_rr_tp1'))} | التكلفة الكلية: {fmt(plan.get('round_trip_cost_pct'))}%")
+        _bk=plan.get("book") or {}
+        lines.append(f"دفتر الأوامر: tier={esc(plan.get('liquidity_tier','UNKNOWN'))} | fresh={bool(_bk.get('book_fresh'))} | age={fmt(_bk.get('book_age_sec'))}s | spread={fmt(_bk.get('spread_pct'))}% / A85 ceiling={fmt(plan.get('spread_ceiling_pct'))}% | top5 depth={fmt(_bk.get('book_min_depth_usdt_5'))}/{fmt(plan.get('required_top5_depth_usdt'))} USDT")
         why = brain.get("reasons") or [plan.get("reason") or row.get("reason") or "لا يوجد سبب تفصيلي"]
         lines.append(f"لماذا؟ {esc('; '.join(str(x) for x in why[:3]))}")
         if brain.get("manual_live_recheck_required"):
@@ -111677,7 +111750,7 @@ def _v702_a86_brain_report_text(market=None):
         _primary_text=", ".join(f"{k}:{v}" for k,v in sorted(_primary.items(),key=lambda x:(-int(x[1]),x[0]))[:8]) or "none"
         _status_text=", ".join(f"{k}:{v}" for k,v in sorted(_status_reasons.items(),key=lambda x:(-int(x[1]),x[0]))[:5]) or "none"
         _research_cmp=market.get("a89_research_comparisons") or {}
-        lines.append(f"<b>قمع المرشحين (محاسبة واحدة):</b> analyzed={int(funnel.get('analyzed',0) or 0)} accounted={int(funnel.get('accounted_total',0) or 0)} qualified={int(funnel.get('qualified',0) or 0)} BTC_reference={int(funnel.get('btc_reference_excluded',0) or 0)} status_not_eligible={int(funnel.get('status_not_eligible',0) or 0)} quality_low={int(funnel.get('quality_below_floor',0) or 0)} ranking_low={int(funnel.get('ranking_below_floor',0) or 0)} economics={int(funnel.get('economics_failed',0) or 0)} net_RR={int(funnel.get('net_rr_below_floor',0) or 0)} MTF={int(funnel.get('mtf_not_bullish',0) or 0)} RS={int(funnel.get('relative_strength_not_positive',0) or 0)} UNATTRIBUTED={int(funnel.get('unattributed',0) or 0)} reconciliation={bool(funnel.get('reconciliation_ok'))}")
+        lines.append(f"<b>قمع المرشحين (محاسبة واحدة):</b> analyzed={int(funnel.get('analyzed',0) or 0)} accounted={int(funnel.get('accounted_total',0) or 0)} qualified={int(funnel.get('qualified',0) or 0)} ready_now={int(funnel.get('qualified_ready_now',0) or 0)} waiting_entry={int(funnel.get('qualified_waiting_for_entry',0) or 0)} BTC_reference={int(funnel.get('btc_reference_excluded',0) or 0)} status_not_eligible={int(funnel.get('status_not_eligible',0) or 0)} quality_low={int(funnel.get('quality_below_floor',0) or 0)} ranking_low={int(funnel.get('ranking_below_floor',0) or 0)} economics={int(funnel.get('economics_failed',0) or 0)} net_RR={int(funnel.get('net_rr_below_floor',0) or 0)} MTF={int(funnel.get('mtf_not_bullish',0) or 0)} RS={int(funnel.get('relative_strength_not_positive',0) or 0)} UNATTRIBUTED={int(funnel.get('unattributed',0) or 0)} reconciliation={bool(funnel.get('reconciliation_ok'))}")
         lines.append(f"أسباب الحالة غير المؤهلة: {esc(_status_text)} | الأسباب الأساسية: {esc(_primary_text)}")
         _per_symbol=funnel.get("primary_exit_reasons") or []
         if _per_symbol:
@@ -111690,6 +111763,7 @@ def _v702_a86_brain_report_text(market=None):
     _tf_fail_text=", ".join(f"{k}:{fmt(v)}%" for k,v in sorted(_tf_fails.items())) or "n/a"
     lines.append(f"<b>4) تغطية الرادار</b> | تيكرات متاحة/مدروسة: {market.get('fast_scan_available_symbols',0)}/{market.get('radar_considered_symbols',0)} | تحليل عميق هذه الدورة: {market.get('deep_analyzed_symbols',0)} | أزواج فريدة 24h: {_coverage.get('unique_symbols','n/a')} | أقدم تحليل: {fmt(_coverage.get('oldest_symbol_age_sec'))} ثانية")
     lines.append(f"فشل توفر الأطر في السجلات العميقة 24h: {esc(_tf_fail_text)} — التغطية لا تعني تحليل كل تيكر متاح.")
+    lines.append("نطاق التغطية: هذه النسب تخص سجلات A85 للتحليل العميق المحفوظة فقط؛ استراتيجيات A9 Micro على 1M/5M تستخدم مسار جلب وتقييم Shadow مستقلًا، لذلك لا تُقارن الأرقام مباشرة. إطار 1D مساعد، بينما سياق BTC الأساسي يعتمد شموع 1H/4H المغلقة الموثقة.")
     _paper_update=paper.get("update") or {}
     _paper_perf=A85MarketIntelligence.paper_performance()
     _cohorts=_paper_perf.get("cohorts") or {}
@@ -111735,7 +111809,7 @@ async def _v702_a86_publish_brain_report():
     try:
         with open(__file__,"rb") as _fh: build_sha=hashlib.sha256(_fh.read()).hexdigest()
     except Exception: build_sha="UNAVAILABLE"
-    build_revision=str(V702_A89_REVISION)
+    build_revision=str(V702_A90_REVISION)
     now=float(WALL_NOW())
     interval=max(300.0,float(CONFIG.get("A86_AUTO_BRAIN_REPORT_INTERVAL_SEC",900.0) or 900.0))
     min_change_gap=max(60.0,min(900.0,float(CONFIG.get("A86_REPORT_CHANGE_GAP_SEC",90.0) or 90.0)))
@@ -112183,6 +112257,12 @@ FINAL_CANONICAL_RUNTIME.update({
     "active_a87_revision_current": V702_A87_REVISION,
     "active_a88_revision_current": V702_A88_REVISION,
     "active_a89_revision_current": V702_A89_REVISION,
+    "active_a90_revision_current": V702_A90_REVISION,
+    "a90_spread_digest_preserves_measured_spread_and_ceiling": True,
+    "a90_rejection_funnel_exposes_numeric_book_liquidity_and_risk_evidence": True,
+    "a90_qualified_candidates_split_ready_now_from_waiting_entry": True,
+    "a90_a85_deep_coverage_excludes_independent_a9_micro_fetch_scope": True,
+    "a90_a9_evaluation_totals_carry_retained_history_time_range": True,
     "a89_shared_btc_is_single_source_for_macro_forecast_and_relative_strength": True,
     "a89_candidate_funnel_has_per_symbol_primary_exit_and_reconciliation": True,
     "a89_paper_requires_future_executable_proxy_fill": True,
@@ -112228,6 +112308,13 @@ def _v702_a85_self_test_terminal():
     checks["a88_candidate_gate_excludes_btc_and_requires_rs"] = "btc_reference_excluded" in _v702_read_source_text() and "relative_strength_not_positive" in _v702_read_source_text()
     checks["a88_publisher_reservation_is_atomic"] = "BEGIN IMMEDIATE" in _v702_read_source_text() and "RESERVATION_BUSY" in _v702_read_source_text()
     checks["a89_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a89_revision_current") == V702_A89_REVISION
+    checks["a90_revision_is_declared"] = FINAL_CANONICAL_RUNTIME.get("active_a90_revision_current") == V702_A90_REVISION
+    checks["a90_spread_digest_is_numeric_and_complete"] = _v702_reason_summary_token("liquidity.spread=0.4002%>ceil=0.3000%:tier=MICRO", 40) == "spread:0.4002>0.3000:MICRO"
+    checks["a90_a9_scope_is_explicit"] = (FINAL_CANONICAL_RUNTIME.get("a90_a9_evaluation_totals_carry_retained_history_time_range") is True
+        and '"scope": "RETAINED_DB_ALL_DATES_NOT_DAILY_REPORT_WINDOW"' in Path(__file__).with_name("v702_intraday_shadow.py").read_text(encoding="utf-8")
+        and '"evaluation_coverage"' in Path(__file__).with_name("v702_intraday_shadow.py").read_text(encoding="utf-8"))
+    checks["a90_deep_coverage_declares_independent_micro_scope"] = ("A9_MICRO_1M_5M_SEPARATE_FETCH_AND_EVALUATION_STORE" in _v702_read_source_text()
+        and "A9 Micro" in _v702_read_source_text())
     checks["a89_macro_forecast_and_rs_share_btc_context"] = ("canonical_btc=cls._canonical_btc_market_data(market_map)" in _v702_read_source_text()
         and '"frame_1h":cls._closed(canonical_btc or {},"1H",now)[0]' in _v702_read_source_text()
         and '_A85_LATEST_MARKET_MAP["BTC/USDT"] = canonical_btc' in _v702_read_source_text())

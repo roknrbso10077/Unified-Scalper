@@ -109,6 +109,10 @@ def test_long_reason_digest_tokens_do_not_merge_shared_prefixes():
         assert all(len(token) <= 32 for token in tokens)
         assert "record_top=" in line
         assert all(token in line for token in tokens), line
+        spread_reason = "liquidity.spread=0.4002%>ceil=0.3000%:tier=MICRO"
+        spread_token = bot._v702_reason_summary_token(spread_reason, 40)
+        assert spread_token == "spread:0.4002>0.3000:MICRO", spread_token
+        assert "ceil=0" not in spread_token
     finally:
         metrics._events = old_events
 

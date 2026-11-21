@@ -2807,3 +2807,14 @@ v4.5.5-PQX — PREQUALIFICATION EXCEPTION OBSERVABILITY REPAIR
 ## Safety and limitations
 - `MONITOR_ONLY_NO_NEW_BUYS` remains active. A89 adds no exchange order path or execution authority and does not weaken forbidden-asset, Spot-only, spread, fee, liquidity, HTF, position-protection, reconciliation, or circuit-breaker controls.
 - The Paper model remains a candle-based proxy. It cannot prove order-book queue position, partial fills at the matching engine, actual fee tier, real Telegram delivery outside ACK callbacks, MEXC authenticated connectivity, realized wallet PnL or profitability. No strategy has been promoted based on these changes.
+
+
+# A90 — Spread/Book Truth, A9 History Scope & Funnel Coherence (2026-11-21)
+
+- Fixed compact rejection-summary formatting for spread ceilings: the measured spread, full configured ceiling and liquidity tier are preserved as readable numeric tokens instead of being cut mid-number by generic digest truncation. The gate itself is unchanged.
+- Enriched A85 rejection evidence with actual and required quote volume, the A85 spread ceiling and tier, order-book freshness/age/depth, structural entry/stop/risk values, and resistance clearance. Rejection classification remains fail-closed; this is attribution, not a relaxation.
+- Split the candidate funnel's qualified total into `qualified_ready_now` and `qualified_waiting_for_entry`; accounting remains one primary disposition per analyzed symbol. Brain reports now show book age, freshness, spread, ceiling and top-five depth for qualified candidates.
+- Declared A85 deep coverage as persisted A85 snapshots only and explicitly excluded the separate A9 Micro 1M/5M fetch/evaluation path. This explains why A85 deep 1M coverage and A9 Micro evaluation counts are different data scopes.
+- Added retained A9 evaluation row count and first/last UTC timestamps to the cumulative engine report. The previous-Cairo-day report remains independently date-scoped. Adaptive RS Pullback is documented as 15m context plus 5m trigger.
+- Added regression coverage for numeric spread-digest integrity, A85 rejection evidence, A9 retained-history scope, and the A9 timeframe contract.
+- Preserved `MONITOR_ONLY_NO_NEW_BUYS`, all existing safety gates and all 99 original archive paths. No files were added or removed.

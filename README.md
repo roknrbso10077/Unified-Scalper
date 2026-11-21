@@ -1,3 +1,17 @@
+# A90 — Spread/Book Truth, A9 History Scope & Funnel Diagnostics (2026-11-21)
+
+**Active analytical layer:** `A90-SPREAD-AND-BOOK-TRUTH-A9-HISTORY-SCOPE-AND-FUNNEL-COHERENCE-2026-11-21` (extends A89 in the existing `main.py` and `v702_intraday_shadow.py`). No package path is added.
+
+- Spread rejection summaries retain the measured spread, actual ceiling and liquidity tier as complete numeric fields; no generic truncation can make a nonzero ceiling appear as `ceil=0`.
+- A85 rejection details expose observed/required 24h quote volume, spread and applicable A85 ceiling, order-book freshness/age/depth, structural stop risk, and resistance clearance. These are diagnostics only; thresholds and acceptance decisions are unchanged.
+- The A86 funnel distinguishes analytically qualified `READY_NOW` from qualified `WAITING_FOR_ENTRY` candidates while preserving the original total and one-row-per-candidate reconciliation.
+- A85 deep-candle coverage explicitly describes its own persisted snapshot scope. A9 Micro 1M/5M evaluations use a separate fetch/evaluation store and are not silently merged into A85 coverage rates.
+- A9 retained-database evaluation totals now include row count and first/last UTC timestamps. The prior-local-day Telegram report remains a separate date-scoped report; its zero rows do not contradict historical retained-database totals. `ADAPTIVE_RS_PULLBACK_15M` is labelled as 15m context with a 5m trigger.
+
+**Safety invariant:** `MONITOR_ONLY_NO_NEW_BUYS` remains active. No order, selector, queue or live execution authority was granted; no risk, spread, liquidity, fee, quality, MTF, RS or protection gate was relaxed.
+
+---
+
 # A87 — Actionable BTC Direction & Telegram Decision Briefing (2026-11-20)
 
 **Current analytical layer:** `A87-ACTIONABLE-BTC-DIRECTION-PRICE-TARGETS-AND-TELEGRAM-DECISION-BRIEFING-2026-11-20` (extends A86 in the existing `main.py`). No extra runtime or package file is added.

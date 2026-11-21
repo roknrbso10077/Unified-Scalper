@@ -611,6 +611,27 @@ class IntradayShadowTests(unittest.TestCase):
         self.assertEqual(len(report["strategies"]), 5)
         self.assertIn("ADAPTIVE_RS_PULLBACK_15M", report["strategies"])
         self.assertEqual(report["strategies"]["VWAP_RECLAIM_RS_5M"]["sample_quality"], "TOO_SMALL")
+        self.assertEqual(report["evaluation_coverage"]["scope"], "RETAINED_DB_ALL_DATES_NOT_DAILY_REPORT_WINDOW")
+        self.assertEqual(report["evaluation_coverage"]["row_count"], 0)
+        self.assertEqual(report["strategy_timeframe_contracts"]["ADAPTIVE_RS_PULLBACK_15M"],
+                         {"signal_timeframe": "5m", "context_timeframe": "15m"})
+
+    def test_a9_evaluation_report_exposes_retained_database_time_range(self):
+        now_ms = int(time.time() * 1000)
+        inserted = self.study._record_evaluations("DOT/USDT", [{
+            "strategy_mode": "MICRO_MOMENTUM_1M", "timeframe": "1m",
+            "bar_ts_ms": now_ms - 60_000, "outcome": "REJECT",
+            "reason": "test_retained_history_scope", "cost_pct": 0.30,
+            "post_cost_viable": False, "quote_volume_24h": 2_000_000,
+        }])
+        self.assertEqual(inserted, 1)
+        report = self.study.report()
+        coverage = report["evaluation_coverage"]
+        self.assertEqual(coverage["scope"], "RETAINED_DB_ALL_DATES_NOT_DAILY_REPORT_WINDOW")
+        self.assertEqual(coverage["row_count"], 1)
+        self.assertIsNotNone(coverage["first_evaluated_utc"])
+        self.assertIsNotNone(coverage["last_evaluated_utc"])
+        self.assertEqual(report["strategies"]["MICRO_MOMENTUM_1M"]["evaluations"], 1)
 
 
 if __name__ == "__main__":

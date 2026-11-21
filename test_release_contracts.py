@@ -1219,11 +1219,25 @@ class A85UnifiedMarketIntelligenceContracts(unittest.TestCase):
         plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, {"1H": ind}, structure, 95, True)
         self.assertEqual(plan["status"], "REJECTED")
         self.assertEqual(plan["reason"], "CORE_LIQUIDITY_FLOOR_NOT_MET")
+        self.assertEqual(plan["quote_vol_24h"], 2_999_999.0)
+        self.assertEqual(plan["required_quote_vol_24h"], 3_000_000.0)
+        self.assertIn("liquidity_tier", plan)
         md["quote_vol_24h"] = 5_000_000.0
         md["orderbook_ts"] = now - 120.0
         plan = bot.A85MarketIntelligence._plan("SOL/USDT", md, {"1H": frame}, {"1H": ind}, structure, 95, True)
         self.assertNotEqual(plan["status"], "READY_NOW")
         self.assertEqual(plan["reason"], "STALE_OR_MISSING_BOOK")
+        self.assertFalse(plan.get("book", {}).get("book_fresh"))
+        self.assertIsNotNone(plan.get("book", {}).get("book_age_sec"))
+
+    def test_a90_numeric_rejection_attribution_and_entry_status_split_are_read_only(self):
+        source = Path(__file__).with_name("main.py").read_text(encoding="utf-8")
+        self.assertIn('"qualified_ready_now":0,"qualified_waiting_for_entry":0', source)
+        self.assertIn('spread_ceiling_pct', source)
+        self.assertIn('required_tp1_price', source)
+        self.assertIn('a90_a85_deep_coverage_excludes_independent_a9_micro_fetch_scope', source)
+        self.assertEqual(bot.FINAL_CANONICAL_RUNTIME.get("effective_entry_policy"), "MONITOR_ONLY_NO_NEW_BUYS")
+        self.assertFalse(bot.FINAL_CANONICAL_RUNTIME.get("a89_live_orders_enabled"))
 
     def test_a85_ready_requires_executable_ask_and_orderbook_depth(self):
         now = bot.WALL_NOW()
